@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Wiki Knowledge Base
+
+**At the start of every conversation**, read `AGENTS.md` in this directory for wiki maintenance protocols. The assistant-agent wiki is a persistent, compounding knowledge base maintained by Claude and browsed by Gary in Obsidian. The wiki vault lives at `/Users/harrison/Github/assistant-agent-wiki/`.
+
 # Assistant Agent
 
 Gary's personal AI secretary, built on the Claude Agent SDK. It runs as a single long-lived CLI agent that handles email, calendar, and tasks.
