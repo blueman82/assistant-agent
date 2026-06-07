@@ -41,10 +41,13 @@ Body: concise (under 2 min to read). Use `[[wiki-links]]` for cross-references. 
 ## Workflows
 
 ### Ingest (new source added)
-1. Read the source
-2. Update 5–15 existing pages that relate to it (add cross-refs, update facts)
-3. Create a new `sources/` page summarising what was learned
-4. Append to `log.md`
+Trigger: Gary says "ingest raw/" or "ingest [file]", or a new file appears in `raw/`.
+1. `Glob` the `raw/` directory to find unprocessed files
+2. For each file: `Read` it in full — never summarise before reading
+3. Update 5–15 existing wiki pages that relate to it (add cross-refs, update facts, correct stale claims)
+4. Create a new `sources/YYYY-MM-DD-slug.md` page summarising what was learned
+5. Append an entry to `log.md`
+6. Do NOT delete or modify the raw file — it stays as the immutable source
 
 ### Query (Gary asks a question)
 1. Read `index.md` first
