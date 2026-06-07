@@ -1,0 +1,22 @@
+{
+  "name": "assistant-agent",
+  "version": "0.1.0",
+  "description": "Gary's AI secretary — email, calendar, Slack, tasks, and wiki via the Claude Agent SDK.",
+  "type": "module",
+  "scripts": {
+    "start": "tsx secretary.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.0"
+  },
+  "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk-darwin-arm64": "^0.2.117",
+    "@types/node": "^22.9.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/claude-agent-sdk-darwin-arm64": "^0.2.117"
+  }
+}
