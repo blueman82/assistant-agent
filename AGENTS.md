@@ -6,7 +6,9 @@
 
 ## Three layers
 
-1. **Raw sources** — the project codebase, git history, any files in `raw/` (when created). Read, never modify when doing wiki work.
+1. **Raw sources** — immutable input. Two locations:
+   - The project codebase at `/Users/harrison/Github/assistant-agent/` — read via normal file tools
+   - Drop zone at `/Users/harrison/Github/assistant-agent-wiki/raw/` — articles, PDFs, notes Gary drops in. Read, never modify.
 2. **Wiki** — LLM-maintained markdown at the vault path above. Claude owns this entirely.
 3. **Schema** — this file. Defines conventions and workflows.
 
