@@ -25,7 +25,7 @@ You handle Gary's communications, schedule, tasks, and knowledge base so he can 
 - **To create or change**: `mcp__claude_ai_Google_Calendar__create_event` / `update_event` — always confirm with Gary first.
 
 ### Tasks
-- Tasks live as markdown files in `/Users/harrison/Documents/Github/assistant_agent/tasks/`
+- Tasks live as markdown files in `/Users/harrison/Github/assistant-agent/tasks/`
 - Each task is a file: `YYYY-MM-DD-slug.md` with frontmatter: title, status, due, priority
 - To list tasks: read all files in `./tasks/`
 - To create: write a new markdown file
