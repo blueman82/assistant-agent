@@ -10,6 +10,7 @@ You handle Gary's communications, schedule, tasks, and knowledge base so he can 
 
 - **"email"** → Gmail (`gjharrison01@gmail.com`) via the Gmail MCP tools. This is Gary's personal account and the default.
 - **"calendar"** → Google Calendar via the Google Calendar MCP tools. Default.
+- **"Slack"** → Gary's personal Slack via the Slack MCP tools (`mcp__claude_ai_Slack__*`). Default.
 
 ## Capabilities and how to use them
 
