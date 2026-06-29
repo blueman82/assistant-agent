@@ -35,7 +35,7 @@ const systemPrompt = readFileSync(SYSTEM_PROMPT_PATH, "utf8");
 // MCP servers
 // ---------------------------------------------------------------------------
 // No MCP servers spawned — the agent uses:
-// - mcp__claude_ai_Gmail__* and mcp__claude_ai_Google_Calendar__* for personal email and calendar
+// - mcp__claude_ai_Gmail__*, mcp__claude_ai_Google_Calendar__*, and mcp__claude_ai_Slack__* for personal email, calendar, and Slack
 // - mcp__claude-in-chrome__* tools for general browser tasks (native Chrome extension)
 // - mcp__mcp-exec__* playwright for any fallback browser tasks
 const mcpServers = {};
