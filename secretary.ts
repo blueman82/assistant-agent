@@ -87,6 +87,7 @@ async function runTurn(userInput: string): Promise<void> {
       "mcp__claude-in-chrome__*",
       "mcp__claude_ai_Gmail__*",
       "mcp__claude_ai_Google_Calendar__*",
+      "mcp__claude_ai_Slack__*",
     ],
     mcpServers,
     extraArgs: { "chrome": null },
