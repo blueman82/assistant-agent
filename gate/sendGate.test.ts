@@ -5,7 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { canonicalise, hashInput, createSendGateHook, GATED_TOOL_NAMES } from "./sendGate.ts";
 import type { ApprovalSurface, PendingApproval } from "./types.ts";
-import type { PreToolUseHookInput } from "@anthropic-ai/claude-agent-sdk";
+import type { PreToolUseHookInput, HookJSONOutput } from "@anthropic-ai/claude-agent-sdk";
+
+// The hook's return type is the HookJSONOutput union (sync vs async shape);
+// our gate only ever returns the sync shape, so narrow it once here rather
+// than repeating an `as` cast at every assertion site.
+function permissionDecisionOf(output: HookJSONOutput): string | undefined {
+  return "hookSpecificOutput" in output
+    ? (output.hookSpecificOutput as { permissionDecision?: string } | undefined)?.permissionDecision
+    : undefined;
+}
 
 test("canonicalise: same object with keys in different order -> identical string", () => {
   const a = { z: 1, a: 2, m: { y: 1, x: 2 } };
