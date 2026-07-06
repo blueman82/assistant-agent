@@ -138,6 +138,13 @@ export function createSendGateHook(
   };
 }
 
+// "First answer wins" (D3) means the first surface to settle — approve or
+// deny — decides the outcome; a fast terminal deny pre-empts a pending
+// Telegram/queue approval still in flight, and vice versa. This is D3's
+// documented semantics, not an accident, and deny-first is always the safe
+// direction; only an approve-first race trusts whichever surface answers
+// first, which is the accepted tradeoff of "any configured surface can
+// authorise."
 async function raceSurfaces(
   surfaces: ApprovalSurface[],
   toolName: string,
