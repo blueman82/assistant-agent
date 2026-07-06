@@ -142,9 +142,10 @@ async function raceSurfaces(
   toolName: string,
   toolInput: unknown,
   hash: string,
+  internalDenyTimeoutMs: number,
 ): Promise<"approve" | "deny"> {
   const timeoutPromise = new Promise<"deny">((resolve) => {
-    setTimeout(() => resolve("deny"), INTERNAL_DENY_TIMEOUT_MS);
+    setTimeout(() => resolve("deny"), internalDenyTimeoutMs);
   });
 
   if (surfaces.length === 0) {
