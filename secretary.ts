@@ -46,6 +46,27 @@ const systemPrompt = readFileSync(SYSTEM_PROMPT_PATH, "utf8");
 const mcpServers = {};
 
 // ---------------------------------------------------------------------------
+// Send-approval gate (D1-D3) — deterministic PreToolUse enforcement,
+// supplementing (not replacing) the confirm-before-send rules in system.md.
+// Constructed once at module scope so approval state (the one-shot Map) and
+// the audit log persist across turns within a session, not reset per-turn.
+// ---------------------------------------------------------------------------
+const auditLogPath = join(homedir(), ".secretary", "send-gate-audit.jsonl");
+
+const approvalSurfaces = [createTerminalApprovalSurface()];
+
+const telegramConfig = loadTelegramConfig();
+if (telegramConfig) {
+  approvalSurfaces.push(createTelegramApprovalSurface(telegramConfig));
+} else {
+  console.log("[secretary] Telegram approval surface disabled (no SECRETARY_TELEGRAM_TOKEN / ~/.secretary/telegram.json) — gate remains functional via terminal/queue surfaces.");
+}
+
+approvalSurfaces.push(createQueueApprovalSurface());
+
+const sendGateHook = createSendGateHook(approvalSurfaces, auditLogPath);
+
+// ---------------------------------------------------------------------------
 // CLI loop
 // ---------------------------------------------------------------------------
 const rl = readline.createInterface({
