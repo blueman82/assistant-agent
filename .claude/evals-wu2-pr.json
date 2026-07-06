@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "scope": "pr",
+  "task_ref": "feat/wu2-send-gate",
+  "tier": 2,
+  "tier_justification": "irreversible/outward surface — this PR IS the enforcement mechanism for external sends (Slack/Calendar/Gmail); tier 2 applies independently of loop-level tier and is not downgradable even if split across multiple PRs, per pr-eval-refs/wu2-send-gate.md.",
+  "frozen_at": "2026-07-06T22:00:45Z",
+  "frozen_sha": "e8cc68e35ca93a7d52250dc097ace044e431a7ed",
+  "evals": [
+    {
+      "id": "NC1",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "A WELL-FORMED send request (valid tool_name in GATED_TOOL_NAMES, valid schema-conforming tool_input) with NO operator approval action taken is DENIED by the gate hook.",
+      "cmd": "node --test gate/sendGate.test.ts 2>&1 | grep -i 'no approval\\|never resolves' — assert the corresponding test case passes (permissionDecision === 'deny')",
+      "negative_control": "Temporarily stub the ApprovalSurface to auto-resolve 'approve' with no owner action -> the same test must now report ALLOW, proving the harness can detect an allow outcome and isn't hard-coded to always report deny.",
+      "status": "pending",
+      "evidence": ""
+    },
+    {
+      "id": "NC2",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "Approval granted for tool_input X; gate invoked with tampered tool_input Y (same tool_name, different content) reusing X's approval -> DENIED (hash binding prevents cross-input reuse).",
+      "cmd": "node --test gate/sendGate.test.ts 2>&1 | grep -i tamper — assert the tamper-detection test case passes (deny on hash mismatch)",
+      "negative_control": "Invoke the gate with the SAME input X the approval was granted for (no tampering) -> must ALLOW, proving the test isn't failing to allow anything and specifically catches the tamper case.",
+      "status": "pending",
+      "evidence": ""
+    },
+    {
+      "id": "NC3",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "Replay of an already-consumed approval (same hash, second gate invocation) is DENIED (one-shot).",
+      "cmd": "node --test gate/sendGate.test.ts 2>&1 | grep -i 'one-shot\\|replay\\|consumed' — assert the replay test case passes",
+      "negative_control": "Run only the FIRST gate call for hash H (no replay) -> must ALLOW, proving the harness isn't failing every call regardless of replay.",
+      "status": "pending",
+      "evidence": ""
+    },
+    {
+      "id": "NC4",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "A gate callback that THROWS mid-approval (during hash computation, surface dispatch, or audit-log write) results in DENY, not allow-through (fail-closed under exception).",
+      "cmd": "node --test gate/sendGate.test.ts 2>&1 | grep -i throw — assert the throwing-surface test case resolves permissionDecision==='deny', never absent/undefined",
+      "negative_control": "Run the same test with a NON-throwing surface performing the identical decision path -> must resolve normally (allow or deny per its actual decision, not universally deny), proving the throw-path is what's being tested.",
+      "status": "pending",
+      "evidence": ""
+    },
+    {
+      "id": "NC5",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "A Bash tool call whose command matches a known send-API pattern (curl to slack.com/api/chat.postMessage, api.telegram.org/bot.../sendMessage, googleapis.com gmail messages/send or calendar events POST) is DENIED with a redirect-to-MCP-tool message, independent of GATED_TOOL_NAMES membership.",
+      "cmd": "node --test gate/bashPatterns.test.ts && node --test gate/sendGate.test.ts 2>&1 | grep -i 'bash\\|redirect' — assert matchesBashSendPattern returns true for the 4 named send-endpoint commands and the integration test asserts the redirect message",
+      "negative_control": "Run matchesBashSendPattern against a non-send Bash command ('ls -la' or a read-only Slack API call like users.info) -> must return false / must NOT deny.",
+      "status": "pending",
+      "evidence": ""
+    },
+    {
+      "id": "PC1",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "A terminal-approved send (owner types 'y') passes the gate and the tool call proceeds (positive control).",
+      "cmd": "node --test gate/sendGate.test.ts 2>&1 | grep -i terminal — terminal.ts ApprovalSurface stubbed with a scripted 'approve' response wired through sendGate.ts, asserting permissionDecision==='allow'",
+      "negative_control": "Same setup with a scripted 'deny' response -> must resolve permissionDecision==='deny', proving the terminal surface's result is actually read, not ignored in favor of a hardcoded allow.",
+      "status": "pending",
+      "evidence": ""
+    },
+    {
+      "id": "PC2",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "A pending approval produces a queue file at ~/.claude/coderails-dashboard/queue/<hash>.json in the frozen QueueFileEntry seam format (hash, toolName, toolInput, createdAt, status).",
+      "cmd": "node --test gate/surfaces/queue.test.ts (temp override dir, never the real path): write a pending entry, read back the file, assert all 5 QueueFileEntry fields present with correct types",
+      "negative_control": "Assert against a deliberately WRONG field name (e.g. 'tool_name' snake_case instead of 'toolName') -> must fail, proving the test checks exact field names rather than trivially passing on any JSON file.",
+      "status": "pending",
+      "evidence": ""
+    },
+    {
+      "id": "PC3",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "An append-only JSONL audit row is written for every gate attempt AND every decision (approved/denied/timeout), across all three surfaces and the Bash-pattern path.",
+      "cmd": "node --test gate/auditLog.test.ts && node --test gate/sendGate.test.ts 2>&1 | grep -i audit — run one full gate cycle (attempt -> decision) and assert the audit log file gained exactly 2 new parseable JSON lines with event in {attempt, decision}",
+      "negative_control": "Assert the log does NOT grow when a non-gated tool_name passes through the hook (the hook returns {} early, no audit row) -> proving the count isn't just incrementing on every hook invocation regardless of relevance.",
+      "status": "pending",
+      "evidence": ""
+    },
+    {
+      "id": "TC1",
+      "priority": "P1",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "The full gate/ module type-checks cleanly with no new TypeScript errors introduced by this PR.",
+      "cmd": "npm run typecheck",
+      "negative_control": "Introduce a deliberate type error (e.g. wrong return type on canonicalise) -> npm run typecheck must exit non-zero, proving the check isn't vacuously green.",
+      "status": "pending",
+      "evidence": ""
+    }
+  ],
+  "amendments": [],
+  "result": null,
+  "graded_at": null,
+  "head_sha": null
+}
