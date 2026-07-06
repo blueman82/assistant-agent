@@ -53,7 +53,7 @@ test("NC1: well-formed gated tool_input, surface never resolves -> deny", async 
   const result = await hook(makeGatedInput({ channel: "#general", text: "hi" }), undefined, {
     signal: new AbortController().signal,
   });
-  assert.equal(result.hookSpecificOutput?.permissionDecision, "deny");
+  assert.equal(permissionDecisionOf(result), "deny");
 });
 
 test("NC1 negative control: surface auto-resolves approve with no owner action -> allow", async () => {
@@ -62,7 +62,7 @@ test("NC1 negative control: surface auto-resolves approve with no owner action -
   const result = await hook(makeGatedInput({ channel: "#general", text: "hi" }), undefined, {
     signal: new AbortController().signal,
   });
-  assert.equal(result.hookSpecificOutput?.permissionDecision, "allow");
+  assert.equal(permissionDecisionOf(result), "allow");
 });
 
 test("NC3: replay of a consumed approval (same hash, second call) -> deny", async () => {
@@ -72,10 +72,10 @@ test("NC3: replay of a consumed approval (same hash, second call) -> deny", asyn
   const input = makeGatedInput({ channel: "#general", text: "replay me" });
 
   const first = await hook(input, undefined, { signal: new AbortController().signal });
-  assert.equal(first.hookSpecificOutput?.permissionDecision, "allow");
+  assert.equal(permissionDecisionOf(first), "allow");
 
   const second = await hook(input, undefined, { signal: new AbortController().signal });
-  assert.equal(second.hookSpecificOutput?.permissionDecision, "deny");
+  assert.equal(permissionDecisionOf(second), "deny");
 });
 
 test("NC3 negative control: first (non-replay) call -> allow", async () => {
@@ -84,7 +84,7 @@ test("NC3 negative control: first (non-replay) call -> allow", async () => {
   const result = await hook(makeGatedInput({ channel: "#general", text: "fresh" }), undefined, {
     signal: new AbortController().signal,
   });
-  assert.equal(result.hookSpecificOutput?.permissionDecision, "allow");
+  assert.equal(permissionDecisionOf(result), "allow");
 });
 
 test("NC2: approval for X, gate invoked with tampered Y reusing X's approval slot -> deny", async () => {
@@ -94,7 +94,7 @@ test("NC2: approval for X, gate invoked with tampered Y reusing X's approval slo
 
   const inputX = makeGatedInput({ channel: "#general", text: "original" });
   const approveX = await hook(inputX, undefined, { signal: new AbortController().signal });
-  assert.equal(approveX.hookSpecificOutput?.permissionDecision, "allow");
+  assert.equal(permissionDecisionOf(approveX), "allow");
 
   // Y has different content -> different hash -> no stored approval for it,
   // even though the same surface would approve it if asked fresh. We use a
@@ -104,7 +104,7 @@ test("NC2: approval for X, gate invoked with tampered Y reusing X's approval slo
   const hookForY = createSendGateHook([denySurface], tempAuditPath(), approvals);
   const inputY = makeGatedInput({ channel: "#general", text: "tampered" });
   const resultY = await hookForY(inputY, undefined, { signal: new AbortController().signal });
-  assert.equal(resultY.hookSpecificOutput?.permissionDecision, "deny");
+  assert.equal(permissionDecisionOf(resultY), "deny");
 });
 
 test("NC2 negative control: invoking the gate with the SAME input X approval was granted for -> allow", async () => {
@@ -112,7 +112,7 @@ test("NC2 negative control: invoking the gate with the SAME input X approval was
   const hook = createSendGateHook([alwaysApprove], tempAuditPath());
   const inputX = makeGatedInput({ channel: "#general", text: "untampered" });
   const result = await hook(inputX, undefined, { signal: new AbortController().signal });
-  assert.equal(result.hookSpecificOutput?.permissionDecision, "allow");
+  assert.equal(permissionDecisionOf(result), "allow");
 });
 
 test("NC4: a throwing ApprovalSurface results in deny, not allow-through", async () => {
@@ -125,7 +125,7 @@ test("NC4: a throwing ApprovalSurface results in deny, not allow-through", async
   const result = await hook(makeGatedInput({ channel: "#general", text: "throw me" }), undefined, {
     signal: new AbortController().signal,
   });
-  assert.equal(result.hookSpecificOutput?.permissionDecision, "deny");
+  assert.equal(permissionDecisionOf(result), "deny");
 });
 
 test("NC4 negative control: a non-throwing surface resolves per its actual decision (deny)", async () => {
@@ -134,7 +134,7 @@ test("NC4 negative control: a non-throwing surface resolves per its actual decis
   const result = await hook(makeGatedInput({ channel: "#general", text: "explicit deny" }), undefined, {
     signal: new AbortController().signal,
   });
-  assert.equal(result.hookSpecificOutput?.permissionDecision, "deny");
+  assert.equal(permissionDecisionOf(result), "deny");
 });
 
 test("NC4 negative control: a non-throwing surface resolves per its actual decision (allow)", async () => {
@@ -143,7 +143,39 @@ test("NC4 negative control: a non-throwing surface resolves per its actual decis
   const result = await hook(makeGatedInput({ channel: "#general", text: "explicit allow" }), undefined, {
     signal: new AbortController().signal,
   });
-  assert.equal(result.hookSpecificOutput?.permissionDecision, "allow");
+  assert.equal(permissionDecisionOf(result), "allow");
+});
+
+test("NC5: a Bash tool call matching a send-API pattern is DENIED with a redirect-to-MCP message", async () => {
+  const hook = createSendGateHook([NEVER_RESOLVES], tempAuditPath());
+  const input = {
+    hook_event_name: "PreToolUse",
+    session_id: "test-session",
+    transcript_path: "/dev/null",
+    cwd: "/tmp",
+    tool_name: "Bash",
+    tool_input: { command: "curl -X POST https://slack.com/api/chat.postMessage -d '{}'" },
+  } as PreToolUseHookInput;
+  const result = await hook(input, undefined, { signal: new AbortController().signal });
+  assert.equal(permissionDecisionOf(result), "deny");
+  const reason = "hookSpecificOutput" in result
+    ? (result.hookSpecificOutput as { permissionDecisionReason?: string } | undefined)?.permissionDecisionReason
+    : undefined;
+  assert.match(reason ?? "", /use the corresponding MCP tool instead/);
+});
+
+test("NC5 negative control: a non-send Bash command is NOT denied by the pattern layer", async () => {
+  const hook = createSendGateHook([NEVER_RESOLVES], tempAuditPath());
+  const input = {
+    hook_event_name: "PreToolUse",
+    session_id: "test-session",
+    transcript_path: "/dev/null",
+    cwd: "/tmp",
+    tool_name: "Bash",
+    tool_input: { command: "ls -la" },
+  } as PreToolUseHookInput;
+  const result = await hook(input, undefined, { signal: new AbortController().signal });
+  assert.deepEqual(result, {});
 });
 
 test("non-gated tool_name -> hook returns {} (no opinion), no audit row written", async () => {
