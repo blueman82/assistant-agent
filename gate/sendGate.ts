@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type { HookCallback, SyncHookJSONOutput } from "@anthropic-ai/claude-agent-sdk";
 import type { ApprovalSurface, PendingApproval } from "./types.ts";
+import { matchesBashSendPattern } from "./bashPatterns.ts";
+import { appendAuditRow } from "./auditLog.ts";
 
 // Sorted-key JSON.stringify, recursing into nested objects/arrays, so two
 // objects with the same content but different key order canonicalise
