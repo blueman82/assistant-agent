@@ -102,7 +102,7 @@
       "surface": "artifact-path",
       "assert": "The full gate/ module type-checks cleanly with no new TypeScript errors introduced by this PR.",
       "cmd": "npm run typecheck",
-      "negative_control": "Introduce a deliberate type error (e.g. wrong return type on canonicalise) -> npm run typecheck must exit non-zero, proving the check isn't vacuously green.",
+      "negative_control": "Introduce a deliberate type error (e.g. wrong return type on canonicalise) -> the same tsc invocation must exit non-zero, proving the check isn't vacuously green.",
       "status": "pass",
       "evidence": "npm run typecheck (tsc --noEmit) exits 0 with no output across the full repo including gate/**/*.ts (added to tsconfig.json's include list). Negative-control check performed manually during development: introducing a deliberate return-type mismatch produced a TS error and non-zero exit, confirmed then reverted (not left in the committed diff, per negative-control convention of proving the check CAN fail without leaving a broken state)."
     }
