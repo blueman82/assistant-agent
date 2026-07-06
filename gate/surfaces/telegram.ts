@@ -63,7 +63,7 @@ export function createTelegramApprovalSurface(config: TelegramConfig): ApprovalS
             ],
           },
         }),
-      } as never);
+      });
 
       let offset: number | undefined;
       // Long-poll getUpdates until a callback_query matching this hash
