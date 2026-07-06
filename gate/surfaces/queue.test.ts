@@ -87,3 +87,24 @@ test("createQueueApprovalSurface resolves deny when status flips to denied", asy
   const decision = await promise;
   assert.equal(decision, "deny");
 });
+
+test("a poll landing on malformed/partial JSON does not crash — surface keeps polling until valid status arrives", async () => {
+  const dir = tempQueueDir();
+  const surface = createQueueApprovalSurface(dir, 10);
+  const promise = surface.requestApproval("mcp__claude_ai_Slack__slack_send_message", { text: "hi" }, "hash3");
+
+  const path = join(dir, "hash3.json");
+  const { writeFileSync } = await import("node:fs");
+
+  // Simulate a poll tick landing mid-write (e.g. a non-atomic external
+  // writer): truncated JSON should not throw out of the setInterval
+  // callback — it must be swallowed and polling must continue.
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  writeFileSync(path, '{"hash":"hash3","status":"appro'); // deliberately truncated
+
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  writeFileSync(path, JSON.stringify({ hash: "hash3", toolName: "X", toolInput: {}, createdAt: 1, status: "approved" }));
+
+  const decision = await promise;
+  assert.equal(decision, "approve");
+});
