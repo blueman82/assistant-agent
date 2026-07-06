@@ -73,7 +73,7 @@ export function createTelegramApprovalSurface(config: TelegramConfig): ApprovalS
       while (true) {
         const res = await transport(
           `${apiBase}/getUpdates${offset !== undefined ? `?offset=${offset}` : ""}`,
-          { method: "GET" } as never,
+          { method: "GET" },
         );
         const body = (await res.json()) as {
           result: Array<{ update_id: number; callback_query?: { data?: string } }>;
