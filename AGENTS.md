@@ -4,6 +4,19 @@
 
 `/Users/harrison/Github/assistant-agent-wiki/`
 
+## Git config (read by wiki-lint/wiki-ingest/wiki-query)
+
+```yaml
+git:
+  worktree: false
+```
+
+This is a personal wiki: writes land directly on `assistant-agent-wiki`'s `main`, no branch/PR ceremony. Confirmed against the vault's own history (three pre-existing commits landed straight on `main` before this file existed).
+
+## Schema lineage
+
+This schema is a documented extension of the coderails wiki schema, not a fork of it: page format (frontmatter fields, `[[wiki-links]]`), `index.md`-first navigation, append-only `log.md`, and the ingest/query/lint workflows below all follow coderails' own wiki conventions. The extension is the page-type taxonomy — `architecture/capabilities/patterns/investigations/sources/templates` (+ `raw/`) — which stays as-is rather than adopting coderails' own type set (`command/hook/skill/design/investigation/source`), because this wiki documents a personal agent's capabilities and behaviour, not a plugin's commands and hooks. Adopt coderails' rules; keep this project's taxonomy.
+
 ## Three layers
 
 1. **Raw sources** — immutable input. Two locations:
