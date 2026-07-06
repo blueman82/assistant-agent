@@ -144,19 +144,22 @@ async function raceSurfaces(
   hash: string,
   internalDenyTimeoutMs: number,
 ): Promise<"approve" | "deny"> {
+  let timer: NodeJS.Timeout;
   const timeoutPromise = new Promise<"deny">((resolve) => {
-    setTimeout(() => resolve("deny"), internalDenyTimeoutMs);
+    timer = setTimeout(() => resolve("deny"), internalDenyTimeoutMs);
   });
-
-  if (surfaces.length === 0) {
-    return timeoutPromise;
-  }
 
   const surfacePromises = surfaces.map((s) =>
     s.requestApproval(toolName, toolInput, hash).catch<"deny">(() => "deny"),
   );
 
-  return Promise.race([...surfacePromises, timeoutPromise]);
+  try {
+    return await Promise.race([...surfacePromises, timeoutPromise]);
+  } finally {
+    // Prevent the losing timer from keeping the event loop alive (or firing
+    // late) once the race has already settled via a surface response.
+    clearTimeout(timer!);
+  }
 }
 
 function appendAudit(
