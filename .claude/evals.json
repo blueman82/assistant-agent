@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "scope": "pr",
+  "task_ref": "feat/wu1-coderails-probe",
+  "tier": 0,
+  "tier_justification": "Single work-unit (WU1 of the loop plan), no outward/irreversible surface (local hook-probe + test-infra port only, no send/deploy/publish/migration). The loop-level evals WU1-1/WU1-2/WU1-3 (frozen 2026-07-06T21:52:07Z in the loop's own evals.json) already assert exactly this PR's goal state (hooks fire correctly in a live secretary SDK session, no misfire, ported suite green with a negative control). A tier-0 justified exemption is legitimate per pr-eval-refs/wu1-plugin-probe.md's explicit freeze instruction — do not manufacture redundant PR-scope evals restating WU1-1/WU1-2/WU1-3 under new IDs.",
+  "frozen_at": "2026-07-06T21:57:53Z",
+  "frozen_sha": "e8cc68e35ca93a7d52250dc097ace044e431a7ed",
+  "evals": [],
+  "amendments": [],
+  "result": null,
+  "graded_at": null,
+  "head_sha": null
+}
