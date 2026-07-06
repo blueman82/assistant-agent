@@ -119,7 +119,7 @@ export function createSendGateHook(
       };
       approvals.set(hash, pending);
 
-      const decision = await raceSurfaces(surfaces, toolName, toolInput, hash);
+      const decision = await raceSurfaces(surfaces, toolName, toolInput, hash, internalDenyTimeoutMs);
 
       if (decision === "approve") {
         pending.consumed = true;
