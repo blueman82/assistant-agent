@@ -83,3 +83,25 @@ Trigger: Gary says "ingest raw/" or "ingest [file]", or a new file appears in `r
 ## Evolution
 
 This schema evolves with the project. When a new capability or page type is needed, update this file and add the new directory and template.
+
+## Send gate (folded from build-time scratch notes)
+
+`secretary.ts` wires a `PreToolUse` hook (`gate/sendGate.ts`) that intercepts every call to a gated tool and blocks it until an approval surface (terminal, Telegram, or the dashboard queue file at `~/.claude/coderails-dashboard/queue/`) resolves. This is the enforcement floor referenced in `prompts/system.md`'s "The send gate" section; the prompt-level draft-first rules remain the UX contract, not the enforcement.
+
+**Gated tools** (live-verified against this session's own attached MCP tool lists, not assumed from docs):
+```
+mcp__claude_ai_Slack__slack_send_message
+mcp__claude_ai_Google_Calendar__create_event
+mcp__claude_ai_Google_Calendar__update_event
+mcp__claude_ai_Google_Calendar__delete_event
+mcp__claude_ai_Google_Calendar__respond_to_event
+```
+Gmail has no send tool (confirmed live — only `create_draft` and read/label/search tools exist), so nothing to gate there. Draft tools (`slack_send_message_draft`, Gmail `create_draft`) stay ungated deliberately — gating a draft breaks the confirm flow for no security benefit.
+
+**Residual risk, stated not silent**: the Slack tool-name confirmation above came from `prompts/system.md`'s documented names, not a live introspection of the secretary's own Slack MCP connector (this session's attached Slack connector wasn't the same authenticated instance). If the secretary's live tool names ever drift from what's documented here, `GATED_TOOL_NAMES` in `gate/sendGate.ts` silently stops matching and the gate stops covering the real send path. Closing this needs either a startup-time live schema check or a future hook-probe run confirming tool names directly inside a secretary session — not yet built.
+
+**Fail-closed semantics, confirmed by a live spike against the installed SDK** (Node v24.10.0, `@anthropic-ai/claude-agent-sdk`): a `PreToolUse` hook that throws is swallowed by the SDK and treated as no-opinion (tool proceeds) — confirmed fail-open. A hook whose promise resolves after its declared `HookCallbackMatcher.timeout`/`asyncTimeout` also proceeds — the SDK does not cut it off itself, also confirmed fail-open. Neither `timeout` field is a real enforcement mechanism. Consequence: `createSendGateHook` wraps its entire body in try/catch (explicit deny on any exception) and races every approval surface against its own internal deny-timer (`Promise.race`, strictly shorter than any matcher timeout) rather than trusting the SDK to fail closed on its own. This is why the gate self-enforces rather than relying on SDK-native timeout/throw behaviour.
+
+**Per-item approval, one-shot, audited**: approval is bound to a SHA-256 hash of the canonicalised (sorted-key) tool input — approving one message never approves a different one, even to the same tool. An approval is consumed on first use; a replay of the same hash is denied (`"Approval already consumed — request a fresh approval."`). Every attempt and decision is appended to `~/.secretary/send-gate-audit.jsonl`. A well-formed send with no approval received is denied with `"No approval received — redraft or ask the operator directly."` A `Bash` command matching a known send-API pattern (Slack `chat.postMessage`, Telegram `sendMessage`, Gmail `messages/send`, or a `POST` to the Calendar events endpoint) is denied outright with `"Send-capable Bash command blocked — use the corresponding MCP tool instead (Slack/Gmail/Calendar), which routes through the approval gate."` — this path has no approval to offer, since a Bash send bypasses hash-binding entirely.
+
+**Accepted residual, not closed by this gate**: browser-automation sends (`mcp__claude-in-chrome__*` driving the Slack/Gmail web UI) are not pattern-matchable and are not gated. Detection is audit-log-only. This is a documented tradeoff, not an oversight.
