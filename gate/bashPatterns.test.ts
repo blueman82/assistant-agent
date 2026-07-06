@@ -37,3 +37,10 @@ test("ls -la -> false", () => {
 test("read-only Slack API call (users.info) -> false, since it's not a send route", () => {
   assert.equal(matchesBashSendPattern("curl https://slack.com/api/users.info?user=U123"), false);
 });
+
+test("read-only GET to the same calendar events path -> false, since listing/reading events is not a send", () => {
+  assert.equal(
+    matchesBashSendPattern("curl https://www.googleapis.com/calendar/v3/calendars/primary/events"),
+    false,
+  );
+});
