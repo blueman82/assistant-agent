@@ -6,7 +6,9 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "outDir": "dist"
+    "outDir": "dist",
+    "noEmit": true,
+    "allowImportingTsExtensions": true
   },
-  "include": ["*.ts", "src/**/*.ts"]
+  "include": ["*.ts", "src/**/*.ts", "gate/**/*.ts"]
 }

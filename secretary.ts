@@ -5,6 +5,11 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as readline from "node:readline/promises";
+import { homedir } from "node:os";
+import { createSendGateHook } from "./gate/sendGate.ts";
+import { createTerminalApprovalSurface } from "./gate/surfaces/terminal.ts";
+import { createTelegramApprovalSurface, loadTelegramConfig } from "./gate/surfaces/telegram.ts";
+import { createQueueApprovalSurface } from "./gate/surfaces/queue.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -39,6 +44,27 @@ const systemPrompt = readFileSync(SYSTEM_PROMPT_PATH, "utf8");
 // - mcp__claude-in-chrome__* tools for general browser tasks (native Chrome extension)
 // - mcp__mcp-exec__* playwright for any fallback browser tasks
 const mcpServers = {};
+
+// ---------------------------------------------------------------------------
+// Send-approval gate (D1-D3) — deterministic PreToolUse enforcement,
+// supplementing (not replacing) the confirm-before-send rules in system.md.
+// Constructed once at module scope so approval state (the one-shot Map) and
+// the audit log persist across turns within a session, not reset per-turn.
+// ---------------------------------------------------------------------------
+const auditLogPath = join(homedir(), ".secretary", "send-gate-audit.jsonl");
+
+const approvalSurfaces = [createTerminalApprovalSurface()];
+
+const telegramConfig = loadTelegramConfig();
+if (telegramConfig) {
+  approvalSurfaces.push(createTelegramApprovalSurface(telegramConfig));
+} else {
+  console.log("[secretary] Telegram approval surface disabled (no SECRETARY_TELEGRAM_TOKEN / ~/.secretary/telegram.json) — gate remains functional via terminal/queue surfaces.");
+}
+
+approvalSurfaces.push(createQueueApprovalSurface());
+
+const sendGateHook = createSendGateHook(approvalSurfaces, auditLogPath);
 
 // ---------------------------------------------------------------------------
 // CLI loop
@@ -92,6 +118,18 @@ async function runTurn(userInput: string): Promise<void> {
     mcpServers,
     extraArgs: { "chrome": null },
     abortController,
+    hooks: {
+      PreToolUse: [
+        {
+          // Left permissive rather than omitted: sdk.d.ts does not document
+          // undefined-matches-all semantics for HookCallbackMatcher.matcher,
+          // so this is set defensively to match every tool call. The gate
+          // itself filters by tool_name/command internally.
+          matcher: ".*",
+          hooks: [sendGateHook],
+        },
+      ],
+    },
     agent: "secretary",
     agents: {
       secretary: {

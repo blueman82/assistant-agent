@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "scope": "pr",
+  "task_ref": "feat/wu2-send-gate",
+  "tier": 2,
+  "tier_justification": "irreversible/outward surface — this PR IS the enforcement mechanism for external sends (Slack/Calendar/Gmail); tier 2 applies independently of loop-level tier and is not downgradable even if split across multiple PRs, per pr-eval-refs/wu2-send-gate.md.",
+  "frozen_at": "2026-07-06T22:00:45Z",
+  "frozen_sha": "e8cc68e35ca93a7d52250dc097ace044e431a7ed",
+  "evals": [
+    {
+      "id": "NC1",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "A WELL-FORMED send request (valid tool_name in GATED_TOOL_NAMES, valid schema-conforming tool_input) with NO operator approval action taken is DENIED by the gate hook.",
+      "cmd": "node --experimental-strip-types --test gate/sendGate.test.ts",
+      "negative_control": "Temporarily stub the ApprovalSurface to auto-resolve 'approve' with no owner action -> the same test must now report ALLOW, proving the harness can detect an allow outcome and isn't hard-coded to always report deny.",
+      "status": "pass",
+      "evidence": "gate/sendGate.test.ts:51-57 'NC1: well-formed gated tool_input, surface never resolves -> deny' PASS (52.5ms); negative control gate/sendGate.test.ts:59-66 'NC1 negative control: surface auto-resolves approve with no owner action -> allow' PASS (0.58ms). Full run: node --experimental-strip-types --test gate/sendGate.test.ts -> 15 pass, 0 fail."
+    },
+    {
+      "id": "NC2",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "Approval granted for tool_input X; gate invoked with tampered tool_input Y (same tool_name, different content) reusing X's approval -> DENIED (hash binding prevents cross-input reuse).",
+      "cmd": "node --experimental-strip-types --test gate/sendGate.test.ts",
+      "negative_control": "Invoke the gate with the SAME input X the approval was granted for (no tampering) -> must ALLOW, proving the test isn't failing to allow anything and specifically catches the tamper case.",
+      "status": "pass",
+      "evidence": "gate/sendGate.test.ts:90-108 'NC2: approval for X, gate invoked with tampered Y reusing X's approval slot -> deny' PASS (0.47ms); negative control gate/sendGate.test.ts:110-116 'NC2 negative control: invoking the gate with the SAME input X approval was granted for -> allow' PASS (0.23ms)."
+    },
+    {
+      "id": "NC3",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "Replay of an already-consumed approval (same hash, second gate invocation) is DENIED (one-shot).",
+      "cmd": "node --experimental-strip-types --test gate/sendGate.test.ts",
+      "negative_control": "Run only the FIRST gate call for hash H (no replay) -> must ALLOW, proving the harness isn't failing every call regardless of replay.",
+      "status": "pass",
+      "evidence": "gate/sendGate.test.ts:68-79 'NC3: replay of a consumed approval (same hash, second call) -> deny' PASS (0.43ms); negative control gate/sendGate.test.ts:81-88 'NC3 negative control: first (non-replay) call -> allow' PASS (0.34ms)."
+    },
+    {
+      "id": "NC4",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "A gate callback that THROWS mid-approval (during hash computation, surface dispatch, or audit-log write) results in DENY, not allow-through (fail-closed under exception).",
+      "cmd": "node --experimental-strip-types --test gate/sendGate.test.ts",
+      "negative_control": "Run the same test with a NON-throwing surface performing the identical decision path -> must resolve normally (allow or deny per its actual decision, not universally deny), proving the throw-path is what's being tested.",
+      "status": "pass",
+      "evidence": "gate/sendGate.test.ts:118-129 'NC4: a throwing ApprovalSurface results in deny, not allow-through' PASS (0.59ms); negative controls gate/sendGate.test.ts:131-147 both PASS (deny path 0.37ms, allow path 0.28ms), proving the throw path specifically is under test, not a hardcoded deny."
+    },
+    {
+      "id": "NC5",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "A Bash tool call whose command matches a known send-API pattern (curl to slack.com/api/chat.postMessage, api.telegram.org/bot.../sendMessage, googleapis.com gmail messages/send or calendar events POST) is DENIED with a redirect-to-MCP-tool message, independent of GATED_TOOL_NAMES membership.",
+      "cmd": "node --experimental-strip-types --test gate/bashPatterns.test.ts gate/sendGate.test.ts",
+      "negative_control": "Run matchesBashSendPattern against a non-send Bash command ('ls -la' or a read-only Slack API call like users.info) -> must return false / must NOT deny.",
+      "status": "pass",
+      "evidence": "gate/bashPatterns.test.ts: 8 pass including all 4 named send-endpoint commands returning true (0.34-0.09ms each) and 3 negative-control cases (ls -la, read-only Slack users.info, read-only calendar GET) returning false. gate/sendGate.test.ts:165-179 'NC5: a Bash tool call matching a send-API pattern is DENIED with a redirect-to-MCP message' PASS (0.33ms), asserting reason matches /use the corresponding MCP tool instead/; negative control gate/sendGate.test.ts:181-192 PASS (0.45ms, returns {} unchanged)."
+    },
+    {
+      "id": "PC1",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "A terminal-approved send (owner types 'y') passes the gate and the tool call proceeds (positive control).",
+      "cmd": "node --experimental-strip-types --test gate/surfaces/terminal.test.ts",
+      "negative_control": "Same setup with a scripted 'deny' response -> must resolve permissionDecision==='deny', proving the terminal surface's result is actually read, not ignored in favor of a hardcoded allow.",
+      "status": "pass",
+      "evidence": "AMENDMENT: original cmd referenced grep-ing sendGate.test.ts for a terminal case; a dedicated gate/surfaces/terminal.test.ts was added instead (terminal.ts's TTY check and readline interaction were made injectable via TerminalSurfaceOptions to make this testable without a real TTY). gate/surfaces/terminal.test.ts:31-40 'PC1: a terminal-approved send (scripted \"y\") passes the gate through the real terminal.ts module' PASS (2.38ms); negative control :42-51 'PC1 negative control: a terminal-denied send (scripted \"n\") is denied' PASS (0.41ms). Both exercise the real createTerminalApprovalSurface + createSendGateHook, not inline stubs. See amendments[] entry below."
+    },
+    {
+      "id": "PC2",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "A pending approval produces a queue file at ~/.claude/coderails-dashboard/queue/<hash>.json in the frozen QueueFileEntry seam format (hash, toolName, toolInput, createdAt, status).",
+      "cmd": "node --experimental-strip-types --test gate/surfaces/queue.test.ts",
+      "negative_control": "Assert against a deliberately WRONG field name (e.g. 'tool_name' snake_case instead of 'toolName') -> must fail, proving the test checks exact field names rather than trivially passing on any JSON file.",
+      "status": "pass",
+      "evidence": "gate/surfaces/queue.test.ts:12-29 'writeQueueEntry writes the frozen QueueFileEntry shape to <hash>.json' PASS (1.0ms), asserts all 5 fields (hash, toolName, toolInput, createdAt, status) with correct types, using a temp dir override (never the real ~/.claude/coderails-dashboard/queue/ path). Negative control :31-46 'field names are exact' PASS (0.25ms), asserts parsed.tool_name === undefined. Full run: 6 pass, 0 fail (includes malformed-JSON regression test added post-review)."
+    },
+    {
+      "id": "PC3",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "An append-only JSONL audit row is written for every gate attempt AND every decision (approved/denied/timeout), across all three surfaces and the Bash-pattern path.",
+      "cmd": "node --experimental-strip-types --test gate/auditLog.test.ts gate/sendGate.test.ts",
+      "negative_control": "Assert the log does NOT grow when a non-gated tool_name passes through the hook (the hook returns {} early, no audit row) -> proving the count isn't just incrementing on every hook invocation regardless of relevance.",
+      "status": "pass",
+      "evidence": "gate/auditLog.test.ts: 3 pass (append-only two-row test, concurrent-write non-interleaving test, directory-creation test). gate/sendGate.test.ts:197-208 'PC3: one full gate cycle (attempt -> decision) writes exactly 2 audit rows' PASS (0.35ms), asserts events sorted === ['attempt','decision']. Negative control gate/sendGate.test.ts:149-163 'non-gated tool_name -> hook returns {} (no opinion), no audit row written' PASS (0.17ms), asserts readFileSync on the audit path throws (file never created)."
+    },
+    {
+      "id": "TC1",
+      "priority": "P1",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "The full gate/ module type-checks cleanly with no new TypeScript errors introduced by this PR.",
+      "cmd": "npm run typecheck",
+      "negative_control": "Introduce a deliberate type error (e.g. wrong return type on canonicalise) -> the same tsc invocation must exit non-zero, proving the check isn't vacuously green.",
+      "status": "pass",
+      "evidence": "npm run typecheck (tsc --noEmit) exits 0 with no output across the full repo including gate/**/*.ts (added to tsconfig.json's include list). Negative-control check performed manually during development: introducing a deliberate return-type mismatch produced a TS error and non-zero exit, confirmed then reverted (not left in the committed diff, per negative-control convention of proving the check CAN fail without leaving a broken state)."
+    }
+  ],
+  "amendments": [
+    {
+      "eval": "PC1",
+      "when": "2026-07-06T23:19:00Z",
+      "why": "Original frozen cmd assumed PC1 would be exercised via an inline ApprovalSurface stub inside sendGate.test.ts (matching the pattern used for NC1-NC4). During PR review, pr-test-analyzer correctly flagged that this left the real gate/surfaces/terminal.ts module completely untested (0 references from any test file) — the primary interactive approval surface an operator actually uses. Fixed by making terminal.ts's TTY check and readline interaction injectable (TerminalSurfaceOptions: isTTY, askQuestion) and adding a dedicated gate/surfaces/terminal.test.ts that exercises the real module through the real sendGate.ts. The assertion and negative-control intent are unchanged; only the test's location and mechanism moved."
+    }
+  ],
+  "result": null,
+  "graded_at": null,
+  "head_sha": "aaa98c8267e045aac16c5b2d02f1d80edf45ac89"
+}
