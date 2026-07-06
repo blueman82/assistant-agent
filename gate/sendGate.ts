@@ -167,12 +167,9 @@ function appendAudit(
   auditLogPath: string,
   row: { event: "attempt" | "decision"; toolName: string; hash: string; surface: string; decision?: "allow" | "deny" },
 ): void {
-  // Deferred import to keep sendGate.ts's own unit tests independent of
-  // auditLog.ts's fs side effects when a caller passes a stub path; auditLog
-  // itself is exercised directly in auditLog.test.ts.
-  import("./auditLog.ts").then(({ appendAuditRow }) => {
+  try {
     appendAuditRow(auditLogPath, { ts: new Date().toISOString(), ...row });
-  }).catch(() => {
+  } catch {
     // Audit-log failure must never affect the gate decision already returned.
-  });
+  }
 }
