@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
+import type { HookCallback, SyncHookJSONOutput } from "@anthropic-ai/claude-agent-sdk";
 import type { ApprovalSurface, PendingApproval } from "./types.ts";
 
 // Sorted-key JSON.stringify, recursing into nested objects/arrays, so two
