@@ -43,14 +43,24 @@ export function createQueueApprovalSurface(
       const path = join(queueDir, `${hash}.json`);
       return new Promise((resolve) => {
         const interval = setInterval(() => {
-          if (!existsSync(path)) return;
-          const entry = JSON.parse(readFileSync(path, "utf8")) as QueueFileEntry;
-          if (entry.status === "approved") {
-            clearInterval(interval);
-            resolve("approve");
-          } else if (entry.status === "denied") {
-            clearInterval(interval);
-            resolve("deny");
+          // A throw here (e.g. a poll landing mid-write on a non-atomic
+          // external writer, or a transient fs error) would otherwise be an
+          // uncaught exception inside a setInterval callback — fatal to the
+          // process in Node, not a promise rejection raceSurfaces could catch.
+          // Treat any read/parse failure as "not yet decided" and keep
+          // polling; the gate's own internal timeout still bounds this.
+          try {
+            if (!existsSync(path)) return;
+            const entry = JSON.parse(readFileSync(path, "utf8")) as QueueFileEntry;
+            if (entry.status === "approved") {
+              clearInterval(interval);
+              resolve("approve");
+            } else if (entry.status === "denied") {
+              clearInterval(interval);
+              resolve("deny");
+            }
+          } catch {
+            // Keep polling — see comment above.
           }
         }, pollIntervalMs);
       });
