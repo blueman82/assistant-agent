@@ -7,21 +7,17 @@ import { createTelegramApprovalSurface } from "./telegram.ts";
 function makeStubTransport(responses: { sendMessage: unknown; getUpdatesSequence: unknown[] }) {
   let getUpdatesCallCount = 0;
   const calls: { url: string; body: unknown }[] = [];
-  const transport = async (url: string, init?: { body?: string }) => {
-    calls.push({ url, body: init?.body ? JSON.parse(init.body) : undefined });
+  const transport: typeof fetch = async (input, init) => {
+    const url = String(input);
+    const body = init?.body ? JSON.parse(init.body as string) : undefined;
+    calls.push({ url, body });
     if (url.includes("/sendMessage")) {
-      return {
-        ok: true,
-        json: async () => responses.sendMessage,
-      } as Response;
+      return { ok: true, json: async () => responses.sendMessage } as Response;
     }
     if (url.includes("/getUpdates")) {
-      const body = responses.getUpdatesSequence[getUpdatesCallCount] ?? { ok: true, result: [] };
+      const responseBody = responses.getUpdatesSequence[getUpdatesCallCount] ?? { ok: true, result: [] };
       getUpdatesCallCount++;
-      return {
-        ok: true,
-        json: async () => body,
-      } as Response;
+      return { ok: true, json: async () => responseBody } as Response;
     }
     throw new Error(`unexpected URL in stub transport: ${url}`);
   };
