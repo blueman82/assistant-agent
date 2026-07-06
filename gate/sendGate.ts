@@ -80,7 +80,6 @@ export function createSendGateHook(
       const toolName = input.tool_name;
       const toolInput = input.tool_input;
 
-      const { matchesBashSendPattern } = await import("./bashPatterns.ts");
       if (toolName === "Bash") {
         const command = typeof (toolInput as Record<string, unknown>)?.["command"] === "string"
           ? (toolInput as Record<string, unknown>)["command"] as string
