@@ -201,9 +201,6 @@ test("PC3: one full gate cycle (attempt -> decision) writes exactly 2 audit rows
   await hook(makeGatedInput({ channel: "#general", text: "audit me" }), undefined, {
     signal: new AbortController().signal,
   });
-  // Audit writes are fire-and-forget (async import) relative to the hook's
-  // own resolution — poll briefly for the file to settle.
-  await new Promise((resolve) => setTimeout(resolve, 50));
   const lines = readFileSync(auditPath, "utf8").trim().split("\n");
   assert.equal(lines.length, 2);
   const rows = lines.map((l) => JSON.parse(l));
