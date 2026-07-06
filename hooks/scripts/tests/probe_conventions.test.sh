@@ -105,6 +105,13 @@ if [ -f "$SOURCE_HOOKS/no_edit_on_main.sh" ]; then
     DENY "$(run_source_hook "$(payload Edit secretary.ts)")"
   check "source hook: main, .claude/test_command Edit -> deny (finding 5)" \
     DENY "$(run_source_hook "$(payload Edit .claude/test_command)")"
+else
+  # Don't let a missing source checkout silently drop these three behavioral
+  # checks — record the loss as a failure rather than a quiet no-op, even
+  # though the PRESENT/MISSING check above would already fail the suite.
+  check "source hook: main, tasks/*.md Write -> allow (matches live probe #1)" ALLOW "SKIPPED-no-source-checkout"
+  check "source hook: main, secretary.ts Edit -> deny (contradicts live probe #2 — the gap)" DENY "SKIPPED-no-source-checkout"
+  check "source hook: main, .claude/test_command Edit -> deny (finding 5)" DENY "SKIPPED-no-source-checkout"
 fi
 
 # ── Finding 4: test_gate.sh IS present and installed, fires correctly ────────
@@ -134,6 +141,11 @@ if [ -f "$INSTALLED_HOOKS/test_gate.sh" ]; then
     ALLOW "$(run_test_gate "$PROJ_PASS" "$(tg_payload "git commit -m 'x'")")"
   check "installed test_gate: FAILING test_command, git commit -> deny (negative control)" \
     DENY "$(run_test_gate "$PROJ_FAIL" "$(tg_payload "git commit -m 'x'")")"
+else
+  # Same discipline as the no_edit_on_main block above: record the loss
+  # explicitly rather than letting the check count silently shrink.
+  check "installed test_gate: passing test_command, git commit -> allow" ALLOW "SKIPPED-no-installed-test-gate"
+  check "installed test_gate: FAILING test_command, git commit -> deny (negative control)" DENY "SKIPPED-no-installed-test-gate"
 fi
 
 [ "$fails" -eq 0 ] && { echo "PASS"; exit 0; } || { echo "FAILED ($fails)"; exit 1; }
