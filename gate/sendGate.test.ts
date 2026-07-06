@@ -168,9 +168,3 @@ test("PC3: one full gate cycle (attempt -> decision) writes exactly 2 audit rows
   const rows = lines.map((l) => JSON.parse(l));
   assert.deepEqual(rows.map((r) => r.event).sort(), ["attempt", "decision"]);
 });
-
-test("cleanup temp dirs", () => {
-  // node --test has no global afterAll; temp dirs are left under os.tmpdir()
-  // and cleaned by the OS. This is a no-op marker test for readability.
-  assert.ok(true);
-});
