@@ -40,7 +40,7 @@ const NEVER_RESOLVES: ApprovalSurface = {
 };
 
 test("NC1: well-formed gated tool_input, surface never resolves -> deny", async () => {
-  const hook = createSendGateHook([NEVER_RESOLVES], tempAuditPath());
+  const hook = createSendGateHook([NEVER_RESOLVES], tempAuditPath(), new Map(), 50);
   const result = await hook(makeGatedInput({ channel: "#general", text: "hi" }), undefined, {
     signal: new AbortController().signal,
   });
