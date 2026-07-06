@@ -42,21 +42,21 @@ export const GATED_TOOL_NAMES: readonly string[] = [
 // only actual enforcement of fail-closed-on-timeout.
 const INTERNAL_DENY_TIMEOUT_MS = 60_000;
 
-function denyOutput(reason: string) {
+function denyOutput(reason: string): SyncHookJSONOutput {
   return {
     hookSpecificOutput: {
-      hookEventName: "PreToolUse" as const,
-      permissionDecision: "deny" as const,
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
       permissionDecisionReason: reason,
     },
   };
 }
 
-function allowOutput() {
+function allowOutput(): SyncHookJSONOutput {
   return {
     hookSpecificOutput: {
-      hookEventName: "PreToolUse" as const,
-      permissionDecision: "allow" as const,
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
     },
   };
 }
