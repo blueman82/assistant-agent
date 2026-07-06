@@ -5,6 +5,11 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as readline from "node:readline/promises";
+import { homedir } from "node:os";
+import { createSendGateHook } from "./gate/sendGate.ts";
+import { createTerminalApprovalSurface } from "./gate/surfaces/terminal.ts";
+import { createTelegramApprovalSurface } from "./gate/surfaces/telegram.ts";
+import { createQueueApprovalSurface } from "./gate/surfaces/queue.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
