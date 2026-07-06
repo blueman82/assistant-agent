@@ -65,6 +65,7 @@ export function createSendGateHook(
   surfaces: ApprovalSurface[],
   auditLogPath: string,
   approvals: Map<string, PendingApproval> = new Map(),
+  internalDenyTimeoutMs: number = INTERNAL_DENY_TIMEOUT_MS,
 ): HookCallback {
   return async (input) => {
     // Belt-and-braces per the spike: the SDK does not fail-closed on a
