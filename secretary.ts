@@ -118,6 +118,18 @@ async function runTurn(userInput: string): Promise<void> {
     mcpServers,
     extraArgs: { "chrome": null },
     abortController,
+    hooks: {
+      PreToolUse: [
+        {
+          // Left permissive rather than omitted: sdk.d.ts does not document
+          // undefined-matches-all semantics for HookCallbackMatcher.matcher,
+          // so this is set defensively to match every tool call. The gate
+          // itself filters by tool_name/command internally.
+          matcher: ".*",
+          hooks: [sendGateHook],
+        },
+      ],
+    },
     agent: "secretary",
     agents: {
       secretary: {
