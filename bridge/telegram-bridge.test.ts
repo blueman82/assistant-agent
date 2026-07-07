@@ -333,7 +333,7 @@ test("run() does NOT exit on a non-409/conflict poll error — only the single-p
 
   const originalExit = process.exit;
   let exitCalled = false;
-  // @ts-expect-error — stubbing process.exit for the test.
+  // Stubbing process.exit for the test.
   process.exit = () => {
     exitCalled = true;
     throw new Error("process.exit must not be called for a non-conflict error");
