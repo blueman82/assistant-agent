@@ -95,7 +95,7 @@ This schema evolves with the project. When a new capability or page type is need
 
 `secretary.ts` wires a `PreToolUse` hook (`gate/sendGate.ts`) that intercepts every call to a gated tool and blocks it until an approval surface (terminal, Telegram, or the dashboard queue file at `~/.claude/coderails-dashboard/queue/`) resolves. This is the enforcement floor referenced in `prompts/system.md`'s "The send gate" section; the prompt-level draft-first rules remain the UX contract, not the enforcement.
 
-**Gated tools** (live-verified against this session's own attached MCP tool lists, not assumed from docs):
+**Gated tools** (Calendar and Gmail confirmed live against this session's own attached MCP tool lists; Slack confirmed via `prompts/system.md`'s documented tool names, not a live introspection — see the residual-risk note below):
 ```
 mcp__claude_ai_Slack__slack_send_message
 mcp__claude_ai_Google_Calendar__create_event
