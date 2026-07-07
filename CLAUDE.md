@@ -17,20 +17,24 @@ npm install                 # install dependencies
 npx tsx secretary.ts        # run interactively
 npx tsx secretary.ts "..."  # run a one-shot request, then drop into interactive
 npm start                   # alias for tsx secretary.ts
+npm run bridge              # tsx bridge/telegram-bridge.ts (Telegram front-end)
 npm run typecheck           # tsc --noEmit
-npm test                    # gate/**/*.test.ts + hooks/scripts/tests/probe_conventions.test.sh
+npm test                    # gate/**/*.test.ts + bridge/**/*.test.ts + hooks/scripts/tests/probe_conventions.test.sh
 ```
 
-There is no build step (run directly via `tsx`) and no linter. `.claude/test_command` runs `npm run typecheck && npm test`, which the coderails `test_gate` hook enforces before commits.
+There is no build step (run directly via `tsx`) and no linter. `.claude/test_command` runs `npm run typecheck && npm test`, which the coderails `test_gate` hook enforces before commits. (Known quirk: run `npm run typecheck` and `npm test` as separate commands — the combined `&&` invocation can hang.)
+
+To run the Telegram bridge persistently (survives reboots/crashes), copy `bridge/launchd.plist` to `~/Library/LaunchAgents/com.secretary.telegram-bridge.plist`, replace `__REPO_PATH__` with the absolute path to this checkout, then `launchctl load ~/Library/LaunchAgents/com.secretary.telegram-bridge.plist`. Logs land at `.secretary/telegram-bridge.log`, redacted of the bot token before they're ever written.
 
 ## Architecture
 
 The codebase is intentionally tiny and splits cleanly into **plumbing** and **brain**:
 
-- **`secretary.ts`** — the plumbing. A REPL that wraps the Agent SDK's `query()`. It loads the system prompt, defines a single inline agent named `secretary`, wires the send-approval gate (`gate/sendGate.ts`) as a `PreToolUse` hook, streams the agent's text/tool-use back to the terminal, and loops. It holds almost no logic about *what* the secretary does.
+- **`secretary.ts`** — the plumbing. A REPL that wraps the Agent SDK's `query()`. It loads the system prompt, defines a single inline agent named `secretary`, wires the send-approval gate (`gate/sendGate.ts`) as a `PreToolUse` hook, streams the agent's text/tool-use back to the terminal, and loops. It also exports `runTurn`/`getSessionId`/`resetSession`/`telegramSurface` so the Telegram bridge can drive the same turn loop and approval surface without a second entry point. It holds almost no logic about *what* the secretary does.
+- **`bridge/telegram-bridge.ts`** — a second front-end onto the same secretary. Owns the single Telegram `getUpdates` long-poll loop (Telegram allows exactly one consumer per bot token), routes ordinary chat messages into a FIFO queue drained through `secretary.ts`'s `runTurn`, and routes `callback_query` taps (Approve/Deny) immediately into the imported `telegramSurface` from `secretary.ts` rather than constructing its own — a callback must resolve the same surface instance the send gate is waiting on. `bridge/api.ts` is the thin plain-fetch Telegram client (chunked replies, typing indicator, token redaction in logs). See `bridge/launchd.plist` to run it as a background service.
 - **`prompts/system.md`** — the brain. All behaviour lives here: tool-routing rules, capability docs, and ground rules. **To change how the secretary behaves, edit this file, not the TypeScript.**
 
-To understand the agent you must read both files together — `secretary.ts` tells you which tools are wired in; `system.md` tells you how they're meant to be used.
+To understand the agent you must read both files together — `secretary.ts` tells you which tools are wired in; `system.md` tells you how they're meant to be used. `bridge/telegram-bridge.ts` is a thin transport layer on top of both — it adds no new behaviour, only a second way to reach the same `runTurn`.
 
 ### Agent configuration (in `secretary.ts`)
 

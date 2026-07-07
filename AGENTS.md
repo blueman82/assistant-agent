@@ -95,6 +95,8 @@ This schema evolves with the project. When a new capability or page type is need
 
 `secretary.ts` wires a `PreToolUse` hook (`gate/sendGate.ts`) that intercepts every call to a gated tool and blocks it until an approval surface (terminal, Telegram, or the dashboard queue file at `~/.claude/coderails-dashboard/queue/`) resolves. This is the enforcement floor referenced in `prompts/system.md`'s "The send gate" section; the prompt-level draft-first rules remain the UX contract, not the enforcement.
 
+**Update-routing for Telegram (`gate/surfaces/telegram.ts` + `bridge/telegram-bridge.ts`)**: Telegram allows exactly one `getUpdates` long-poll consumer per bot token, so `bridge/telegram-bridge.ts` owns that single loop — it is the only thing in the repo calling `getUpdates`. The approval surface (`gate/surfaces/telegram.ts`) does not poll for itself; it exposes `handleCallbackQuery`, and the bridge feeds `callback_query` updates into it as they arrive, routed ahead of any queued chat turn (a gate decision may be blocking a turn, so a callback must never wait behind the FIFO). Ordinary chat messages take the other path: the bridge queues them FIFO and drains them through `secretary.ts`'s exported `runTurn`. Both paths converge on the same `telegramSurface` instance exported from `secretary.ts` — the bridge imports it rather than constructing a second one, so a button tap resolves the exact surface the send gate is racing against.
+
 **Gated tools** (Calendar and Gmail confirmed live against this session's own attached MCP tool lists; Slack confirmed via `prompts/system.md`'s documented tool names, not a live introspection — see the residual-risk note below):
 ```
 mcp__claude_ai_Slack__slack_send_message
