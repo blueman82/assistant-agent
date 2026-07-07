@@ -95,22 +95,14 @@ export function createTelegramApprovalSurface(config: TelegramConfig): ApprovalS
           if (!cb || !data) continue;
           const [dataHash, decision] = data.split(":");
           if (dataHash === shortHash && (decision === "approve" || decision === "deny")) {
-            await transport(`${apiBase}/answerCallbackQuery`, {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ callback_query_id: cb.id }),
-            });
+            await answerCallback(cb.id);
             return decision;
           }
 
           // Tap doesn't match this pending request (stale/foreign hash) —
           // answer it anyway so the Telegram client's tap spinner resolves
           // instead of hanging forever.
-          await transport(`${apiBase}/answerCallbackQuery`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ callback_query_id: cb.id, text: "Expired" }),
-          });
+          await answerCallback(cb.id, "Expired");
         }
 
         await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
