@@ -13,7 +13,7 @@ export interface QueueFileEntry {
   status: "pending" | "approved" | "denied";
 }
 
-export const DEFAULT_QUEUE_DIR = join(homedir(), ".claude", "coderails-dashboard", "queue");
+export const DEFAULT_QUEUE_DIR = join(homedir(), ".claude", "coderails-dashboard", "approvals");
 
 export function writeQueueEntry(queueDir: string, entry: QueueFileEntry): void {
   mkdirSync(queueDir, { recursive: true });
