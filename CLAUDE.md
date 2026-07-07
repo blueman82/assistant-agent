@@ -17,16 +17,17 @@ npm install                 # install dependencies
 npx tsx secretary.ts        # run interactively
 npx tsx secretary.ts "..."  # run a one-shot request, then drop into interactive
 npm start                   # alias for tsx secretary.ts
-npm run typecheck           # tsc --noEmit (the only check — there are no tests)
+npm run typecheck           # tsc --noEmit
+npm test                    # gate/**/*.test.ts + hooks/scripts/tests/probe_conventions.test.sh
 ```
 
-There is no build step (run directly via `tsx`), no linter, and no test suite. `npm run typecheck` is the only verification gate.
+There is no build step (run directly via `tsx`) and no linter. `.claude/test_command` runs `npm run typecheck && npm test`, which the coderails `test_gate` hook enforces before commits.
 
 ## Architecture
 
 The codebase is intentionally tiny and splits cleanly into **plumbing** and **brain**:
 
-- **`secretary.ts`** — the plumbing. A ~190-line REPL that wraps the Agent SDK's `query()`. It loads the system prompt, defines a single inline agent named `secretary`, streams the agent's text/tool-use back to the terminal, and loops. It holds almost no logic about *what* the secretary does.
+- **`secretary.ts`** — the plumbing. A REPL that wraps the Agent SDK's `query()`. It loads the system prompt, defines a single inline agent named `secretary`, wires the send-approval gate (`gate/sendGate.ts`) as a `PreToolUse` hook, streams the agent's text/tool-use back to the terminal, and loops. It holds almost no logic about *what* the secretary does.
 - **`prompts/system.md`** — the brain. All behaviour lives here: tool-routing rules, capability docs, and ground rules. **To change how the secretary behaves, edit this file, not the TypeScript.**
 
 To understand the agent you must read both files together — `secretary.ts` tells you which tools are wired in; `system.md` tells you how they're meant to be used.

@@ -21,13 +21,21 @@
 #      the Edit PROCEEDED (turns=3, exit 0, `// probe` landed as line 1). This is
 #      the code-arm-on-main case that no_edit_on_main.sh is documented (in the
 #      coderails source) to universally deny — it did NOT fire here.
-#   3. Root cause (static + matches the live result): the globally installed
-#      plugin — ~/.claude/plugins/cache/coderails/coderails/1.0.0, version 1.0.0,
-#      installed 2026-06-24, autoUpdates:false — has NO no_edit_on_main.sh file on
-#      disk and NO Write|Edit|MultiEdit matcher entry in its hooks/hooks.json at
-#      all. It also lacks enforce_pr_workflow.sh. The coderails SOURCE checkout at
-#      ~/Github/coderails is version 1.1.0 and DOES have both. The installed copy
-#      is stale relative to source; this is a real version-skew gap, not a hook bug.
+#   3. Root cause (static + matches the live result, AS OF 2026-07-06): the
+#      globally installed plugin — ~/.claude/plugins/cache/coderails/coderails/1.0.0,
+#      version 1.0.0, installed 2026-06-24, autoUpdates:false — had NO
+#      no_edit_on_main.sh file on disk and NO Write|Edit|MultiEdit matcher entry in
+#      its hooks/hooks.json at all. It also lacked enforce_pr_workflow.sh. The
+#      coderails SOURCE checkout at ~/Github/coderails was version 1.1.0 and DID
+#      have both. The installed copy was stale relative to source — a real
+#      version-skew gap, not a hook bug (see assistant-agent PR #3).
+#      UPDATE (2026-07-07): the plugin self-updated to 1.1.0 overnight — the
+#      installed cache now carries the full 12-script set, including
+#      no_edit_on_main.sh and enforce_pr_workflow.sh. The gap this test documented
+#      is closed; assertions below flipped from MISSING to PRESENT accordingly.
+#      INSTALLED_HOOKS is resolved dynamically (via installed_plugins.json) rather
+#      than hardcoded to a version string, so this test tracks whichever plugin
+#      version is actually active instead of drifting stale again.
 #   4. test_gate.sh IS present in the installed copy (older revision: `cat` instead
 #      of the bounded `read -r -d '' -t 5`, but functionally equivalent for this
 #      assertion) and fires correctly: allows a `git commit` when `.claude/test_command`
@@ -35,12 +43,36 @@
 #   5. Incidental finding: `.claude/test_command` itself (no file extension) is NOT
 #      in no_edit_on_main.sh's allowlist (extensions checked: .md/.txt/.rst/.yaml/
 #      .yml/.json/.toml/.ini/.cfg; bare names checked: .gitignore/LICENSE only) —
-#      so once the plugin updates to include no_edit_on_main.sh, editing
-#      .claude/test_command directly on main will itself be denied. Filed as a
-#      finding for whoever next touches that file on main, not fixed here (out of
-#      WU1's scope — Task 1 only edits it via a feature-branch PR anyway).
+#      so now that the plugin includes no_edit_on_main.sh, editing
+#      .claude/test_command directly on main IS denied (matches the flipped
+#      assertions above). Filed as a finding for whoever next touches that file on
+#      main; Task 1 edits it only via a feature-branch PR anyway.
 set -u
-INSTALLED_HOOKS="$HOME/.claude/plugins/cache/coderails/coderails/1.0.0/hooks/scripts"
+INSTALLED_PLUGINS_JSON="$HOME/.claude/plugins/installed_plugins.json"
+CACHE_ROOT="$HOME/.claude/plugins/cache/coderails/coderails"
+
+# Resolve the ACTIVE installed plugin path rather than hardcoding a version
+# string — the plugin auto-updates (finding 3 above happened because a
+# hardcoded 1.0.0 path silently kept testing a superseded install). Prefer the
+# installPath jq reports live; fall back to the HIGHEST-VERSION cache dir
+# (sort -V, not mtime) if jq or the expected key is unavailable — multiple
+# cache dirs can share an identical mtime (observed: 1.0.0 and 1.1.0 both
+# carry the same install/extract timestamp on this machine), so `ls -t` can
+# tie-break to a stale, superseded version. Version-sort is deterministic
+# regardless of mtime/clock skew.
+INSTALLED_HOOKS=""
+if command -v jq >/dev/null 2>&1 && [ -f "$INSTALLED_PLUGINS_JSON" ]; then
+  install_path=$(jq -r '.plugins["coderails@coderails"][0].installPath // empty' "$INSTALLED_PLUGINS_JSON" 2>/dev/null)
+  if [ -n "$install_path" ] && [ -d "$install_path/hooks/scripts" ]; then
+    INSTALLED_HOOKS="$install_path/hooks/scripts"
+  fi
+fi
+if [ -z "$INSTALLED_HOOKS" ] && [ -d "$CACHE_ROOT" ]; then
+  highest=$(ls "$CACHE_ROOT" 2>/dev/null | sort -V | tail -1)
+  if [ -n "$highest" ] && [ -d "$CACHE_ROOT/$highest/hooks/scripts" ]; then
+    INSTALLED_HOOKS="$CACHE_ROOT/$highest/hooks/scripts"
+  fi
+fi
 SOURCE_HOOKS="$HOME/Github/coderails/hooks/scripts"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -52,25 +84,26 @@ check() { # desc expected actual
   else printf 'FAIL - %s (expected %s, got %s)\n' "$1" "$2" "$3"; fails=$((fails+1)); fi
 }
 
-# ── Finding 1 & 3: installed plugin cache has NO no_edit_on_main.sh ──────────
-# This is the root cause of live-probe result #2 above (code-arm-on-main not
-# blocked). If this assertion ever flips to "present", the plugin has been
-# updated — re-run the live probe (steps 3/4 of plan.md Task 1) to confirm the
-# code-arm-on-main and tasks/*.md cases still behave as documented, then delete
-# this assertion's "MISSING" expectation and replace it with a live re-test.
+# ── Finding 1 & 3: installed plugin cache has no_edit_on_main.sh ────────────
+# Originally documented the 1.0.0 gap (MISSING) that was the root cause of
+# live-probe result #2 above (code-arm-on-main not blocked). The plugin
+# auto-updated to 1.1.0 on 2026-07-07, which closed the gap — flipped to
+# PRESENT accordingly. If this ever flips back to MISSING, re-run the live
+# probe (steps 3/4 of plan.md Task 1) to confirm the code-arm-on-main and
+# tasks/*.md cases still behave as documented.
 if [ -f "$INSTALLED_HOOKS/no_edit_on_main.sh" ]; then
   installed_state="PRESENT"
 else
   installed_state="MISSING"
 fi
-check "installed plugin (v1.0.0 cache) has no_edit_on_main.sh" "MISSING" "$installed_state"
+check "installed plugin (active cache) has no_edit_on_main.sh" "PRESENT" "$installed_state"
 
 if [ -f "$INSTALLED_HOOKS/enforce_pr_workflow.sh" ]; then
   installed_pr_state="PRESENT"
 else
   installed_pr_state="MISSING"
 fi
-check "installed plugin (v1.0.0 cache) has enforce_pr_workflow.sh" "MISSING" "$installed_pr_state"
+check "installed plugin (active cache) has enforce_pr_workflow.sh" "PRESENT" "$installed_pr_state"
 
 # ── Finding 3 (contrast): the coderails SOURCE checkout DOES have it ─────────
 if [ -f "$SOURCE_HOOKS/no_edit_on_main.sh" ]; then
@@ -120,7 +153,7 @@ if [ -f "$INSTALLED_HOOKS/test_gate.sh" ]; then
 else
   tg_state="MISSING"
 fi
-check "installed plugin (v1.0.0 cache) has test_gate.sh" "PRESENT" "$tg_state"
+check "installed plugin (active cache) has test_gate.sh" "PRESENT" "$tg_state"
 
 if [ -f "$INSTALLED_HOOKS/test_gate.sh" ]; then
   PROJ_PASS="$TMP/proj_pass"
