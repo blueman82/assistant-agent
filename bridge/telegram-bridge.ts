@@ -156,9 +156,12 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         await handleMessage(update.message);
       }
     }
-    // Drain whatever chat turns were queued by this batch before polling
-    // again, so replies land in order.
-    await drainFifo();
+    // Kick the FIFO drain off without blocking this poll cycle — a
+    // long-running turn (or one waiting on /stop) must never stall getUpdates,
+    // since /stop itself has to arrive via the next poll.
+    void drainFifo().catch((err) => {
+      console.error(`[telegram-bridge] drain error: ${err instanceof Error ? err.message : String(err)}`);
+    });
   }
 
   async function pollOnce(): Promise<void> {
