@@ -47,8 +47,13 @@ export function createTelegramApprovalSurface(config: TelegramConfig): ApprovalS
 
   return {
     async requestApproval(toolName, toolInput, hash) {
+      // Telegram caps callback_data at 64 BYTES total, so the hash must be
+      // truncated before the ":approve"/":deny" suffix is appended. Truncate
+      // to 32 chars — plenty of entropy to disambiguate concurrent requests
+      // — leaving headroom for the suffix.
+      const shortHash = hash.slice(0, 32);
       const text = `Approval requested for ${toolName}\n\n${JSON.stringify(toolInput, null, 2)}`;
-      await transport(`${apiBase}/sendMessage`, {
+      const sendRes = await transport(`${apiBase}/sendMessage`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -57,13 +62,17 @@ export function createTelegramApprovalSurface(config: TelegramConfig): ApprovalS
           reply_markup: {
             inline_keyboard: [
               [
-                { text: "Approve", callback_data: `${hash}:approve` },
-                { text: "Deny", callback_data: `${hash}:deny` },
+                { text: "Approve", callback_data: `${shortHash}:approve` },
+                { text: "Deny", callback_data: `${shortHash}:deny` },
               ],
             ],
           },
         }),
       });
+      const sendBody = (await sendRes.json()) as { ok: boolean; description?: string };
+      if (!sendRes.ok || !sendBody.ok) {
+        throw new Error(`Telegram sendMessage failed: ${sendBody.description ?? "unknown error"}`);
+      }
 
       let offset: number | undefined;
       // Long-poll getUpdates until a callback_query matching this hash
@@ -76,17 +85,32 @@ export function createTelegramApprovalSurface(config: TelegramConfig): ApprovalS
           { method: "GET" },
         );
         const body = (await res.json()) as {
-          result: Array<{ update_id: number; callback_query?: { data?: string } }>;
+          result: Array<{ update_id: number; callback_query?: { id: string; data?: string } }>;
         };
 
         for (const update of body.result ?? []) {
           offset = update.update_id + 1;
-          const data = update.callback_query?.data;
-          if (!data) continue;
+          const cb = update.callback_query;
+          const data = cb?.data;
+          if (!cb || !data) continue;
           const [dataHash, decision] = data.split(":");
-          if (dataHash === hash && (decision === "approve" || decision === "deny")) {
+          if (dataHash === shortHash && (decision === "approve" || decision === "deny")) {
+            await transport(`${apiBase}/answerCallbackQuery`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ callback_query_id: cb.id }),
+            });
             return decision;
           }
+
+          // Tap doesn't match this pending request (stale/foreign hash) —
+          // answer it anyway so the Telegram client's tap spinner resolves
+          // instead of hanging forever.
+          await transport(`${apiBase}/answerCallbackQuery`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ callback_query_id: cb.id, text: "Expired" }),
+          });
         }
 
         await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
