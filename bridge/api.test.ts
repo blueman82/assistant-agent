@@ -78,6 +78,26 @@ test("sendChunked splits at the last newline before the 4096 boundary when one e
   assert.equal(rejoined.length, text.length);
 });
 
+test("sendChunked never splits a surrogate pair across chunks when it straddles the 4096 boundary", async () => {
+  const { transport, calls } = makeStubTransport(() => ({ ok: true, result: {} }));
+  // An astral character (emoji, U+1F600) is a surrogate pair in UTF-16. Place
+  // it exactly at the 4096-unit boundary so a naive .slice(0, 4096) splits
+  // the pair: chunk 0 ends in the lone high surrogate, chunk 1 starts with
+  // the lone low surrogate.
+  const text = "a".repeat(4095) + "\u{1F600}" + "b".repeat(10);
+  await sendChunked({ token: "t", chatId: "1", transport }, text);
+  const sendCalls = calls.filter((c) => c.url.includes("/sendMessage"));
+  const texts = sendCalls.map((c) => (c.body as Record<string, unknown>)["text"] as string);
+  for (const t of texts) {
+    assert.equal(t.length, [...t].reduce((n, ch) => n + ch.length, 0), `chunk contains a lone surrogate: ${JSON.stringify(t)}`);
+    // A lone surrogate fails a strict UTF-8 round trip encode/decode.
+    const bytes = new TextEncoder().encode(t);
+    const decoded = new TextDecoder("utf-8", { fatal: true });
+    assert.doesNotThrow(() => decoded.decode(bytes), `chunk is not valid UTF-8 (lone surrogate): ${JSON.stringify(t)}`);
+  }
+  assert.equal(texts.join(""), text, "rejoined chunks must equal the original text exactly");
+});
+
 test("sendTyping calls sendChatAction with action 'typing'", async () => {
   const { transport, calls } = makeStubTransport(() => ({ ok: true, result: true }));
   await sendTyping({ token: "t", chatId: "1", transport });
