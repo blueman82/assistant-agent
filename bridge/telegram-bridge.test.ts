@@ -450,7 +450,10 @@ test("gate integrity: a gated send-class tool call issued during a bridge-dispat
   });
 
   await bridge.drainOnce();
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  // The real gate races the never-resolving approval surfaces against its
+  // own internal deny timeout (shortened to 200ms via SECRETARY_GATE_TIMEOUT_MS
+  // above) — wait past that so the timeout branch actually fires.
+  await new Promise((resolve) => setTimeout(resolve, 400));
   await bridge.stop();
 
   assert.ok(hookInvoked, "expected the real sendGateHook (wired via hooks.PreToolUse in runTurn) to have been invoked for the gated tool call");
