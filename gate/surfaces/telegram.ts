@@ -18,8 +18,8 @@ export interface TelegramCallbackQuery {
 }
 
 // Extends the base ApprovalSurface with an injected-updates seam: the
-// bridge owns the single getUpdates poll loop and feeds callback_query
-// updates in here rather than this surface polling for itself.
+// bridge owns the single long-poll loop and feeds callback_query updates in
+// here rather than this surface polling for itself.
 export interface TelegramApprovalSurface extends ApprovalSurface {
   // Resolves the pending approval matching this callback's hash prefix, if
   // any. Returns whether the callback was consumed by a pending request
