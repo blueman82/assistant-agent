@@ -269,6 +269,85 @@ test("/status replies without dispatching to runTurn", async () => {
   assert.ok(sendCall);
 });
 
+test("run() exits fatally on a 409/conflict getUpdates response — a second poller on the same token must never be silently tolerated", async () => {
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) {
+      return { ok: false, json: async () => ({ ok: false, description: "Conflict: terminated by other getUpdates request" }) } as Response;
+    }
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {},
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  const originalExit = process.exit;
+  let exitCode: number | undefined;
+  let exitCalled = false;
+  // @ts-expect-error — stubbing process.exit for the test; throwing instead
+  // of actually exiting lets run()'s while loop halt without killing the
+  // test runner process.
+  process.exit = (code?: number) => {
+    exitCalled = true;
+    exitCode = code;
+    throw new Error("process.exit stub halting run()");
+  };
+
+  try {
+    await assert.rejects(() => bridge.run(), /process\.exit stub/);
+  } finally {
+    process.exit = originalExit;
+  }
+
+  assert.equal(exitCalled, true, "expected run() to call process.exit on a 409/conflict getUpdates response");
+  assert.equal(exitCode, 1);
+});
+
+test("run() does NOT exit on a non-409/conflict poll error — only the single-poller conflict is fatal", async () => {
+  let callCount = 0;
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) {
+      callCount++;
+      if (callCount === 1) {
+        return { ok: false, json: async () => ({ ok: false, description: "Internal Server Error" }) } as Response;
+      }
+      return { ok: true, json: async () => ({ ok: true, result: [] }) } as Response;
+    }
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {},
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  const originalExit = process.exit;
+  let exitCalled = false;
+  // @ts-expect-error — stubbing process.exit for the test.
+  process.exit = () => {
+    exitCalled = true;
+    throw new Error("process.exit must not be called for a non-conflict error");
+  };
+
+  const runPromise = bridge.run();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await bridge.stop();
+  await runPromise;
+  process.exit = originalExit;
+
+  assert.equal(exitCalled, false, "a transient non-409 poll error must not trigger the fatal single-poller exit path");
+  assert.ok(callCount >= 2, "the poll loop should have retried after the transient error");
+});
+
 test("grep guard: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
   const source = await (await import("node:fs/promises")).readFile(new URL("./telegram-bridge.test.ts", import.meta.url), "utf8");
   const realFetchCall = /fetch\(\s*["'`]https:\/\/api\.telegram\.org/;
