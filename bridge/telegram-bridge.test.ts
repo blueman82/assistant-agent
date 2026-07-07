@@ -1,12 +1,23 @@
 // Fabricated Telegram creds — set before any import in this file (env-first
 // in gate/surfaces/telegram.ts:35-36) so secretary.ts's module-scope
-// loadTelegramConfig() call (secretary.ts:69, which runs once on first
+// loadTelegramConfig() call (secretary.ts:70, which runs once on first
 // import anywhere in this file, per ESM module caching) never reads the
 // real ~/.secretary/telegram.json and never constructs a surface capable of
-// sending to Gary's real Telegram chat. This must stay ahead of every
-// import in this file, static or dynamic.
+// sending to the operator's real Telegram chat. This must stay ahead of
+// every import in this file, static or dynamic.
 process.env["SECRETARY_TELEGRAM_TOKEN"] = "000000000:FAKE-TEST-TOKEN";
 process.env["SECRETARY_TELEGRAM_CHAT_ID"] = "1";
+
+// Same reasoning for the queue approval surface: without this override,
+// secretary.ts's module-scope createQueueApprovalSurface() call defaults to
+// ~/.claude/coderails-dashboard/approvals (queue.ts's DEFAULT_QUEUE_DIR) and
+// ~/.secretary/send-gate-audit.jsonl for the audit log — real paths under
+// the operator's home directory that a denied-by-timeout test call would
+// leave a stale "pending" entry in, which the real dashboard would then
+// render as a phantom approval card. Redirect both into a throwaway tmpdir.
+const testQueueDir = mkdtempSync(join(tmpdir(), "secretary-test-queue-"));
+process.env["SECRETARY_QUEUE_DIR"] = testQueueDir;
+process.env["SECRETARY_AUDIT_LOG_PATH"] = join(testQueueDir, "audit.jsonl");
 
 // Defense-in-depth on top of the env-creds fix above: every test in this
 // file injects its own stub transport (config.transport) rather than
