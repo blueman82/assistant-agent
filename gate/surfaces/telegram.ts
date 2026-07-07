@@ -9,7 +9,23 @@ export interface TelegramConfig {
   token: string;
   chatId: string;
   transport?: Transport;
-  pollIntervalMs?: number;
+}
+
+export interface TelegramCallbackQuery {
+  id: string;
+  data?: string;
+  from: { id: number };
+}
+
+// Extends the base ApprovalSurface with an injected-updates seam: the
+// bridge owns the single getUpdates poll loop and feeds callback_query
+// updates in here rather than this surface polling for itself.
+export interface TelegramApprovalSurface extends ApprovalSurface {
+  // Resolves the pending approval matching this callback's hash prefix, if
+  // any. Returns whether the callback was consumed by a pending request
+  // (true) or not (false) — a stray/expired/foreign tap either way gets
+  // answerCallbackQuery'd so the tapping client's spinner never hangs.
+  handleCallbackQuery(cb: TelegramCallbackQuery): Promise<boolean>;
 }
 
 // Reads SECRETARY_TELEGRAM_TOKEN / ~/.secretary/telegram.json — never
@@ -38,12 +54,19 @@ export function loadTelegramConfig(): { token: string; chatId: string } | undefi
   return undefined;
 }
 
-const DEFAULT_POLL_INTERVAL_MS = 2000;
+interface PendingRequest {
+  shortHash: string;
+  resolve: (decision: "approve" | "deny") => void;
+}
 
-export function createTelegramApprovalSurface(config: TelegramConfig): ApprovalSurface {
+export function createTelegramApprovalSurface(config: TelegramConfig): TelegramApprovalSurface {
   const transport = config.transport ?? fetch;
-  const pollIntervalMs = config.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const apiBase = `https://api.telegram.org/bot${config.token}`;
+
+  // Keyed by shortHash (32-char truncated hash) — the bridge's single
+  // getUpdates loop feeds callback_query updates through
+  // handleCallbackQuery, which looks up the matching pending request here.
+  const pending = new Map<string, PendingRequest>();
 
   // Best-effort: resolves the tapping client's spinner. Never lets a
   // transport/network failure here take down approval resolution itself.
@@ -88,53 +111,40 @@ export function createTelegramApprovalSurface(config: TelegramConfig): ApprovalS
         throw new Error(`Telegram sendMessage failed: ${sendBody.description ?? "unknown error"}`);
       }
 
-      let offset: number | undefined;
-      // Long-poll getUpdates until a callback_query matching this hash
-      // arrives. Loops indefinitely by design — the gate's own internal
-      // timeout race is what bounds this from the caller's side.
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const res = await transport(
-          `${apiBase}/getUpdates${offset !== undefined ? `?offset=${offset}` : ""}`,
-          { method: "GET" },
-        );
-        const body = (await res.json()) as {
-          ok: boolean;
-          description?: string;
-          result?: Array<{ update_id: number; callback_query?: { id: string; data?: string; from?: { id: number } } }>;
-        };
-        if (!res.ok || !body.ok) {
-          throw new Error(`Telegram getUpdates failed: ${body.description ?? "unknown error"}`);
-        }
+      return new Promise((resolve) => {
+        pending.set(shortHash, { shortHash, resolve });
+      });
+    },
 
-        for (const update of body.result ?? []) {
-          offset = update.update_id + 1;
-          const cb = update.callback_query;
-          const data = cb?.data;
-          if (!cb || !data) continue;
-
-          // Only the configured owner's taps can resolve an approval — a
-          // matching callback_data alone isn't enough (e.g. a forwarded
-          // approval card tapped by someone else).
-          if (String(cb.from?.id) !== config.chatId) {
-            await answerCallback(cb.id, "Not authorized");
-            continue;
-          }
-
-          const [dataHash, decision] = data.split(":");
-          if (dataHash === shortHash && (decision === "approve" || decision === "deny")) {
-            await answerCallback(cb.id);
-            return decision;
-          }
-
-          // Tap doesn't match this pending request (stale/foreign hash) —
-          // answer it anyway so the Telegram client's tap spinner resolves
-          // instead of hanging forever.
-          await answerCallback(cb.id, "Expired");
-        }
-
-        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+    async handleCallbackQuery(cb) {
+      const data = cb.data;
+      if (!data) {
+        await answerCallback(cb.id, "Expired");
+        return false;
       }
+
+      // Only the configured owner's taps can resolve an approval — a
+      // matching callback_data alone isn't enough (e.g. a forwarded
+      // approval card tapped by someone else).
+      if (String(cb.from.id) !== config.chatId) {
+        await answerCallback(cb.id, "Not authorized");
+        return false;
+      }
+
+      const [dataHash, decision] = data.split(":");
+      const match = dataHash !== undefined ? pending.get(dataHash) : undefined;
+      if (match && (decision === "approve" || decision === "deny")) {
+        pending.delete(match.shortHash);
+        await answerCallback(cb.id);
+        match.resolve(decision);
+        return true;
+      }
+
+      // Tap doesn't match any pending request (stale/foreign hash) —
+      // answer it anyway so the Telegram client's tap spinner resolves
+      // instead of hanging forever.
+      await answerCallback(cb.id, "Expired");
+      return false;
     },
   };
 }
