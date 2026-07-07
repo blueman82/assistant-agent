@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createBridge } from "./telegram-bridge.ts";
+import { runTurn as realRunTurn } from "../secretary.ts";
+import { createSendGateHook } from "../gate/sendGate.ts";
+import { GATED_TOOL_NAMES } from "../gate/sendGate.ts";
+import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
 // Stub Telegram transport: scripts a fixed sequence of getUpdates responses
 // (by call count), answers every other method with ok:true, and records all
