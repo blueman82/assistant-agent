@@ -17,7 +17,18 @@ const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 // the plain-text rule in prompts/system.md — deterministic stripping can't
 // lose a message the way a parse_mode 400 would.
 export function stripMarkdown(text: string): string {
-  return text;
+  return (
+    text
+      .replace(/^#{1,6}\s+/gm, "")
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)")
+      .replace(/\*\*(\S(?:[^*]*\S)?)\*\*/g, "$1")
+      // Emphasis content must not start/end with whitespace, so a lone
+      // asterisk or underscore used literally (maths, snake_case URLs) is
+      // never treated as a marker.
+      .replace(/\*(\S(?:[^*]*\S)?)\*/g, "$1")
+      .replace(/__(\S(?:[^_]*\S)?)__/g, "$1")
+      .replace(/`([^`]+)`/g, "$1")
+  );
 }
 
 // Strips the bot token out of any URL string before it reaches a log line
