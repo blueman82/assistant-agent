@@ -191,7 +191,10 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
           await pollOnce();
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          if (false) {
+          if (message.includes("409") || message.toLowerCase().includes("conflict")) {
+            // A second getUpdates consumer on this token is fatal — Telegram
+            // allows exactly one. Exit loud; launchd restarts the process.
+            console.error(`[telegram-bridge] FATAL: ${message} — a second getUpdates consumer detected, exiting.`);
             process.exit(1);
           }
           console.error(`[telegram-bridge] poll error: ${message}`);
