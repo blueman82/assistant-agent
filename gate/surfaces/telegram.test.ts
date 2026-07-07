@@ -157,6 +157,57 @@ test("a matched callback_query triggers answerCallbackQuery on the transport", a
   assert.ok(calls.some((c) => c.url.includes("/answerCallbackQuery")), "expected answerCallbackQuery to be called");
 });
 
+test("a callback_query from a from.id other than the configured owner chatId is ignored, not resolved as approval", async () => {
+  const hash = "owner-check-hash";
+  const { transport } = makeStubTransport({
+    sendMessage: { ok: true, result: { message_id: 1 } },
+    getUpdatesSequence: [
+      {
+        ok: true,
+        result: [
+          {
+            update_id: 1,
+            callback_query: { id: "cb-foreign", data: `${hash}:approve`, from: { id: 999 }, message: { message_id: 1 } },
+          },
+        ],
+      },
+      {
+        ok: true,
+        result: [
+          {
+            update_id: 2,
+            callback_query: { id: "cb-owner", data: `${hash}:approve`, from: { id: 12345 }, message: { message_id: 1 } },
+          },
+        ],
+      },
+    ],
+  });
+
+  const surface = createTelegramApprovalSurface({ token: "t", chatId: "12345", transport, pollIntervalMs: 5 });
+  const decision = await surface.requestApproval("mcp__claude_ai_Slack__slack_send_message", { text: "hi" }, hash);
+  assert.equal(decision, "approve");
+});
+
+test("requestApproval rejects when getUpdates responds with ok: false, instead of silently polling forever", async () => {
+  const hash = "getupdates-fail-hash";
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/sendMessage")) {
+      return { ok: true, json: async () => ({ ok: true, result: { message_id: 1 } }) } as Response;
+    }
+    if (url.includes("/getUpdates")) {
+      return { ok: true, json: async () => ({ ok: false, description: "Conflict: terminated by other getUpdates request" }) } as Response;
+    }
+    throw new Error(`unexpected URL in stub transport: ${url}`);
+  };
+
+  const surface = createTelegramApprovalSurface({ token: "t", chatId: "1", transport, pollIntervalMs: 5 });
+  await assert.rejects(
+    () => surface.requestApproval("mcp__claude_ai_Slack__slack_send_message", { text: "hi" }, hash),
+    /Conflict: terminated by other getUpdates request/,
+  );
+});
+
 test("grep guard: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
   const source = await (await import("node:fs/promises")).readFile(new URL("./telegram.test.ts", import.meta.url), "utf8");
   // Excludes this assertion's own string literal from the check by matching
