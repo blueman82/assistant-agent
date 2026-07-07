@@ -149,14 +149,24 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   async function processUpdates(updates: TelegramUpdate[]): Promise<void> {
     for (const update of updates) {
       offset = update.update_id + 1;
-      if (update.callback_query) {
-        // Callbacks are routed immediately — never queued behind pending
-        // chat turns, since a gate decision may be blocking one.
-        await handleCallbackQuery(update.callback_query);
-        continue;
-      }
-      if (update.message) {
-        await handleMessage(update.message);
+      try {
+        if (update.callback_query) {
+          // Callbacks are routed immediately — never queued behind pending
+          // chat turns, since a gate decision may be blocking one.
+          await handleCallbackQuery(update.callback_query);
+          continue;
+        }
+        if (update.message) {
+          await handleMessage(update.message);
+        }
+      } catch (err) {
+        // offset has already advanced past this update — Telegram will never
+        // redeliver it, so a throw here (e.g. a transient reply() failure
+        // acking /reset, /status, or /stop) must not be allowed to propagate
+        // to run()'s generic poll-error backoff, which would look like a
+        // getUpdates failure rather than the real cause. Log and move on to
+        // the next update in this batch instead of losing the whole poll.
+        console.error(`[telegram-bridge] error handling update ${update.update_id}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     // Kick the FIFO drain off without blocking this poll cycle — a
