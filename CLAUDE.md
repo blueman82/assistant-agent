@@ -17,7 +17,7 @@ npm install                 # install dependencies
 npx tsx secretary.ts        # run interactively
 npx tsx secretary.ts "..."  # run a one-shot request, then drop into interactive
 npm start                   # alias for tsx secretary.ts
-npm run bridge               # tsx bridge/telegram-bridge.ts (Telegram front-end)
+npm run bridge              # tsx bridge/telegram-bridge.ts (Telegram front-end)
 npm run typecheck           # tsc --noEmit
 npm test                    # gate/**/*.test.ts + bridge/**/*.test.ts + hooks/scripts/tests/probe_conventions.test.sh
 ```
