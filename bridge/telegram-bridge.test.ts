@@ -373,6 +373,17 @@ test("gate integrity: a gated send-class tool call issued during a bridge-dispat
   // tool call, with no approval surface ever resolving. If someone removes
   // the hooks.PreToolUse wiring from runTurn, options.hooks is undefined
   // here and this test throws/fails instead of silently passing.
+  //
+  // secretary.ts is imported dynamically (not via a static top-of-file
+  // import) so this env var — which shortens the gate's internal deny
+  // timeout for the test below — is guaranteed to be set before
+  // secretary.ts's module-scope createSendGateHook(...) call runs: ESM
+  // fully evaluates statically-imported modules before the importing
+  // module's own top-level statements execute, which would make a
+  // top-of-file env-var assignment run too late.
+  process.env["SECRETARY_GATE_TIMEOUT_MS"] = "200";
+  const { runTurn: realRunTurn } = await import("../secretary.ts");
+
   const { transport } = makeStubTransport([
     { ok: true, result: [{ update_id: 1, message: { message_id: 1, chat: { id: 12345 }, text: "send the slack message", from: { id: 12345 } } }] },
     { ok: true, result: [] },
