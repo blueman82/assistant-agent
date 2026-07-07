@@ -63,9 +63,9 @@ export function createTelegramApprovalSurface(config: TelegramConfig): TelegramA
   const transport = config.transport ?? fetch;
   const apiBase = `https://api.telegram.org/bot${config.token}`;
 
-  // Keyed by shortHash (32-char truncated hash) — the bridge's single
-  // getUpdates loop feeds callback_query updates through
-  // handleCallbackQuery, which looks up the matching pending request here.
+  // Keyed by shortHash (32-char truncated hash) — the bridge's single poll
+  // loop feeds callback_query updates through handleCallbackQuery, which
+  // looks up the matching pending request here.
   const pending = new Map<string, PendingRequest>();
 
   // Best-effort: resolves the tapping client's spinner. Never lets a
