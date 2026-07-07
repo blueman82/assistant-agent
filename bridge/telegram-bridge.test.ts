@@ -172,6 +172,49 @@ test("a callback_query is routed to handleCallbackQuery immediately, not queued 
   void calls;
 });
 
+test("a callback_query from an unauthorised from.id is still routed to the surface so its client's spinner is resolved via answerCallbackQuery", async () => {
+  const cbUpdate = {
+    ok: true,
+    result: [
+      {
+        update_id: 1,
+        callback_query: { id: "cb1", data: "somehash:approve", from: { id: 99999 } },
+      },
+    ],
+  };
+  const { transport } = makeStubTransport([cbUpdate, { ok: true, result: [] }]);
+
+  let handleCallbackQueryCalls = 0;
+  const surface = {
+    async requestApproval(): Promise<"approve" | "deny"> {
+      return new Promise(() => {});
+    },
+    async handleCallbackQuery(_cb: unknown): Promise<boolean> {
+      handleCallbackQueryCalls++;
+      return false;
+    },
+  };
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {},
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    telegramSurface: surface,
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await bridge.stop();
+
+  assert.equal(
+    handleCallbackQueryCalls,
+    1,
+    "an unauthorised callback_query must still reach the surface so it can answerCallbackQuery and clear the tapping client's spinner",
+  );
+});
+
 test("a message from a chat.id other than the configured owner is dropped, not dispatched to runTurn", async () => {
   const { transport } = makeStubTransport([
     messageUpdate(1, "hi from a stranger", /* chatId */ 999),
