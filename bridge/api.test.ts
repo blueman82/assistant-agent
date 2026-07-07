@@ -120,6 +120,62 @@ test("setMyCommands posts the given command list", async () => {
   assert.equal((body["commands"] as unknown[]).length, 3);
 });
 
+test("stripMarkdown removes ** bold markers keeping the content", () => {
+  assert.equal(stripMarkdown("an **urgent** reply"), "an urgent reply");
+});
+
+test("stripMarkdown removes single-asterisk italic markers keeping the content", () => {
+  assert.equal(stripMarkdown("that *really* matters"), "that really matters");
+});
+
+test("stripMarkdown removes double-underscore markers keeping the content", () => {
+  assert.equal(stripMarkdown("__note__ this"), "note this");
+});
+
+test("stripMarkdown removes leading header hashes at line start", () => {
+  assert.equal(stripMarkdown("## Today\nfirst thing"), "Today\nfirst thing");
+  assert.equal(stripMarkdown("### Deeper\nbody"), "Deeper\nbody");
+});
+
+test("stripMarkdown removes inline-code backticks keeping the content", () => {
+  assert.equal(stripMarkdown("run `npm start` now"), "run npm start now");
+});
+
+test("stripMarkdown converts [text](url) links to text (url)", () => {
+  assert.equal(stripMarkdown("[calendar](https://cal.example/week)"), "calendar (https://cal.example/week)");
+});
+
+test("stripMarkdown leaves list hyphens alone", () => {
+  assert.equal(stripMarkdown("- milk\n- eggs"), "- milk\n- eggs");
+});
+
+test("stripMarkdown is a no-op on already-plain text", () => {
+  const plain = "Meeting moved to 3pm. Room 4. Bring the printout.";
+  assert.equal(stripMarkdown(plain), plain);
+});
+
+test("stripMarkdown does not mangle URLs containing single underscores", () => {
+  assert.equal(stripMarkdown("see https://docs.example/api_reference_v2"), "see https://docs.example/api_reference_v2");
+});
+
+test("stripMarkdown leaves genuine asterisk maths with surrounding spaces alone", () => {
+  assert.equal(stripMarkdown("2 * 3 * 4 = 24"), "2 * 3 * 4 = 24");
+});
+
+test("stripMarkdown handles a mixed markdown message in one pass", () => {
+  assert.equal(
+    stripMarkdown("## Inbox\n**Two** new mails, reply via *phone* or [webmail](https://mail.example)"),
+    "Inbox\nTwo new mails, reply via phone or webmail (https://mail.example)",
+  );
+});
+
+test("sendChunked strips markdown before the text reaches the sendMessage body", async () => {
+  const { transport, calls } = makeStubTransport(() => ({ ok: true, result: {} }));
+  await sendChunked({ token: "t", chatId: "1", transport }, "**Done.** Draft saved to `drafts/`");
+  const sendCalls = calls.filter((c) => c.url.includes("/sendMessage"));
+  assert.equal((sendCalls[0]!.body as Record<string, unknown>)["text"], "Done. Draft saved to drafts/");
+});
+
 test("grep guard: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
   const source = await (await import("node:fs/promises")).readFile(new URL("./api.test.ts", import.meta.url), "utf8");
   const realFetchCall = /fetch\(\s*["'`]https:\/\/api\.telegram\.org/;
