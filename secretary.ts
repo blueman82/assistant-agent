@@ -56,8 +56,12 @@ const auditLogPath = join(homedir(), ".secretary", "send-gate-audit.jsonl");
 const approvalSurfaces = [createTerminalApprovalSurface()];
 
 const telegramConfig = loadTelegramConfig();
-if (telegramConfig) {
-  approvalSurfaces.push(createTelegramApprovalSurface(telegramConfig));
+// Exported so the Telegram bridge (bridge/telegram-bridge.ts) can feed
+// callback_query taps into THIS surface instance rather than constructing
+// its own — the gate's raceSurfaces() call only ever sees this one.
+export const telegramSurface = telegramConfig ? createTelegramApprovalSurface(telegramConfig) : undefined;
+if (telegramSurface) {
+  approvalSurfaces.push(telegramSurface);
 } else {
   console.log("[secretary] Telegram approval surface disabled (no SECRETARY_TELEGRAM_TOKEN / ~/.secretary/telegram.json) — gate remains functional via terminal/queue surfaces.");
 }
