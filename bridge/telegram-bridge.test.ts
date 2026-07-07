@@ -380,23 +380,22 @@ test("gate integrity: a gated send-class tool call issued during a bridge-dispat
     { ok: true, result: [] },
   ]);
 
-  const neverApproves = { requestApproval: () => new Promise<"approve" | "deny">(() => {}) };
-  const sendGateHook = createSendGateHook([neverApproves], "/dev/null");
-
   let hookInvoked = false;
   let hookDecision: string | undefined;
 
-  const fakeQueryFn = ((_params: { prompt: string; options?: { hooks?: Record<string, { hooks: unknown[] }[]> } }) => {
+  type FakeHookCallback = (
+    input: unknown,
+    toolUseID: string | undefined,
+    options: { signal: AbortSignal },
+  ) => Promise<{ hookSpecificOutput?: { permissionDecision?: string } }>;
+
+  const fakeQueryFn: Parameters<typeof realRunTurn>[3] = ((_params) => {
     async function* generate(): AsyncGenerator<SDKMessage, void> {
-      const preToolUseHooks = _params.options?.hooks?.["PreToolUse"];
+      const preToolUseHooks = (_params.options as { hooks?: Record<string, { hooks: unknown[] }[]> } | undefined)?.hooks?.["PreToolUse"];
       if (!preToolUseHooks || preToolUseHooks.length === 0) {
         throw new Error("no hooks.PreToolUse wired into runTurn's query() options — gate wiring is missing");
       }
-      const hook = preToolUseHooks[0]!.hooks[0] as (
-        input: unknown,
-        toolUseID: string | undefined,
-        options: { signal: AbortSignal },
-      ) => Promise<{ hookSpecificOutput?: { permissionDecision?: string } }>;
+      const hook = preToolUseHooks[0]!.hooks[0] as FakeHookCallback;
 
       hookInvoked = true;
       const result = await hook(
@@ -427,18 +426,13 @@ test("gate integrity: a gated send-class tool call issued during a bridge-dispat
       }
     }
     return generate();
-  }) as typeof import("../secretary.ts").runTurn extends (...args: infer _A) => unknown ? never : never;
+  }) as Parameters<typeof realRunTurn>[3];
 
   const wrappedRunTurn = async (input: string, emit: (line: string) => void, signal: AbortSignal): Promise<void> => {
     // Bind the fake queryFn seam onto the REAL runTurn — the same function
     // secretary.ts exports and the bridge calls in production — rather than
     // reimplementing any gate logic here.
-    await realRunTurn(
-      input,
-      emit,
-      signal,
-      fakeQueryFn as unknown as Parameters<typeof realRunTurn>[3],
-    );
+    await realRunTurn(input, emit, signal, fakeQueryFn);
   };
 
   const bridge = createBridge({
