@@ -76,8 +76,8 @@ test("a callback_query for a DIFFERENT hash is ignored, not resolved as this req
   const { transport } = makeStubTransport({
     sendMessage: { ok: true, result: { message_id: 1 } },
     getUpdatesSequence: [
-      { ok: true, result: [{ update_id: 1, callback_query: { id: "cb-other", data: "other-hash:approve", message: { message_id: 1 } } }] },
-      { ok: true, result: [{ update_id: 2, callback_query: { id: "cb-mine", data: `${hash}:approve`, message: { message_id: 1 } } }] },
+      { ok: true, result: [{ update_id: 1, callback_query: { id: "cb-other", data: "other-hash:approve", from: { id: 1 }, message: { message_id: 1 } } }] },
+      { ok: true, result: [{ update_id: 2, callback_query: { id: "cb-mine", data: `${hash}:approve`, from: { id: 1 }, message: { message_id: 1 } } }] },
     ],
   });
 
