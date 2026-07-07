@@ -99,8 +99,11 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
 
   async function handleCallbackQuery(cb: TelegramCallbackQuery): Promise<void> {
     if (String(cb.from.id) !== config.chatId) {
-      console.error(`[telegram-bridge] rejected callback_query from unauthorised from_id=${cb.from.id}`);
-      return;
+      // Still routed to the surface (not dropped here) — its own auth check
+      // calls answerCallbackQuery so the tapping client's button spinner
+      // resolves instead of hanging forever. Only logged here for the audit
+      // trail of rejected ingress.
+      console.error(`[telegram-bridge] unauthorised callback_query from from_id=${cb.from.id}`);
     }
     if (options.telegramSurface) {
       await options.telegramSurface.handleCallbackQuery(cb);
@@ -191,8 +194,11 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
           await pollOnce();
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          if (false) {
-            // MUTATION TEST — verifying finding claim
+          if (message.includes("409") || message.toLowerCase().includes("conflict")) {
+            // A second getUpdates consumer on this token is fatal — Telegram
+            // allows exactly one. Exit loud; launchd restarts the process.
+            console.error(`[telegram-bridge] FATAL: ${message} — a second getUpdates consumer detected, exiting.`);
+            process.exit(1);
           }
           console.error(`[telegram-bridge] poll error: ${message}`);
           await new Promise((resolve) => setTimeout(resolve, backoffMs));
