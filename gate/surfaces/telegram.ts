@@ -99,14 +99,28 @@ export function createTelegramApprovalSurface(config: TelegramConfig): ApprovalS
           { method: "GET" },
         );
         const body = (await res.json()) as {
-          result: Array<{ update_id: number; callback_query?: { id: string; data?: string } }>;
+          ok: boolean;
+          description?: string;
+          result?: Array<{ update_id: number; callback_query?: { id: string; data?: string; from?: { id: number } } }>;
         };
+        if (!res.ok || !body.ok) {
+          throw new Error(`Telegram getUpdates failed: ${body.description ?? "unknown error"}`);
+        }
 
         for (const update of body.result ?? []) {
           offset = update.update_id + 1;
           const cb = update.callback_query;
           const data = cb?.data;
           if (!cb || !data) continue;
+
+          // Only the configured owner's taps can resolve an approval — a
+          // matching callback_data alone isn't enough (e.g. a forwarded
+          // approval card tapped by someone else).
+          if (String(cb.from?.id) !== config.chatId) {
+            await answerCallback(cb.id, "Not authorized");
+            continue;
+          }
+
           const [dataHash, decision] = data.split(":");
           if (dataHash === shortHash && (decision === "approve" || decision === "deny")) {
             await answerCallback(cb.id);
