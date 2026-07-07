@@ -158,6 +158,7 @@ export async function runTurn(
         },
       ],
     },
+    // hooks: { PreToolUse: [ { matcher: ".*", hooks: [sendGateHook] } ] },
     agent: "secretary",
     agents: {
       secretary: {
