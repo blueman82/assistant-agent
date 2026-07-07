@@ -1,14 +1,6 @@
-// Short-circuits the send-gate's internal deny timeout (60s default) so the
-// "gate integrity" test below observes a real timeout-deny in well under a
-// second instead of waiting out the production value — must be set before
-// secretary.ts's static import below runs its module-scope
-// createSendGateHook(...) call.
-process.env["SECRETARY_GATE_TIMEOUT_MS"] = "200";
-
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createBridge } from "./telegram-bridge.ts";
-import { runTurn as realRunTurn } from "../secretary.ts";
 import { GATED_TOOL_NAMES } from "../gate/sendGate.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
