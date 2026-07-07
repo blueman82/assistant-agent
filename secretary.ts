@@ -58,7 +58,12 @@ const mcpServers = {};
 // Constructed once at module scope so approval state (the one-shot Map) and
 // the audit log persist across turns within a session, not reset per-turn.
 // ---------------------------------------------------------------------------
-const auditLogPath = join(homedir(), ".secretary", "send-gate-audit.jsonl");
+// Audit-log path override — same env-seam idiom as SECRETARY_GATE_TIMEOUT_MS
+// below; unset in production (falls back to the real ~/.secretary path), so
+// tests can redirect audit writes away from the operator's real home
+// directory.
+const auditLogPath = process.env["SECRETARY_AUDIT_LOG_PATH"]
+  ?? join(homedir(), ".secretary", "send-gate-audit.jsonl");
 
 const approvalSurfaces = [createTerminalApprovalSurface()];
 
@@ -73,9 +78,27 @@ if (telegramSurface) {
   console.log("[secretary] Telegram approval surface disabled (no SECRETARY_TELEGRAM_TOKEN / ~/.secretary/telegram.json) — gate remains functional via terminal/queue surfaces.");
 }
 
-approvalSurfaces.push(createQueueApprovalSurface());
+// Queue-dir override — same env-seam idiom as above; unset in production
+// (falls back to createQueueApprovalSurface's own DEFAULT_QUEUE_DIR under
+// ~/.claude/coderails-dashboard/approvals), so tests can redirect queue
+// writes away from the operator's real dashboard queue directory rather
+// than leaving stale "pending" entries the dashboard would render as
+// phantom approval cards.
+approvalSurfaces.push(
+  process.env["SECRETARY_QUEUE_DIR"]
+    ? createQueueApprovalSurface(process.env["SECRETARY_QUEUE_DIR"])
+    : createQueueApprovalSurface(),
+);
 
-const sendGateHook = createSendGateHook(approvalSurfaces, auditLogPath);
+// Internal deny-timeout override — unset in production (falls back to
+// createSendGateHook's own 60s default); exists so tests can exercise the
+// real gate's timeout-denies-by-default path without waiting 60s.
+const gateTimeoutMs = process.env["SECRETARY_GATE_TIMEOUT_MS"]
+  ? parseInt(process.env["SECRETARY_GATE_TIMEOUT_MS"], 10)
+  : undefined;
+const sendGateHook = gateTimeoutMs !== undefined
+  ? createSendGateHook(approvalSurfaces, auditLogPath, new Map(), gateTimeoutMs)
+  : createSendGateHook(approvalSurfaces, auditLogPath);
 
 // ---------------------------------------------------------------------------
 // Session state — module-scoped so it persists across turns within a
@@ -104,8 +127,16 @@ export type TurnEmit = (line: string) => void;
 // query when triggered (wired to an AbortController the caller owns — e.g.
 // a terminal 'q' keypress or a Telegram /stop command). Session continuity
 // (resume) is tracked via the module-scoped sessionId above and updated as
-// the SDK's init message reports it.
-export async function runTurn(userInput: string, emit: TurnEmit, signal: AbortSignal): Promise<void> {
+// the SDK's init message reports it. `queryFn` defaults to the real SDK
+// query() — injectable (matching the repo's transport/surface idiom) so
+// tests can exercise the real PreToolUse hook wiring above without hitting
+// the network.
+export async function runTurn(
+  userInput: string,
+  emit: TurnEmit,
+  signal: AbortSignal,
+  queryFn: typeof query = query,
+): Promise<void> {
   turnCount++;
 
   const abortController = new AbortController();
@@ -153,7 +184,7 @@ export async function runTurn(userInput: string, emit: TurnEmit, signal: AbortSi
     ...(sessionId ? { resume: sessionId } : {}),
   };
 
-  const stream = query({ prompt: userInput, options });
+  const stream = queryFn({ prompt: userInput, options });
 
   try {
     for await (const msg of stream as AsyncIterable<SDKMessage>) {

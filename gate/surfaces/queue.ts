@@ -63,6 +63,13 @@ export function createQueueApprovalSurface(
             // Keep polling — see comment above.
           }
         }, pollIntervalMs);
+        // This surface can lose the raceSurfaces() race (e.g. the gate's own
+        // internal timeout, or another surface, resolves first) with no way
+        // for the caller to cancel it — ApprovalSurface has no cancellation
+        // signal. unref() so a losing poll loop never keeps the process from
+        // exiting; it just polls harmlessly in the background until the file
+        // is eventually written or the process exits on its own.
+        interval.unref();
       });
     },
   };
