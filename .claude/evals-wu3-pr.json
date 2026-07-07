@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "scope": "pr",
+  "task_ref": "wu3-prompts-wiki",
+  "tier": 0,
+  "tier_justification": "single work-unit, prose/docs-only diff (prompts/system.md, AGENTS.md, deletion of scratch .claude/gated-tools-verified.md — verified via `git diff main..wu3-prompts-wiki --name-only`, zero non-.md files touched), no irreversible/outward surface. WU3-1 (the loop-frozen eval for this unit, see pr-eval-refs/wu3-prompts-wiki.md) already covers the full goal state: wiki lint passes and the 3 pre-existing stray commits are present on origin/main.",
+  "frozen_at": "2026-07-07T07:04:36Z",
+  "frozen_sha": "a35a36b11861820ff06d28e09ac878149d259ee2",
+  "evals": [
+    {
+      "id": "WU3-1",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "fresh-clone",
+      "assert": "assistant-agent-wiki lint passes post-alignment (no contradictions, no orphaned pages, no stale 90+ day pages covering active code) AND the 3 pre-existing stray commits (bf76330, 9069f42, 34b9c53) are present on origin/main.",
+      "cmd": "git -C /Users/harrison/Github/assistant-agent-wiki fetch origin >/dev/null 2>&1; for sha in bf76330 9069f42 34b9c53; do git -C /Users/harrison/Github/assistant-agent-wiki merge-base --is-ancestor \"$sha\" origin/main || { echo \"MISSING: $sha\"; exit 1; }; done; echo 'all 3 stray commits present on origin/main'",
+      "negative_control": "git -C /Users/harrison/Github/assistant-agent-wiki merge-base --is-ancestor 0000000000000000000000000000000000000000 origin/main && echo UNEXPECTED_PASS || echo 'correctly failed: synthetic all-zero SHA is not an ancestor of origin/main'",
+      "status": "pass",
+      "evidence": "Positive: `git -C /Users/harrison/Github/assistant-agent-wiki fetch origin && git merge-base --is-ancestor <sha> origin/main` exit 0 for all three of bf76330, 9069f42, 34b9c53 (confirmed via `git log origin/main -6 --oneline` showing all three plus 3 new commits: 56b7e38 'Create documentation: send-gate.md', 7ee25d2 'Update documentation: index.md', f3cd733 'Update documentation: log.md', pushed dfb8fa0..f3cd733). Negative control: `git merge-base --is-ancestor 0000000000000000000000000000000000000000 origin/main` exits non-zero ('Not a valid object name 0000...'), proving the ancestor check can fail and isn't vacuously true. Wiki-lint pass performed manually (no automated wiki-lint script exists in this repo; skill is prompt-driven per skills/wiki-lint/SKILL.md): checked frontmatter dates on all 10 non-index/log pages (oldest 2026-06-07, newest 2026-07-07, none exceed the 90-day staleness threshold), checked every [[wiki-link]] target resolves to an existing file (2 pre-existing forward-references to capabilities/email and capabilities/calendar, both explicitly marked 'Not yet documented.' in index.md — a known, intentional gap predating this PR, not a new orphan), checked inbound-link count for the new capabilities/send-gate.md page (1 inbound from index.md, consistent with capabilities/tasks.md's own 1-inbound count) confirming it is not orphaned. No contradictions found between send-gate.md and existing capabilities/slack.md or architecture/mcp-integrations.md."
+    }
+  ],
+  "amendments": [
+    {
+      "eval": "WU3-1",
+      "when": "2026-07-07T07:09:35Z",
+      "why": "review-pr found 2 important findings (AGENTS.md git-config block fabricated vs the real workflow.config.yaml schema; gated-tools header overclaimed live-verification for Slack) unrelated to WU3-1's own assertion (wiki lint + stray-commit presence). Both fixed on branch (commits ac... through 3dc8180); WU3-1's underlying facts (wiki lint result, commit ancestry) are unaffected by these prose fixes, so status stays pass. head_sha updated to the post-fix head for grading."
+    }
+  ],
+  "result": null,
+  "graded_at": null,
+  "head_sha": "787c6a7af0a597784c23e4c9592d915d0b4d313a"
+}
