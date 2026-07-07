@@ -54,8 +54,12 @@ CACHE_ROOT="$HOME/.claude/plugins/cache/coderails/coderails"
 # Resolve the ACTIVE installed plugin path rather than hardcoding a version
 # string — the plugin auto-updates (finding 3 above happened because a
 # hardcoded 1.0.0 path silently kept testing a superseded install). Prefer the
-# installPath jq reports live; fall back to the newest cache dir by mtime if
-# jq or the expected key is unavailable.
+# installPath jq reports live; fall back to the HIGHEST-VERSION cache dir
+# (sort -V, not mtime) if jq or the expected key is unavailable — multiple
+# cache dirs can share an identical mtime (observed: 1.0.0 and 1.1.0 both
+# carry the same install/extract timestamp on this machine), so `ls -t` can
+# tie-break to a stale, superseded version. Version-sort is deterministic
+# regardless of mtime/clock skew.
 INSTALLED_HOOKS=""
 if command -v jq >/dev/null 2>&1 && [ -f "$INSTALLED_PLUGINS_JSON" ]; then
   install_path=$(jq -r '.plugins["coderails@coderails"][0].installPath // empty' "$INSTALLED_PLUGINS_JSON" 2>/dev/null)
@@ -64,9 +68,9 @@ if command -v jq >/dev/null 2>&1 && [ -f "$INSTALLED_PLUGINS_JSON" ]; then
   fi
 fi
 if [ -z "$INSTALLED_HOOKS" ] && [ -d "$CACHE_ROOT" ]; then
-  newest=$(ls -t "$CACHE_ROOT" 2>/dev/null | head -1)
-  if [ -n "$newest" ] && [ -d "$CACHE_ROOT/$newest/hooks/scripts" ]; then
-    INSTALLED_HOOKS="$CACHE_ROOT/$newest/hooks/scripts"
+  highest=$(ls "$CACHE_ROOT" 2>/dev/null | sort -V | tail -1)
+  if [ -n "$highest" ] && [ -d "$CACHE_ROOT/$highest/hooks/scripts" ]; then
+    INSTALLED_HOOKS="$CACHE_ROOT/$highest/hooks/scripts"
   fi
 fi
 SOURCE_HOOKS="$HOME/Github/coderails/hooks/scripts"
