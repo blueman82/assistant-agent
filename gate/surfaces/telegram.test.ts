@@ -37,6 +37,7 @@ test("requestApproval sends an inline-keyboard message and resolves approve on a
             callback_query: {
               id: "cb1",
               data: `${hash}:approve`,
+              from: { id: 12345 },
               message: { message_id: 42 },
             },
           },
