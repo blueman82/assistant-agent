@@ -6,12 +6,19 @@
 
 ## Git config (read by wiki-lint/wiki-ingest/wiki-query)
 
+The vault's own config, `assistant-agent-wiki/.claude/workflow.config.yaml`:
+
 ```yaml
-git:
-  worktree: false
+project: assistant-agent-wiki
+wiki_path: .
+worktree_base: /Users/harrison/Github
+worktree_script: null
+jira: null
+engineering_principles_paths: null
+engineering_principles_skill: null
 ```
 
-This is a personal wiki: writes land directly on `assistant-agent-wiki`'s `main`, no branch/PR ceremony. Confirmed against the vault's own history (three pre-existing commits landed straight on `main` before this file existed).
+`worktree_script: null` (no worktree/PR flow configured) means writes land directly on `assistant-agent-wiki`'s `main`, no branch/PR ceremony. Confirmed against the vault's own history (three pre-existing commits landed straight on `main` before this file existed).
 
 ## Schema lineage
 
