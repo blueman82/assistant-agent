@@ -37,6 +37,109 @@ function messageUpdate(updateId: number, text: string, chatId = 12345) {
   };
 }
 
+// This test must run FIRST in the file (before any other test imports
+// secretary.ts) and sets SECRETARY_GATE_TIMEOUT_MS before its own dynamic
+// import of secretary.ts below — secretary.ts's module-scope
+// createSendGateHook(...) call runs once, at first import, and node:test
+// runs tests in a single file sequentially in declaration order (no
+// concurrency is configured anywhere in this file), so being first
+// guarantees this env var is visible when the real gate hook is built,
+// rather than racing a later test's own import of the same (ESM-cached)
+// module.
+test("gate integrity: a gated send-class tool call issued during a bridge-dispatched turn, with no approval, is denied via the real runTurn/sendGateHook wiring", async () => {
+  // Drives the bridge with a stub Telegram transport AND the real runTurn
+  // (imported from secretary.ts, not a runTurnStub) so this test exercises
+  // the actual hooks.PreToolUse wiring at bridge/telegram-bridge.ts:133 that
+  // secretary.ts's real runTurn sets up at secretary.ts:134-141 — not a
+  // bypass. The real query() would hit the network, so a fake queryFn is
+  // injected via runTurn's queryFn seam (secretary.ts) that plays the one
+  // part only the network normally plays: reading the PreToolUse hook the
+  // caller wired in and invoking it exactly as the SDK does, for a gated
+  // tool call, with no approval surface ever resolving. If someone removes
+  // the hooks.PreToolUse wiring from runTurn, options.hooks is undefined
+  // here and this test throws/fails instead of silently passing.
+  process.env["SECRETARY_GATE_TIMEOUT_MS"] = "200";
+  const { runTurn: realRunTurn } = await import("../secretary.ts");
+
+  const { transport } = makeStubTransport([
+    { ok: true, result: [{ update_id: 1, message: { message_id: 1, chat: { id: 12345 }, text: "send the slack message", from: { id: 12345 } } }] },
+    { ok: true, result: [] },
+  ]);
+
+  let hookInvoked = false;
+  let hookDecision: string | undefined;
+
+  type FakeHookCallback = (
+    input: unknown,
+    toolUseID: string | undefined,
+    options: { signal: AbortSignal },
+  ) => Promise<{ hookSpecificOutput?: { permissionDecision?: string } }>;
+
+  const fakeQueryFn: Parameters<typeof realRunTurn>[3] = ((_params) => {
+    async function* generate(): AsyncGenerator<SDKMessage, void> {
+      const preToolUseHooks = (_params.options as { hooks?: Record<string, { hooks: unknown[] }[]> } | undefined)?.hooks?.["PreToolUse"];
+      if (!preToolUseHooks || preToolUseHooks.length === 0) {
+        throw new Error("no hooks.PreToolUse wired into runTurn's query() options — gate wiring is missing");
+      }
+      const hook = preToolUseHooks[0]!.hooks[0] as FakeHookCallback;
+
+      hookInvoked = true;
+      const result = await hook(
+        {
+          hook_event_name: "PreToolUse",
+          session_id: "test-session",
+          transcript_path: "/dev/null",
+          cwd: "/tmp",
+          tool_name: GATED_TOOL_NAMES[0]!,
+          tool_input: { channel: "#general", text: "unauthorised send" },
+        },
+        undefined,
+        { signal: new AbortController().signal },
+      );
+      hookDecision = result.hookSpecificOutput?.permissionDecision;
+
+      yield {
+        type: "system",
+        subtype: "init",
+        session_id: "fake-session",
+      } as unknown as SDKMessage;
+
+      if (hookDecision === "allow") {
+        yield {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "sent (should not happen — the gate should have denied this)" }] },
+        } as unknown as SDKMessage;
+      }
+    }
+    return generate();
+  }) as Parameters<typeof realRunTurn>[3];
+
+  const wrappedRunTurn = async (input: string, emit: (line: string) => void, signal: AbortSignal): Promise<void> => {
+    // Bind the fake queryFn seam onto the REAL runTurn — the same function
+    // secretary.ts exports and the bridge calls in production — rather than
+    // reimplementing any gate logic here.
+    await realRunTurn(input, emit, signal, fakeQueryFn);
+  };
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: wrappedRunTurn,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  // The real gate races the never-resolving approval surfaces against its
+  // own internal deny timeout (shortened to 200ms via SECRETARY_GATE_TIMEOUT_MS
+  // above) — wait past that so the timeout branch actually fires.
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  await bridge.stop();
+
+  assert.ok(hookInvoked, "expected the real sendGateHook (wired via hooks.PreToolUse in runTurn) to have been invoked for the gated tool call");
+  assert.equal(hookDecision, "deny", "a gated send-class tool call with no approval must be denied by the real gate wiring, not allowed through");
+});
+
 test("a text message round-trips through the bridge's FIFO dispatch into runTurn and the reply is sent back via sendChunked", async () => {
   const { transport, calls } = makeStubTransport([
     messageUpdate(1, "hello"),
