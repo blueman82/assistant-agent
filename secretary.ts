@@ -81,6 +81,7 @@ approvalSurfaces.push(createQueueApprovalSurface());
 const gateTimeoutMs = process.env["SECRETARY_GATE_TIMEOUT_MS"]
   ? parseInt(process.env["SECRETARY_GATE_TIMEOUT_MS"], 10)
   : undefined;
+console.error("[DEBUG] gateTimeoutMs =", gateTimeoutMs);
 const sendGateHook = gateTimeoutMs !== undefined
   ? createSendGateHook(approvalSurfaces, auditLogPath, new Map(), gateTimeoutMs)
   : createSendGateHook(approvalSurfaces, auditLogPath);
