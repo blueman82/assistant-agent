@@ -8,6 +8,17 @@
 process.env["SECRETARY_TELEGRAM_TOKEN"] = "000000000:FAKE-TEST-TOKEN";
 process.env["SECRETARY_TELEGRAM_CHAT_ID"] = "1";
 
+// Defense-in-depth on top of the env-creds fix above: every test in this
+// file injects its own stub transport (config.transport) rather than
+// relying on global fetch, so global fetch should never be called here. If
+// any code path (now or after a future change) falls back to real fetch —
+// e.g. a surface constructed without a transport override — this throws
+// immediately instead of silently making a live HTTP call with the fake
+// (or worse, a real) token.
+globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
+  throw new Error(`Unexpected real fetch() call in telegram-bridge.test.ts — all transports must be stubbed. Called with: ${String(args[0])}`);
+}) as typeof fetch;
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createBridge } from "./telegram-bridge.ts";
