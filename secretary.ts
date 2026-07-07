@@ -78,7 +78,17 @@ if (telegramSurface) {
   console.log("[secretary] Telegram approval surface disabled (no SECRETARY_TELEGRAM_TOKEN / ~/.secretary/telegram.json) — gate remains functional via terminal/queue surfaces.");
 }
 
-approvalSurfaces.push(createQueueApprovalSurface());
+// Queue-dir override — same env-seam idiom as above; unset in production
+// (falls back to createQueueApprovalSurface's own DEFAULT_QUEUE_DIR under
+// ~/.claude/coderails-dashboard/approvals), so tests can redirect queue
+// writes away from the operator's real dashboard queue directory rather
+// than leaving stale "pending" entries the dashboard would render as
+// phantom approval cards.
+approvalSurfaces.push(
+  process.env["SECRETARY_QUEUE_DIR"]
+    ? createQueueApprovalSurface(process.env["SECRETARY_QUEUE_DIR"])
+    : createQueueApprovalSurface(),
+);
 
 // Internal deny-timeout override — unset in production (falls back to
 // createSendGateHook's own 60s default); exists so tests can exercise the
