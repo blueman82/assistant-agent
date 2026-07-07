@@ -96,7 +96,7 @@ function chunkText(text: string, maxLength: number): string[] {
 }
 
 export async function sendChunked(config: ApiConfig, text: string): Promise<void> {
-  const chunks = chunkText(text, TELEGRAM_MAX_MESSAGE_LENGTH);
+  const chunks = chunkText(stripMarkdown(text), TELEGRAM_MAX_MESSAGE_LENGTH);
   for (const chunk of chunks) {
     await tg(config, "sendMessage", { chat_id: config.chatId, text: chunk });
   }
