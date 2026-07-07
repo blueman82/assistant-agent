@@ -59,7 +59,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
 
   async function handleMessage(msg: NonNullable<TelegramUpdate["message"]>): Promise<void> {
     const fromChatId = String(msg.chat.id);
-    if (false) {
+    if (fromChatId !== config.chatId) {
       // Audit row for rejected ingress — a message from an unauthorised
       // chat must never reach the agent.
       console.error(`[telegram-bridge] rejected message from unauthorised chat_id=${fromChatId}`);
