@@ -289,9 +289,9 @@ test("run() exits fatally on a 409/conflict getUpdates response — a second pol
   const originalExit = process.exit;
   let exitCode: number | undefined;
   let exitCalled = false;
-  // @ts-expect-error — stubbing process.exit for the test; throwing instead
-  // of actually exiting lets run()'s while loop halt without killing the
-  // test runner process.
+  // Stubbing process.exit for the test; throwing instead of actually
+  // exiting lets run()'s while loop halt without killing the test runner
+  // process.
   process.exit = (code?: number) => {
     exitCalled = true;
     exitCode = code;
