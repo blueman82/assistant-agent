@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template launchd job for the Telegram bridge — the single getUpdates
+  consumer for the configured bot token. Copy to
+  ~/Library/LaunchAgents/com.secretary.telegram-bridge.plist, replace
+  __REPO_PATH__ with the absolute path to this repo checkout, then:
+    launchctl load ~/Library/LaunchAgents/com.secretary.telegram-bridge.plist
+
+  KeepAlive restarts the process on crash or on the loud exit(1) the bridge
+  performs when it detects a second getUpdates consumer (HTTP 409).
+  Logs are redacted by the bridge itself (bridge/api.ts's redact()) before
+  ever reaching stdout/stderr, so these on-disk log files never carry the
+  bot token even though launchd persists them.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.secretary.telegram-bridge</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__REPO_PATH__/node_modules/.bin/tsx</string>
+    <string>__REPO_PATH__/bridge/telegram-bridge.ts</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__REPO_PATH__</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>__REPO_PATH__/.secretary/telegram-bridge.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>__REPO_PATH__/.secretary/telegram-bridge.log</string>
+</dict>
+</plist>

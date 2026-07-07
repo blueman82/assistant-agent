@@ -10,5 +10,5 @@
     "noEmit": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["*.ts", "src/**/*.ts", "gate/**/*.ts"]
+  "include": ["*.ts", "src/**/*.ts", "gate/**/*.ts", "bridge/**/*.ts"]
 }

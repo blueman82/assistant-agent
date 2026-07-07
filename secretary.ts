@@ -14,14 +14,21 @@ import { createQueueApprovalSurface } from "./gate/surfaces/queue.ts";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ---------------------------------------------------------------------------
-// Graceful shutdown
+// Graceful shutdown — only registered when this file runs as the terminal
+// REPL, not when imported as a module (e.g. by the Telegram bridge, which
+// installs its own SIGINT/SIGTERM handlers to stop its poll loop and abort
+// any in-flight turn first; these unconditional handlers would otherwise
+// fire first on import and exit the process before the bridge's own
+// handlers get a chance to run).
 // ---------------------------------------------------------------------------
 function exitClean(signal: string): void {
   console.log(`\n[secretary] ${signal} — goodbye.`);
   process.exit(0);
 }
-process.on("SIGINT", () => exitClean("SIGINT"));
-process.on("SIGTERM", () => exitClean("SIGTERM"));
+if (import.meta.url === `file://${process.argv[1]}`) {
+  process.on("SIGINT", () => exitClean("SIGINT"));
+  process.on("SIGTERM", () => exitClean("SIGTERM"));
+}
 
 // ---------------------------------------------------------------------------
 // Config
@@ -56,8 +63,12 @@ const auditLogPath = join(homedir(), ".secretary", "send-gate-audit.jsonl");
 const approvalSurfaces = [createTerminalApprovalSurface()];
 
 const telegramConfig = loadTelegramConfig();
-if (telegramConfig) {
-  approvalSurfaces.push(createTelegramApprovalSurface(telegramConfig));
+// Exported so the Telegram bridge (bridge/telegram-bridge.ts) can feed
+// callback_query taps into THIS surface instance rather than constructing
+// its own — the gate's raceSurfaces() call only ever sees this one.
+export const telegramSurface = telegramConfig ? createTelegramApprovalSurface(telegramConfig) : undefined;
+if (telegramSurface) {
+  approvalSurfaces.push(telegramSurface);
 } else {
   console.log("[secretary] Telegram approval surface disabled (no SECRETARY_TELEGRAM_TOKEN / ~/.secretary/telegram.json) — gate remains functional via terminal/queue surfaces.");
 }
@@ -67,37 +78,38 @@ approvalSurfaces.push(createQueueApprovalSurface());
 const sendGateHook = createSendGateHook(approvalSurfaces, auditLogPath);
 
 // ---------------------------------------------------------------------------
-// CLI loop
+// Session state — module-scoped so it persists across turns within a
+// process, for both the terminal REPL and the Telegram bridge (which calls
+// runTurn directly rather than going through the REPL below).
 // ---------------------------------------------------------------------------
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout,
-});
-
 let sessionId: string | undefined;
 let turnCount = 0;
 
-console.log(`[secretary] model=${MODEL} maxTurns=${MAX_TURNS}`);
-console.log(`[secretary] Type your request. Ctrl+C to exit.\n`);
+export function getSessionId(): string | undefined {
+  return sessionId;
+}
 
-async function runTurn(userInput: string): Promise<void> {
+export function resetSession(): void {
+  sessionId = undefined;
+}
+
+// Emits one piece of turn output to the caller — assistant text, a tool-use
+// summary line, or a final status line. The terminal REPL below writes these
+// straight to stdout; the Telegram bridge instead buffers them for a
+// chunked reply.
+export type TurnEmit = (line: string) => void;
+
+// Runs one turn of the secretary agent loop against `userInput`, invoking
+// `emit` for each line of output as it streams in. `signal` aborts the SDK
+// query when triggered (wired to an AbortController the caller owns — e.g.
+// a terminal 'q' keypress or a Telegram /stop command). Session continuity
+// (resume) is tracked via the module-scoped sessionId above and updated as
+// the SDK's init message reports it.
+export async function runTurn(userInput: string, emit: TurnEmit, signal: AbortSignal): Promise<void> {
   turnCount++;
 
   const abortController = new AbortController();
-
-  // Listen for 'q' keypress to abort the current turn
-  const rawMode = process.stdin.isRaw;
-  if (process.stdin.isTTY) {
-    process.stdin.setRawMode(true);
-  }
-  const onKeypress = (data: Buffer): void => {
-    const ch = data.toString();
-    if (ch === "q" || ch === "Q") {
-      abortController.abort();
-      console.log("\n[secretary] interrupted.\n");
-    }
-  };
-  process.stdin.on("data", onKeypress);
+  signal.addEventListener("abort", () => abortController.abort(), { once: true });
 
   const options: Parameters<typeof query>[0]["options"] = {
     model: MODEL,
@@ -143,8 +155,6 @@ async function runTurn(userInput: string): Promise<void> {
 
   const stream = query({ prompt: userInput, options });
 
-  process.stdout.write("\n");
-
   try {
     for await (const msg of stream as AsyncIterable<SDKMessage>) {
       if (msg.type === "system" && (msg as Record<string, unknown>)["subtype"] === "init") {
@@ -157,7 +167,7 @@ async function runTurn(userInput: string): Promise<void> {
       if (msg.type === "assistant") {
         for (const block of msg.message.content) {
           if (block.type === "text" && block.text.trim()) {
-            process.stdout.write(block.text + "\n");
+            emit(block.text);
           } else if (block.type === "tool_use") {
             const input = block.input as Record<string, unknown>;
             const summary =
@@ -166,60 +176,103 @@ async function runTurn(userInput: string): Promise<void> {
                 : block.name === "Read" || block.name === "Write" || block.name === "Edit"
                   ? String(input["file_path"] ?? "")
                   : JSON.stringify(block.input).slice(0, 100);
-            console.log(`  [${block.name}] ${summary}`);
+            emit(`  [${block.name}] ${summary}`);
           }
         }
       }
 
       if (msg.type === "result") {
         const cost = msg.total_cost_usd != null ? ` cost=$${msg.total_cost_usd.toFixed(4)}` : "";
-        console.log(`\n[secretary] done turns=${msg.num_turns}${cost}\n`);
+        emit(`[secretary] done turns=${msg.num_turns}${cost}`);
       }
     }
   } catch (err) {
     if (abortController.signal.aborted) {
-      // Already printed the interrupt message
+      // Caller already surfaced the interrupt.
     } else {
       throw err;
     }
-  } finally {
-    process.stdin.removeListener("data", onKeypress);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Terminal REPL — guarded so importing this module (e.g. from the Telegram
+// bridge, which calls runTurn directly) never starts the CLI loop.
+// ---------------------------------------------------------------------------
+async function main(): Promise<void> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  console.log(`[secretary] model=${MODEL} maxTurns=${MAX_TURNS}`);
+  console.log(`[secretary] Type your request. Ctrl+C to exit.\n`);
+
+  async function runTerminalTurn(userInput: string): Promise<void> {
+    const abortController = new AbortController();
+
+    // Listen for 'q' keypress to abort the current turn
+    const rawMode = process.stdin.isRaw;
     if (process.stdin.isTTY) {
-      process.stdin.setRawMode(rawMode ?? false);
+      process.stdin.setRawMode(true);
+    }
+    const onKeypress = (data: Buffer): void => {
+      const ch = data.toString();
+      if (ch === "q" || ch === "Q") {
+        abortController.abort();
+        console.log("\n[secretary] interrupted.\n");
+      }
+    };
+    process.stdin.on("data", onKeypress);
+
+    process.stdout.write("\n");
+    try {
+      await runTurn(userInput, (line) => process.stdout.write(line + "\n"), abortController.signal);
+    } finally {
+      process.stdin.removeListener("data", onKeypress);
+      if (process.stdin.isTTY) {
+        process.stdin.setRawMode(rawMode ?? false);
+      }
+    }
+  }
+
+  // Handle initial prompt from CLI args: secretary "check my email"
+  const initialPrompt = process.argv.slice(2).join(" ").trim();
+
+  if (initialPrompt) {
+    try {
+      await runTerminalTurn(initialPrompt);
+    } catch (err) {
+      console.error(`[secretary] error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // Interactive loop — keeps running after initial prompt
+  while (true) {
+    const input = await rl.question("You: ").catch(() => null);
+    if (input === null || input.toLowerCase() === "/exit" || input.toLowerCase() === "/quit") {
+      exitClean("exit");
+      break;
+    }
+    if (!input.trim()) continue;
+
+    // Reset session
+    if (input.trim() === "/reset") {
+      resetSession();
+      console.log("[secretary] session reset.\n");
+      continue;
+    }
+
+    try {
+      await runTerminalTurn(input.trim());
+    } catch (err) {
+      console.error(`[secretary] error: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 }
 
-// Handle initial prompt from CLI args: secretary "check my email"
-const initialPrompt = process.argv.slice(2).join(" ").trim();
-
-if (initialPrompt) {
-  try {
-    await runTurn(initialPrompt);
-  } catch (err) {
-    console.error(`[secretary] error: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}
-
-// Interactive loop — keeps running after initial prompt
-while (true) {
-  const input = await rl.question("You: ").catch(() => null);
-  if (input === null || input.toLowerCase() === "/exit" || input.toLowerCase() === "/quit") {
-    exitClean("exit");
-    break;
-  }
-  if (!input.trim()) continue;
-
-  // Reset session
-  if (input.trim() === "/reset") {
-    sessionId = undefined;
-    console.log("[secretary] session reset.\n");
-    continue;
-  }
-
-  try {
-    await runTurn(input.trim());
-  } catch (err) {
-    console.error(`[secretary] error: ${err instanceof Error ? err.message : String(err)}`);
-  }
+// Only run the REPL when this file is executed directly (tsx secretary.ts),
+// not when imported as a module (e.g. by the Telegram bridge).
+if (import.meta.url === `file://${process.argv[1]}`) {
+  await main();
 }
