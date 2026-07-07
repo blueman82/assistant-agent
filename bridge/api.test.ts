@@ -162,6 +162,39 @@ test("stripMarkdown leaves genuine asterisk maths with surrounding spaces alone"
   assert.equal(stripMarkdown("2 * 3 * 4 = 24"), "2 * 3 * 4 = 24");
 });
 
+test("stripMarkdown leaves fenced code blocks byte-identical, including hashes, backticks, and asterisks inside", () => {
+  const fenced = "```python\n# fetch the data\ndef f(*args, **kwargs):\n    pass\n```";
+  assert.equal(stripMarkdown(fenced), fenced);
+});
+
+test("stripMarkdown sanitises text around a fence while leaving the fence untouched", () => {
+  const input = "Here's the script, **run it**:\n```sh\n# step one\necho *glob*\n```\nthen `reboot`.";
+  assert.equal(stripMarkdown(input), "Here's the script, run it:\n```sh\n# step one\necho *glob*\n```\nthen reboot.");
+});
+
+test("stripMarkdown leaves unspaced asterisk arithmetic alone", () => {
+  assert.equal(stripMarkdown("3*4=12 and 5*6=30"), "3*4=12 and 5*6=30");
+});
+
+test("stripMarkdown leaves single-underscore emphasis untouched by design (only double underscores are markers)", () => {
+  assert.equal(stripMarkdown("_important_ note"), "_important_ note");
+});
+
+test("sendChunked strips markdown on the whole text before chunking, so a marker straddling the 4096 boundary never leaks", async () => {
+  const { transport, calls } = makeStubTransport(() => ({ ok: true, result: {} }));
+  // Place ** markers so the bold span crosses the 4096-unit boundary: if
+  // stripping ran per-chunk instead of pre-chunk, the pair would be split
+  // across chunks and both halves would leak literal asterisks.
+  const text = "a".repeat(4090) + " **bold across the boundary** " + "b".repeat(200);
+  await sendChunked({ token: "t", chatId: "1", transport }, text);
+  const rejoined = calls
+    .filter((c) => c.url.includes("/sendMessage"))
+    .map((c) => (c.body as Record<string, unknown>)["text"] as string)
+    .join("");
+  assert.ok(!rejoined.includes("*"), `asterisks leaked to Telegram: ${JSON.stringify(rejoined.slice(4080, 4130))}`);
+  assert.ok(rejoined.includes("bold across the boundary"));
+});
+
 test("stripMarkdown handles a mixed markdown message in one pass", () => {
   assert.equal(
     stripMarkdown("## Inbox\n**Two** new mails, reply via *phone* or [webmail](https://mail.example)"),
