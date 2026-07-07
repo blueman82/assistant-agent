@@ -67,37 +67,38 @@ approvalSurfaces.push(createQueueApprovalSurface());
 const sendGateHook = createSendGateHook(approvalSurfaces, auditLogPath);
 
 // ---------------------------------------------------------------------------
-// CLI loop
+// Session state — module-scoped so it persists across turns within a
+// process, for both the terminal REPL and the Telegram bridge (which calls
+// runTurn directly rather than going through the REPL below).
 // ---------------------------------------------------------------------------
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout,
-});
-
 let sessionId: string | undefined;
 let turnCount = 0;
 
-console.log(`[secretary] model=${MODEL} maxTurns=${MAX_TURNS}`);
-console.log(`[secretary] Type your request. Ctrl+C to exit.\n`);
+export function getSessionId(): string | undefined {
+  return sessionId;
+}
 
-async function runTurn(userInput: string): Promise<void> {
+export function resetSession(): void {
+  sessionId = undefined;
+}
+
+// Emits one piece of turn output to the caller — assistant text, a tool-use
+// summary line, or a final status line. The terminal REPL below writes these
+// straight to stdout; the Telegram bridge instead buffers them for a
+// chunked reply.
+export type TurnEmit = (line: string) => void;
+
+// Runs one turn of the secretary agent loop against `userInput`, invoking
+// `emit` for each line of output as it streams in. `signal` aborts the SDK
+// query when triggered (wired to an AbortController the caller owns — e.g.
+// a terminal 'q' keypress or a Telegram /stop command). Session continuity
+// (resume) is tracked via the module-scoped sessionId above and updated as
+// the SDK's init message reports it.
+export async function runTurn(userInput: string, emit: TurnEmit, signal: AbortSignal): Promise<void> {
   turnCount++;
 
   const abortController = new AbortController();
-
-  // Listen for 'q' keypress to abort the current turn
-  const rawMode = process.stdin.isRaw;
-  if (process.stdin.isTTY) {
-    process.stdin.setRawMode(true);
-  }
-  const onKeypress = (data: Buffer): void => {
-    const ch = data.toString();
-    if (ch === "q" || ch === "Q") {
-      abortController.abort();
-      console.log("\n[secretary] interrupted.\n");
-    }
-  };
-  process.stdin.on("data", onKeypress);
+  signal.addEventListener("abort", () => abortController.abort(), { once: true });
 
   const options: Parameters<typeof query>[0]["options"] = {
     model: MODEL,
