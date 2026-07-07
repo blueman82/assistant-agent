@@ -161,7 +161,7 @@ export async function runTurn(
     ...(sessionId ? { resume: sessionId } : {}),
   };
 
-  const stream = query({ prompt: userInput, options });
+  const stream = queryFn({ prompt: userInput, options });
 
   try {
     for await (const msg of stream as AsyncIterable<SDKMessage>) {
