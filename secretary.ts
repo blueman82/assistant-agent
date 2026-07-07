@@ -25,10 +25,8 @@ function exitClean(signal: string): void {
   console.log(`\n[secretary] ${signal} — goodbye.`);
   process.exit(0);
 }
-if (import.meta.url === `file://${process.argv[1]}`) {
-  process.on("SIGINT", () => exitClean("SIGINT"));
-  process.on("SIGTERM", () => exitClean("SIGTERM"));
-}
+process.on("SIGINT", () => exitClean("SIGINT"));
+process.on("SIGTERM", () => exitClean("SIGTERM"));
 
 // ---------------------------------------------------------------------------
 // Config
