@@ -1,3 +1,13 @@
+// Fabricated Telegram creds — set before any import in this file (env-first
+// in gate/surfaces/telegram.ts:35-36) so secretary.ts's module-scope
+// loadTelegramConfig() call (secretary.ts:69, which runs once on first
+// import anywhere in this file, per ESM module caching) never reads the
+// real ~/.secretary/telegram.json and never constructs a surface capable of
+// sending to Gary's real Telegram chat. This must stay ahead of every
+// import in this file, static or dynamic.
+process.env["SECRETARY_TELEGRAM_TOKEN"] = "000000000:FAKE-TEST-TOKEN";
+process.env["SECRETARY_TELEGRAM_CHAT_ID"] = "1";
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createBridge } from "./telegram-bridge.ts";
