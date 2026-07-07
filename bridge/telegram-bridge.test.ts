@@ -313,11 +313,12 @@ test("run() does NOT exit on a non-409/conflict poll error — only the single-p
   const transport: typeof fetch = async (input) => {
     const url = String(input);
     if (url.includes("/getUpdates")) {
+      // Every call errors with a non-conflict failure — the loop stays on
+      // the backoff branch throughout (never falls through to a successful
+      // poll), so this test can't hit the unrelated unthrottled-retry
+      // busy-loop that a "succeed after N calls" stub would trigger.
       callCount++;
-      if (callCount === 1) {
-        return { ok: false, json: async () => ({ ok: false, description: "Internal Server Error" }) } as Response;
-      }
-      return { ok: true, json: async () => ({ ok: true, result: [] }) } as Response;
+      return { ok: false, json: async () => ({ ok: false, description: "Internal Server Error" }) } as Response;
     }
     return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
   };
@@ -340,7 +341,7 @@ test("run() does NOT exit on a non-409/conflict poll error — only the single-p
 
   const runPromise = bridge.run();
   // The first poll error hits the 1000ms initial backoff before retrying —
-  // wait past that so the second getUpdates call has a chance to fire.
+  // wait past that so a second getUpdates call has a chance to fire.
   await new Promise((resolve) => setTimeout(resolve, 1100));
   await bridge.stop();
   await runPromise;
