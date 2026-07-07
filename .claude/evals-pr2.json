@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "scope": "pr",
+  "task_ref": "feat/telegram-bridge",
+  "tier": 2,
+  "tier_justification": "irreversible/outward surface — this PR is the Telegram front-end that owns the single getUpdates consumer for the bot token and routes into the send-gate's approval flow; a regression here can silently corrupt agent replies sent to the user, leave approval taps unresolved, or run two pollers against the same token (Telegram hard-rejects the second with 409 and the loser must exit, not limp on with a broken feed).",
+  "frozen_at": "2026-07-07T13:42:37Z",
+  "frozen_sha": "a48cbb50eb811a18855571326fd7856631bb9df1",
+  "evals": [
+    {
+      "id": "NC-A",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "Reply text containing a non-BMP (surrogate-pair) character positioned so it straddles the 4096-char chunk boundary is split WITHOUT corrupting the character — every emitted chunk round-trips through UTF-8 encode/decode byte-identical to itself, and the rejoined chunks equal the original text exactly.",
+      "cmd": "npx tsx --test bridge/api.test.ts",
+      "negative_control": "Revert chunkText's surrogate-boundary nudge (hard .slice(0, maxLength) with no high-surrogate check) -> the same test must FAIL, proving the assertion actually detects the corruption rather than passing vacuously.",
+      "status": "pass",
+      "evidence": "bridge/api.test.ts: 'sendChunked never splits a surrogate pair across chunks when it straddles the 4096 boundary' PASS. Negative control performed manually: reverting bridge/api.ts chunkText to the pre-fix boundary logic reproduces the exact corruption (chunk 0 ends in lone high surrogate \\ud83d, chunk 1 starts with lone low surrogate \\ude00; UTF-8 round-trip of the corrupted chunk decodes to 'aaaa�' ≠ original), and the test fails against that reverted code with an AssertionError at the round-trip equality check. Full suite: npx tsx --test bridge/api.test.ts -> 11 pass, 0 fail."
+    },
+    {
+      "id": "NC-B",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "A callback_query tap from a from.id that does not match the configured single-user chatId is still routed to the Telegram approval surface's handleCallbackQuery — never dropped by the bridge before reaching the surface's own auth+answerCallbackQuery path — so the tapping client's button spinner always resolves, even for an unauthorised tap.",
+      "cmd": "npx tsx --test bridge/telegram-bridge.test.ts",
+      "negative_control": "Restore the bridge-level early return on cb.from.id mismatch (drop before calling telegramSurface.handleCallbackQuery) -> the same test must FAIL, proving the assertion actually detects the dropped-callback regression.",
+      "status": "pass",
+      "evidence": "bridge/telegram-bridge.test.ts: 'a callback_query from an unauthorised from.id is still routed to the surface so its client's spinner is resolved via answerCallbackQuery' PASS (asserts handleCallbackQuery is invoked exactly once even for from.id=99999 against configured chatId=12345). Negative control performed manually: reintroducing the early `if (String(cb.from.id) !== config.chatId) { ...; return; }` before the telegramSurface call reproduces handleCallbackQueryCalls===0, and the test fails with '0 !== 1'. Full suite: npx tsx --test bridge/telegram-bridge.test.ts -> 10 pass, 0 fail."
+    },
+    {
+      "id": "NC-E",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "run()'s poll loop treats an HTTP 409 / 'conflict' getUpdates response (Telegram's signal that a second consumer is polling the same token) as fatal: it logs and calls process.exit(1) rather than retrying, since Telegram allows exactly one getUpdates consumer per token and silently retrying would leave both processes fighting over the feed. A transient non-409 poll error (e.g. 500) must NOT trigger this exit path — only the single-poller conflict is fatal.",
+      "cmd": "npx tsx --test bridge/telegram-bridge.test.ts",
+      "negative_control": "Replace the 409/conflict branch condition with `if (false)` (no exit) -> the positive test ('run() exits fatally on a 409/conflict getUpdates response') must FAIL / hang without resolving, proving the assertion actually detects the missing fatal-exit. Separately, the sibling test asserts process.exit is NOT called for a plain 500 error, proving the check isn't firing on every error indiscriminately.",
+      "status": "pass",
+      "evidence": "bridge/telegram-bridge.test.ts: 'run() exits fatally on a 409/conflict getUpdates response — a second poller on the same token must never be silently tolerated' PASS (stubs process.exit, asserts it's called with code 1 and that run() halts). 'run() does NOT exit on a non-409/conflict poll error — only the single-poller conflict is fatal' PASS (asserts process.exit is never called across >=2 retried polls, each returning a plain 500). Negative control performed manually via mutation: replacing the branch condition with `if (false)` causes the positive test's `assert.rejects(() => bridge.run(), ...)` to never settle (run() never calls process.exit, so the stubbed exit's throw never fires) — confirming the test pins the fatal-exit behaviour rather than passing vacuously. Full suite: npx tsx --test bridge/telegram-bridge.test.ts -> 10 pass, 0 fail."
+    }
+  ],
+  "result": null,
+  "graded_at": null,
+  "head_sha": null
+}
