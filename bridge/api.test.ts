@@ -89,11 +89,11 @@ test("sendChunked never splits a surrogate pair across chunks when it straddles 
   const sendCalls = calls.filter((c) => c.url.includes("/sendMessage"));
   const texts = sendCalls.map((c) => (c.body as Record<string, unknown>)["text"] as string);
   for (const t of texts) {
-    assert.equal(t.length, [...t].reduce((n, ch) => n + ch.length, 0), `chunk contains a lone surrogate: ${JSON.stringify(t)}`);
-    // A lone surrogate fails a strict UTF-8 round trip encode/decode.
-    const bytes = new TextEncoder().encode(t);
-    const decoded = new TextDecoder("utf-8", { fatal: true });
-    assert.doesNotThrow(() => decoded.decode(bytes), `chunk is not valid UTF-8 (lone surrogate): ${JSON.stringify(t)}`);
+    // A lone surrogate silently UTF-8-encodes to U+FFFD (replacement
+    // character) rather than throwing, so the corruption only shows up as a
+    // round-trip mismatch, not an exception.
+    const roundTripped = new TextDecoder("utf-8").decode(new TextEncoder().encode(t));
+    assert.equal(roundTripped, t, `chunk contains a lone surrogate that corrupts on UTF-8 encode: ${JSON.stringify(t)}`);
   }
   assert.equal(texts.join(""), text, "rejoined chunks must equal the original text exactly");
 });
