@@ -91,7 +91,7 @@ test("callback_data for every inline button stays within Telegram's 64-byte limi
   const { transport, calls } = makeStubTransport({
     sendMessage: { ok: true, result: { message_id: 1 } },
     getUpdatesSequence: [
-      { ok: true, result: [{ update_id: 1, callback_query: { id: "cb1", data: `${hash.slice(0, 32)}:approve`, message: { message_id: 1 } } }] },
+      { ok: true, result: [{ update_id: 1, callback_query: { id: "cb1", data: `${hash.slice(0, 32)}:approve`, from: { id: 1 }, message: { message_id: 1 } } }] },
     ],
   });
 
