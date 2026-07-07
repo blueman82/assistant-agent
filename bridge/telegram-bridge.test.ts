@@ -1,3 +1,7 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 // Fabricated Telegram creds — set before any import in this file (env-first
 // in gate/surfaces/telegram.ts:35-36) so secretary.ts's module-scope
 // loadTelegramConfig() call (secretary.ts:70, which runs once on first
