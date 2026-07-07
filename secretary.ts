@@ -14,14 +14,21 @@ import { createQueueApprovalSurface } from "./gate/surfaces/queue.ts";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ---------------------------------------------------------------------------
-// Graceful shutdown
+// Graceful shutdown — only registered when this file runs as the terminal
+// REPL, not when imported as a module (e.g. by the Telegram bridge, which
+// installs its own SIGINT/SIGTERM handlers to stop its poll loop and abort
+// any in-flight turn first; these unconditional handlers would otherwise
+// fire first on import and exit the process before the bridge's own
+// handlers get a chance to run).
 // ---------------------------------------------------------------------------
 function exitClean(signal: string): void {
   console.log(`\n[secretary] ${signal} — goodbye.`);
   process.exit(0);
 }
-process.on("SIGINT", () => exitClean("SIGINT"));
-process.on("SIGTERM", () => exitClean("SIGTERM"));
+if (import.meta.url === `file://${process.argv[1]}`) {
+  process.on("SIGINT", () => exitClean("SIGINT"));
+  process.on("SIGTERM", () => exitClean("SIGTERM"));
+}
 
 // ---------------------------------------------------------------------------
 // Config
