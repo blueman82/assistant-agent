@@ -73,7 +73,7 @@ test("sendChunked splits at the last newline before the 4096 boundary when one e
   await sendChunked({ token: "t", chatId: "1", transport }, text);
   const sendCalls = calls.filter((c) => c.url.includes("/sendMessage"));
   const firstChunk = (sendCalls[0]!.body as Record<string, unknown>)["text"] as string;
-  assert.ok(firstChunk.endsWith("a".repeat(1)) || firstChunk.length <= 4000, "first chunk should break at/before the newline, not mid-word past it");
+  assert.equal(firstChunk, "a".repeat(4000) + "\n", "first chunk should break right after the newline, not mid-word past it");
   const rejoined = sendCalls.map((c) => (c.body as Record<string, unknown>)["text"] as string).join("");
   assert.equal(rejoined.length, text.length);
 });
