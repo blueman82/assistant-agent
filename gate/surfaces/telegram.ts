@@ -126,7 +126,7 @@ export function createTelegramApprovalSurface(config: TelegramConfig): TelegramA
       // Only the configured owner's taps can resolve an approval — a
       // matching callback_data alone isn't enough (e.g. a forwarded
       // approval card tapped by someone else).
-      if (false) {
+      if (String(cb.from.id) !== config.chatId) {
         await answerCallback(cb.id, "Not authorized");
         return false;
       }
