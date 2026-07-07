@@ -216,23 +216,29 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
 // Only start the real bridge when this file is executed directly, not when
 // imported by tests.
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const { loadTelegramConfig, createTelegramApprovalSurface } = await import("../gate/surfaces/telegram.ts");
-  const { runTurn, getSessionId, resetSession } = await import("../secretary.ts");
+  const { loadTelegramConfig } = await import("../gate/surfaces/telegram.ts");
+  // Import secretary.ts's OWN telegramSurface instance — the one its
+  // send-gate hook actually races against — rather than constructing a
+  // second, disconnected surface here. A callback tap must resolve the same
+  // instance the gate is waiting on.
+  const { runTurn, getSessionId, resetSession, telegramSurface } = await import("../secretary.ts");
 
   const telegramConfig = loadTelegramConfig();
   if (!telegramConfig) {
     console.error("[telegram-bridge] no Telegram config found (SECRETARY_TELEGRAM_TOKEN/SECRETARY_TELEGRAM_CHAT_ID or ~/.secretary/telegram.json) — exiting.");
     process.exit(2);
   }
-
-  const surface = createTelegramApprovalSurface(telegramConfig);
+  if (!telegramSurface) {
+    console.error("[telegram-bridge] secretary.ts loaded but its telegramSurface is undefined — config mismatch, exiting.");
+    process.exit(2);
+  }
 
   const bridge = createBridge({
     config: telegramConfig,
     runTurn,
     getSessionId,
     resetSession,
-    telegramSurface: surface,
+    telegramSurface,
   });
 
   process.on("SIGINT", () => void bridge.stop().then(() => process.exit(0)));
