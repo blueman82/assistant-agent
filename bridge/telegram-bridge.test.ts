@@ -339,7 +339,9 @@ test("run() does NOT exit on a non-409/conflict poll error — only the single-p
   };
 
   const runPromise = bridge.run();
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  // The first poll error hits the 1000ms initial backoff before retrying —
+  // wait past that so the second getUpdates call has a chance to fire.
+  await new Promise((resolve) => setTimeout(resolve, 1100));
   await bridge.stop();
   await runPromise;
   process.exit = originalExit;
