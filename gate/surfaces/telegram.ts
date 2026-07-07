@@ -45,6 +45,20 @@ export function createTelegramApprovalSurface(config: TelegramConfig): ApprovalS
   const pollIntervalMs = config.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const apiBase = `https://api.telegram.org/bot${config.token}`;
 
+  // Best-effort: resolves the tapping client's spinner. Never lets a
+  // transport/network failure here take down approval resolution itself.
+  async function answerCallback(callbackQueryId: string, text?: string): Promise<void> {
+    try {
+      await transport(`${apiBase}/answerCallbackQuery`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ callback_query_id: callbackQueryId, ...(text ? { text } : {}) }),
+      });
+    } catch {
+      // Non-fatal — the approve/deny decision has already been determined.
+    }
+  }
+
   return {
     async requestApproval(toolName, toolInput, hash) {
       // Telegram caps callback_data at 64 BYTES total, so the hash must be
