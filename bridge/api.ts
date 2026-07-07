@@ -51,14 +51,24 @@ export async function tg(config: ApiConfig, method: string, body: unknown): Prom
 
 // Splits text at the last newline at-or-before the 4096-char boundary when
 // one exists (avoids cutting mid-word/mid-sentence); falls back to a hard
-// cut at the boundary when no newline is available in range.
+// cut at the boundary when no newline is available in range. maxLength is a
+// UTF-16 code-unit count (Telegram's limit), so a hard cut must never land
+// between a surrogate pair's high and low units — nudge back one unit when
+// it would.
 function chunkText(text: string, maxLength: number): string[] {
   const chunks: string[] = [];
   let remaining = text;
   while (remaining.length > maxLength) {
-    const window = remaining.slice(0, maxLength);
+    let boundary = maxLength;
+    // A high surrogate (0xD800-0xDBFF) at the boundary means the low
+    // surrogate is the next unit — pull the cut back before the pair.
+    const codeUnit = remaining.charCodeAt(boundary - 1);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      boundary -= 1;
+    }
+    const window = remaining.slice(0, boundary);
     const lastNewline = window.lastIndexOf("\n");
-    const splitAt = lastNewline > 0 ? lastNewline + 1 : maxLength;
+    const splitAt = lastNewline > 0 ? lastNewline + 1 : boundary;
     chunks.push(remaining.slice(0, splitAt));
     remaining = remaining.slice(splitAt);
   }
