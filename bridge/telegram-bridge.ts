@@ -146,15 +146,14 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   async function processUpdates(updates: TelegramUpdate[]): Promise<void> {
     for (const update of updates) {
       offset = update.update_id + 1;
-      const cbq = update.callback_query;
+      if (update.callback_query) {
+        // Callbacks are routed immediately — never queued behind pending
+        // chat turns, since a gate decision may be blocking one.
+        await handleCallbackQuery(update.callback_query);
+        continue;
+      }
       if (update.message) {
         await handleMessage(update.message);
-      }
-      if (cbq) {
-        // MUTATION: queue callback behind a fake long delay to simulate
-        // "queued behind pending chat turns".
-        setTimeout(() => { void handleCallbackQuery(cbq); }, 500);
-        continue;
       }
     }
     // Kick the FIFO drain off without blocking this poll cycle — a
