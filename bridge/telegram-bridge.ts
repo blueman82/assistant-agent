@@ -147,9 +147,14 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     for (const update of updates) {
       offset = update.update_id + 1;
       if (update.callback_query) {
-        // Callbacks are routed immediately — never queued behind pending
-        // chat turns, since a gate decision may be blocking one.
-        await handleCallbackQuery(update.callback_query);
+        const cbq = update.callback_query;
+        fifo.push("__MUTATION_QUEUED_CB__");
+        (async () => {
+          while (fifo.includes("__MUTATION_QUEUED_CB__")) {
+            await new Promise((r) => setTimeout(r, 200));
+          }
+          await handleCallbackQuery(cbq);
+        })();
         continue;
       }
       if (update.message) {
