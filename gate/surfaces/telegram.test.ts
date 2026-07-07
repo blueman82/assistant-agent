@@ -62,7 +62,7 @@ test("requestApproval resolves deny on a matching deny callback_query", async ()
   const { transport } = makeStubTransport({
     sendMessage: { ok: true, result: { message_id: 7 } },
     getUpdatesSequence: [
-      { ok: true, result: [{ update_id: 1, callback_query: { id: "cb2", data: `${hash}:deny`, message: { message_id: 7 } } }] },
+      { ok: true, result: [{ update_id: 1, callback_query: { id: "cb2", data: `${hash}:deny`, from: { id: 1 }, message: { message_id: 7 } } }] },
     ],
   });
 
