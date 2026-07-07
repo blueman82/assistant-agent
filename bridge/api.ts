@@ -12,6 +12,14 @@ export interface ApiConfig {
 
 const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 
+// Strips stray markdown from a reply so Telegram (which gets no parse_mode)
+// never shows literal **bold**/## headers/backticks. Belt-and-braces behind
+// the plain-text rule in prompts/system.md — deterministic stripping can't
+// lose a message the way a parse_mode 400 would.
+export function stripMarkdown(text: string): string {
+  return text;
+}
+
 // Strips the bot token out of any URL string before it reaches a log line
 // or thrown error — launchd persists stdout/stderr to disk with every
 // request URL otherwise carrying the token in plaintext.
