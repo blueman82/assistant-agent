@@ -104,8 +104,16 @@ export type TurnEmit = (line: string) => void;
 // query when triggered (wired to an AbortController the caller owns — e.g.
 // a terminal 'q' keypress or a Telegram /stop command). Session continuity
 // (resume) is tracked via the module-scoped sessionId above and updated as
-// the SDK's init message reports it.
-export async function runTurn(userInput: string, emit: TurnEmit, signal: AbortSignal): Promise<void> {
+// the SDK's init message reports it. `queryFn` defaults to the real SDK
+// query() — injectable (matching the repo's transport/surface idiom) so
+// tests can exercise the real PreToolUse hook wiring above without hitting
+// the network.
+export async function runTurn(
+  userInput: string,
+  emit: TurnEmit,
+  signal: AbortSignal,
+  queryFn: typeof query = query,
+): Promise<void> {
   turnCount++;
 
   const abortController = new AbortController();
