@@ -37,6 +37,7 @@ test("requestApproval sends an inline-keyboard message and resolves approve on a
             callback_query: {
               id: "cb1",
               data: `${hash}:approve`,
+              from: { id: 12345 },
               message: { message_id: 42 },
             },
           },
@@ -61,7 +62,7 @@ test("requestApproval resolves deny on a matching deny callback_query", async ()
   const { transport } = makeStubTransport({
     sendMessage: { ok: true, result: { message_id: 7 } },
     getUpdatesSequence: [
-      { ok: true, result: [{ update_id: 1, callback_query: { id: "cb2", data: `${hash}:deny`, message: { message_id: 7 } } }] },
+      { ok: true, result: [{ update_id: 1, callback_query: { id: "cb2", data: `${hash}:deny`, from: { id: 1 }, message: { message_id: 7 } } }] },
     ],
   });
 
@@ -75,14 +76,137 @@ test("a callback_query for a DIFFERENT hash is ignored, not resolved as this req
   const { transport } = makeStubTransport({
     sendMessage: { ok: true, result: { message_id: 1 } },
     getUpdatesSequence: [
-      { ok: true, result: [{ update_id: 1, callback_query: { id: "cb-other", data: "other-hash:approve", message: { message_id: 1 } } }] },
-      { ok: true, result: [{ update_id: 2, callback_query: { id: "cb-mine", data: `${hash}:approve`, message: { message_id: 1 } } }] },
+      { ok: true, result: [{ update_id: 1, callback_query: { id: "cb-other", data: "other-hash:approve", from: { id: 1 }, message: { message_id: 1 } } }] },
+      { ok: true, result: [{ update_id: 2, callback_query: { id: "cb-mine", data: `${hash}:approve`, from: { id: 1 }, message: { message_id: 1 } } }] },
     ],
   });
 
   const surface = createTelegramApprovalSurface({ token: "t", chatId: "1", transport, pollIntervalMs: 5 });
   const decision = await surface.requestApproval("mcp__claude_ai_Slack__slack_send_message", { text: "hi" }, hash);
   assert.equal(decision, "approve");
+});
+
+test("callback_data for every inline button stays within Telegram's 64-byte limit, even for a full 64-char sha256 hash", async () => {
+  const hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85"; // 64 hex chars
+  const { transport, calls } = makeStubTransport({
+    sendMessage: { ok: true, result: { message_id: 1 } },
+    getUpdatesSequence: [
+      { ok: true, result: [{ update_id: 1, callback_query: { id: "cb1", data: `${hash.slice(0, 32)}:approve`, from: { id: 1 }, message: { message_id: 1 } } }] },
+    ],
+  });
+
+  const surface = createTelegramApprovalSurface({ token: "t", chatId: "1", transport, pollIntervalMs: 5 });
+  await surface.requestApproval("mcp__claude_ai_Slack__slack_send_message", { text: "hi" }, hash);
+
+  const sendCall = calls.find((c) => c.url.includes("/sendMessage"));
+  assert.ok(sendCall);
+  const sendBody = sendCall!.body as Record<string, unknown>;
+  const buttons = (sendBody["reply_markup"] as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard[0];
+  for (const button of buttons) {
+    assert.ok(
+      Buffer.byteLength(button.callback_data, "utf8") <= 64,
+      `callback_data "${button.callback_data}" is ${Buffer.byteLength(button.callback_data, "utf8")} bytes, exceeds Telegram's 64-byte limit`,
+    );
+  }
+});
+
+test("requestApproval rejects when sendMessage responds with ok: false, instead of hanging forever", async () => {
+  const hash = "send-fail-hash";
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/sendMessage")) {
+      return { ok: true, json: async () => ({ ok: false, description: "Bad Request: BUTTON_DATA_INVALID" }) } as Response;
+    }
+    throw new Error(`unexpected URL in stub transport: ${url}`);
+  };
+
+  const surface = createTelegramApprovalSurface({ token: "t", chatId: "1", transport, pollIntervalMs: 5 });
+  await assert.rejects(
+    () => surface.requestApproval("mcp__claude_ai_Slack__slack_send_message", { text: "hi" }, hash),
+    /BUTTON_DATA_INVALID/,
+  );
+});
+
+test("a matched callback_query triggers answerCallbackQuery on the transport", async () => {
+  const hash = "ack-hash";
+  const calls: { url: string }[] = [];
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    calls.push({ url });
+    if (url.includes("/sendMessage")) {
+      return { ok: true, json: async () => ({ ok: true, result: { message_id: 1 } }) } as Response;
+    }
+    if (url.includes("/answerCallbackQuery")) {
+      return { ok: true, json: async () => ({ ok: true }) } as Response;
+    }
+    if (url.includes("/getUpdates")) {
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          result: [{ update_id: 1, callback_query: { id: "cb-ack", data: `${hash}:approve`, from: { id: 1 }, message: { message_id: 1 } } }],
+        }),
+      } as Response;
+    }
+    throw new Error(`unexpected URL in stub transport: ${url}`);
+  };
+
+  const surface = createTelegramApprovalSurface({ token: "t", chatId: "1", transport, pollIntervalMs: 5 });
+  const decision = await surface.requestApproval("mcp__claude_ai_Slack__slack_send_message", { text: "hi" }, hash);
+
+  assert.equal(decision, "approve");
+  assert.ok(calls.some((c) => c.url.includes("/answerCallbackQuery")), "expected answerCallbackQuery to be called");
+});
+
+test("a callback_query from a from.id other than the configured owner chatId is ignored, not resolved as approval", async () => {
+  const hash = "owner-check-hash";
+  const { transport } = makeStubTransport({
+    sendMessage: { ok: true, result: { message_id: 1 } },
+    getUpdatesSequence: [
+      {
+        ok: true,
+        result: [
+          {
+            update_id: 1,
+            callback_query: { id: "cb-foreign", data: `${hash}:approve`, from: { id: 999 }, message: { message_id: 1 } },
+          },
+        ],
+      },
+      {
+        ok: true,
+        result: [
+          {
+            update_id: 2,
+            callback_query: { id: "cb-owner", data: `${hash}:approve`, from: { id: 12345 }, message: { message_id: 1 } },
+          },
+        ],
+      },
+    ],
+  });
+
+  const surface = createTelegramApprovalSurface({ token: "t", chatId: "12345", transport, pollIntervalMs: 5 });
+  const decision = await surface.requestApproval("mcp__claude_ai_Slack__slack_send_message", { text: "hi" }, hash);
+  assert.equal(decision, "approve");
+});
+
+test("requestApproval rejects when getUpdates responds with ok: false, instead of silently polling forever", async () => {
+  const hash = "getupdates-fail-hash";
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/sendMessage")) {
+      return { ok: true, json: async () => ({ ok: true, result: { message_id: 1 } }) } as Response;
+    }
+    if (url.includes("/getUpdates")) {
+      return { ok: true, json: async () => ({ ok: false, description: "Conflict: terminated by other getUpdates request" }) } as Response;
+    }
+    throw new Error(`unexpected URL in stub transport: ${url}`);
+  };
+
+  const surface = createTelegramApprovalSurface({ token: "t", chatId: "1", transport, pollIntervalMs: 5 });
+  await assert.rejects(
+    () => surface.requestApproval("mcp__claude_ai_Slack__slack_send_message", { text: "hi" }, hash),
+    /Conflict: terminated by other getUpdates request/,
+  );
 });
 
 test("grep guard: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
