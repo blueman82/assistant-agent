@@ -144,7 +144,7 @@ test("a matched callback_query triggers answerCallbackQuery on the transport", a
         ok: true,
         json: async () => ({
           ok: true,
-          result: [{ update_id: 1, callback_query: { id: "cb-ack", data: `${hash}:approve`, message: { message_id: 1 } } }],
+          result: [{ update_id: 1, callback_query: { id: "cb-ack", data: `${hash}:approve`, from: { id: 1 }, message: { message_id: 1 } } }],
         }),
       } as Response;
     }
