@@ -56,8 +56,8 @@ This is the most important behavioural contract:
 ## Config / environment
 
 - No API key — uses the local Claude Code OAuth session.
-- Model: `claude-sonnet-4-6` (override with `SECRETARY_MODEL`).
-- Max turns per request: `200` (override with `SECRETARY_MAX_TURNS`).
+- Model: `claude-sonnet-4-6` (override with `RACHEL_MODEL`).
+- Max turns per request: `200` (override with `RACHEL_MAX_TURNS`).
 - TypeScript: ESM, `strict` mode, target ES2022.
 
 ## CLI commands (at the `You:` prompt)
