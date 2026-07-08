@@ -251,7 +251,7 @@ async function main(): Promise<void> {
       const ch = data.toString();
       if (ch === "q" || ch === "Q") {
         abortController.abort();
-        console.log("\n[secretary] interrupted.\n");
+        console.log("\n[Rachel] interrupted.\n");
       }
     };
     process.stdin.on("data", onKeypress);
