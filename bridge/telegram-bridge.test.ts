@@ -74,8 +74,8 @@ function messageUpdate(updateId: number, text: string, chatId = 12345) {
 }
 
 // This test must run FIRST in the file (before any other test imports
-// secretary.ts) and sets SECRETARY_GATE_TIMEOUT_MS before its own dynamic
-// import of secretary.ts below — secretary.ts's module-scope
+// rachel.ts) and sets RACHEL_GATE_TIMEOUT_MS before its own dynamic
+// import of rachel.ts below — rachel.ts's module-scope
 // createSendGateHook(...) call runs once, at first import, and node:test
 // runs tests in a single file sequentially in declaration order (no
 // concurrency is configured anywhere in this file), so being first
