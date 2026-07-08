@@ -1,18 +1,18 @@
 # Assistant Agent
 
-Gary's personal AI secretary, built on the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk). It runs as a single long-lived CLI agent that manages email, calendar, and tasks.
+Gary's personal AI assistant, Rachel, built on the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk). It runs as a single long-lived CLI agent that manages email, calendar, and tasks.
 
 ## Quick start
 
 ```bash
 npm install
-npx tsx secretary.ts
+npx tsx rachel.ts
 ```
 
 Type a request at the `You:` prompt. Or pass one as an argument for a one-shot:
 
 ```bash
-npx tsx secretary.ts "check my email"
+npx tsx rachel.ts "check my email"
 ```
 
 No API key is needed — the agent uses the local Claude Code OAuth session.
