@@ -492,12 +492,12 @@ test("run() does NOT exit on a non-409/conflict poll error — only the single-p
   assert.ok(callCount >= 2, "the poll loop should have retried after the transient error");
 });
 
-test("importing secretary.ts as a module (as the bridge does) registers no SIGINT/SIGTERM handlers of its own — those must only fire for the standalone terminal REPL, or they'd win the race against the bridge's graceful-shutdown handlers and kill the process before bridge.stop() runs", async () => {
+test("importing rachel.ts as a module (as the bridge does) registers no SIGINT/SIGTERM handlers of its own — those must only fire for the standalone terminal REPL, or they'd win the race against the bridge's graceful-shutdown handlers and kill the process before bridge.stop() runs", async () => {
   const sigintBefore = process.listenerCount("SIGINT");
   const sigtermBefore = process.listenerCount("SIGTERM");
-  await import("../secretary.ts");
-  assert.equal(process.listenerCount("SIGINT"), sigintBefore, "secretary.ts must not add a SIGINT handler when merely imported");
-  assert.equal(process.listenerCount("SIGTERM"), sigtermBefore, "secretary.ts must not add a SIGTERM handler when merely imported");
+  await import("../rachel.ts");
+  assert.equal(process.listenerCount("SIGINT"), sigintBefore, "rachel.ts must not add a SIGINT handler when merely imported");
+  assert.equal(process.listenerCount("SIGTERM"), sigtermBefore, "rachel.ts must not add a SIGTERM handler when merely imported");
 });
 
 test("grep guard: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
