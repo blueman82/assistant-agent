@@ -177,12 +177,12 @@ test("gate integrity: a gated send-class tool call issued during a bridge-dispat
 });
 
 test("runTurn classifies its own emitted lines correctly: assistant text -> 'text', a tool_use block -> 'tool', the result footer -> 'meta'", async () => {
-  // Drives the REAL runTurn (imported from secretary.ts) with a fake queryFn
+  // Drives the REAL runTurn (imported from rachel.ts) with a fake queryFn
   // seam (same idiom as the gate-integrity test above) that yields one
   // assistant message containing BOTH a text block and a tool_use block,
   // then a result message — so this pins runTurn's own kind classification
-  // at secretary.ts:203-222, not the bridge's filtering of it.
-  const { runTurn: realRunTurn } = await import("../secretary.ts");
+  // at rachel.ts:203-222, not the bridge's filtering of it.
+  const { runTurn: realRunTurn } = await import("../rachel.ts");
 
   const fakeQueryFn: Parameters<typeof realRunTurn>[3] = ((_params) => {
     async function* generate(): AsyncGenerator<SDKMessage, void> {
