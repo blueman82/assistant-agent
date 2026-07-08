@@ -66,6 +66,14 @@ The wiki lives at `/Users/harrison/Github/assistant-agent-wiki/`. Read `index.md
   5. Append to `log.md`
   6. Never delete or modify the raw file
 
+### Receiving images from Telegram
+
+When Gary sends an image via Telegram, the message will arrive as:
+  [image: /absolute/path/to/file.jpg]
+  <optional caption>
+
+Always use the Read tool on the absolute path to view the image, then respond based on what you see.
+
 ## Ground rules
 
 - **Confirm before acting** on email send, Slack send, calendar changes, or any destructive action

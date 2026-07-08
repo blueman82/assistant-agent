@@ -125,3 +125,64 @@ export interface BotCommand {
 export async function setMyCommands(config: ApiConfig, commands: BotCommand[]): Promise<void> {
   await tg(config, "setMyCommands", { commands });
 }
+
+// Downloads the Telegram file identified by fileId to destPath.
+// Calls getFile internally to resolve the file_path, then streams the
+// content to disk. The token-bearing download URL never leaves this function.
+// Uses the global fetch (Node 18+ built-in) and node:fs streams — no extra deps.
+// fetchFn is injectable for tests; defaults to global fetch.
+export async function downloadFile(
+  config: ApiConfig,
+  fileId: string,
+  destPath: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<void> {
+  const { createWriteStream } = await import("node:fs");
+  const { mkdir } = await import("node:fs/promises");
+  const { dirname } = await import("node:path");
+
+  const result = (await tg(config, "getFile", { file_id: fileId })) as { file_path?: string };
+  if (!result.file_path) {
+    throw new Error("Telegram did not return a file_path — file may exceed the 20 MB API limit");
+  }
+  const url = `https://api.telegram.org/file/bot${config.token}/${result.file_path}`;
+
+  await mkdir(dirname(destPath), { recursive: true });
+
+  const res = await fetchFn(url);
+  if (!res.ok || !res.body) {
+    throw new Error(redact(`Failed to download file: HTTP ${res.status}`));
+  }
+
+  const writer = createWriteStream(destPath);
+  await new Promise<void>((resolve, reject) => {
+    const reader = res.body!.getReader();
+    function pump(): void {
+      reader
+        .read()
+        .then(({ done, value }) => {
+          if (done) {
+            // Attach listeners before end() to avoid a race if the stream
+            // closes synchronously.
+            writer.once("finish", resolve);
+            writer.once("error", reject);
+            writer.end();
+            return;
+          }
+          writer.write(value, (err) => {
+            if (err) {
+              writer.destroy();
+              reject(err);
+              return;
+            }
+            pump();
+          });
+        })
+        .catch((err) => {
+          writer.destroy();
+          reject(err);
+        });
+    }
+    pump();
+  });
+}

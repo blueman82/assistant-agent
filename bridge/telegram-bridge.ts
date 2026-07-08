@@ -7,7 +7,8 @@
 // the Telegram approval surface's handleCallbackQuery — never queued behind
 // pending chat turns, since a gate decision may be blocking a turn.
 
-import { tg, sendChunked, sendTyping, setMyCommands, type ApiConfig } from "./api.ts";
+import { tg, sendChunked, sendTyping, setMyCommands, downloadFile, type ApiConfig } from "./api.ts";
+import { homedir } from "node:os";
 import type { TelegramApprovalSurface, TelegramCallbackQuery } from "../gate/surfaces/telegram.ts";
 import type { TurnEmit } from "../rachel.ts";
 
@@ -21,11 +22,21 @@ export interface CreateBridgeOptions {
   telegramSurface?: TelegramApprovalSurface;
   pollIntervalMs?: number;
   typingIntervalMs?: number;
+  // Injectable for tests — avoids hitting the real filesystem/network.
+  downloadFileFn?: (config: ApiConfig, fileId: string, destPath: string) => Promise<void>;
 }
 
 interface TelegramUpdate {
   update_id: number;
-  message?: { message_id: number; chat: { id: number }; text?: string; from?: { id: number } };
+  message?: {
+    message_id: number;
+    chat: { id: number };
+    from?: { id: number };
+    text?: string;
+    caption?: string;
+    photo?: Array<{ file_id: string; file_size?: number; width: number; height: number }>;
+    document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number };
+  };
   callback_query?: TelegramCallbackQuery;
 }
 
@@ -43,6 +54,7 @@ export interface Bridge {
 
 export function createBridge(options: CreateBridgeOptions): Bridge {
   const { config, runTurn, getSessionId, resetSession } = options;
+  const downloadFileFn = options.downloadFileFn ?? downloadFile;
   const pollIntervalMs = options.pollIntervalMs ?? 2000;
   const typingIntervalMs = options.typingIntervalMs ?? DEFAULT_TYPING_INTERVAL_MS;
 
@@ -68,7 +80,6 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     }
 
     const text = (msg.text ?? "").trim();
-    if (!text) return;
 
     if (text === "/reset") {
       resetSession();
@@ -95,6 +106,58 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
       return;
     }
 
+    // Handle photo or image document messages.
+    if (msg.photo || msg.document) {
+      let fileId: string | undefined;
+      let ext = "jpg";
+
+      if (msg.photo && msg.photo.length > 0) {
+        // Telegram sends photo array ascending by size — last is largest.
+        const largest = msg.photo[msg.photo.length - 1]!;
+        fileId = largest.file_id;
+        ext = "jpg";
+      } else if (msg.document) {
+        const mime = msg.document.mime_type ?? "";
+        // Only handle image/* — skip PDFs, plain text, and other types.
+        if (!mime.startsWith("image/")) {
+          await reply("I can only receive images or PDFs. Try sending a JPEG, PNG, or PDF.");
+          return;
+        }
+        fileId = msg.document.file_id;
+        if (msg.document.file_name) {
+          const dot = msg.document.file_name.lastIndexOf(".");
+          ext = dot >= 0 ? msg.document.file_name.slice(dot + 1) : "jpg";
+        } else {
+          // Derive from mime, e.g. image/png -> png
+          ext = mime.split("/")[1] ?? "jpg";
+        }
+        // Clamp to safe alphanumeric characters only.
+        ext = ext.replace(/[^a-zA-Z0-9]/g, "").slice(0, 10) || "bin";
+      }
+
+      if (!fileId) return;
+
+      const tmpDir = `${homedir()}/.rachel/tmp`;
+      const destPath = `${tmpDir}/${fileId}.${ext}`;
+      try {
+        await downloadFileFn(config, fileId, destPath);
+      } catch (err) {
+        console.error(`[telegram-bridge] failed to download image: ${err instanceof Error ? err.message : String(err)}`);
+        try {
+          await reply("Failed to download image — please try again.");
+        } catch (replyErr) {
+          console.error(`[telegram-bridge] also failed to send failure reply: ${replyErr instanceof Error ? replyErr.message : String(replyErr)}`);
+        }
+        return;
+      }
+
+      const caption = (msg.caption ?? "").trim();
+      const input = caption ? `[image: ${destPath}]\n${caption}` : `[image: ${destPath}]`;
+      fifo.push(input);
+      return;
+    }
+
+    if (!text) return;
     fifo.push(text);
   }
 
