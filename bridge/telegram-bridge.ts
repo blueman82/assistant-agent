@@ -142,6 +142,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         await downloadFileFn(fileUrl, destPath);
       } catch (err) {
         console.error(`[telegram-bridge] failed to download image: ${err instanceof Error ? err.message : String(err)}`);
+        await reply("Failed to download image — please try again.");
         return;
       }
 

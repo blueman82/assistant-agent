@@ -148,7 +148,7 @@ export async function downloadFile(
 
   const res = await fetchFn(url);
   if (!res.ok || !res.body) {
-    throw new Error(redact(`Failed to download file: HTTP ${res.status} from ${url}`));
+    throw new Error(redact(`Failed to download file: HTTP ${res.status}`));
   }
 
   const writer = createWriteStream(destPath);
@@ -159,9 +159,11 @@ export async function downloadFile(
         .read()
         .then(({ done, value }) => {
           if (done) {
-            writer.end();
+            // Attach listeners before end() to avoid a race if the stream
+            // closes synchronously.
             writer.once("finish", resolve);
             writer.once("error", reject);
+            writer.end();
             return;
           }
           writer.write(value, (err) => {

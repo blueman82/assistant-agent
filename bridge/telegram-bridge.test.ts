@@ -753,6 +753,186 @@ test("a photo message is downloaded and passed to runTurn as '[image: /path]' wi
   assert.match(capturedInput!, /what is this\?/);
 });
 
+test("a photo message with no caption passes '[image: /path]' (no newline/caption) to runTurn", async () => {
+  const photoUpdate = {
+    ok: true,
+    result: [
+      {
+        update_id: 2,
+        message: {
+          message_id: 2,
+          chat: { id: 12345 },
+          from: { id: 12345 },
+          // no caption field
+          photo: [{ file_id: "solo_id", file_size: 3000, width: 640, height: 480 }],
+        },
+      },
+    ],
+  };
+
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) return { ok: true, json: async () => photoUpdate } as Response;
+    if (url.includes("/getFile")) return { ok: true, json: async () => ({ ok: true, result: { file_path: "photos/solo_id.jpg" } }) } as Response;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  let capturedInput: string | undefined;
+  const runTurnStub: BridgeRunTurn = async (input, emit) => {
+    capturedInput = input;
+    emit("ok", "text");
+  };
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    downloadFileFn: async () => {},
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  assert.ok(capturedInput, "expected runTurn to have been called");
+  assert.match(capturedInput!, /\[image: .*solo_id\.jpg\]/);
+  // No newline or caption text should follow the image tag.
+  assert.doesNotMatch(capturedInput!, /\n/);
+});
+
+test("a document message with an image MIME type is downloaded and passed to runTurn", async () => {
+  const docUpdate = {
+    ok: true,
+    result: [
+      {
+        update_id: 3,
+        message: {
+          message_id: 3,
+          chat: { id: 12345 },
+          from: { id: 12345 },
+          caption: "screenshot",
+          document: { file_id: "doc_id", file_name: "shot.png", mime_type: "image/png", file_size: 20000 },
+        },
+      },
+    ],
+  };
+
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) return { ok: true, json: async () => docUpdate } as Response;
+    if (url.includes("/getFile")) return { ok: true, json: async () => ({ ok: true, result: { file_path: "docs/doc_id.png" } }) } as Response;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  let capturedInput: string | undefined;
+  let downloadedPath: string | undefined;
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (input, emit) => { capturedInput = input; emit("ok", "text"); },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    downloadFileFn: async (_url, destPath) => { downloadedPath = destPath; },
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  assert.ok(capturedInput, "expected runTurn to have been called for image document");
+  assert.match(capturedInput!, /\[image: .*doc_id\.png\]/);
+  assert.match(capturedInput!, /screenshot/);
+  assert.ok(downloadedPath, "expected downloadFileFn to have been called");
+  assert.match(downloadedPath!, /doc_id\.png/);
+});
+
+test("a document message with a non-image MIME type is silently dropped — runTurn is never called", async () => {
+  const docUpdate = {
+    ok: true,
+    result: [
+      {
+        update_id: 4,
+        message: {
+          message_id: 4,
+          chat: { id: 12345 },
+          from: { id: 12345 },
+          document: { file_id: "txt_id", file_name: "notes.txt", mime_type: "text/plain" },
+        },
+      },
+    ],
+  };
+
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) return { ok: true, json: async () => docUpdate } as Response;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  let dispatched = false;
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => { dispatched = true; },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    downloadFileFn: async () => {},
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await bridge.stop();
+
+  assert.equal(dispatched, false, "a non-image document must be silently dropped");
+});
+
+test("a photo whose downloadFileFn rejects sends a failure reply to the user and does not dispatch to runTurn", async () => {
+  const photoUpdate = {
+    ok: true,
+    result: [
+      {
+        update_id: 5,
+        message: {
+          message_id: 5,
+          chat: { id: 12345 },
+          from: { id: 12345 },
+          photo: [{ file_id: "fail_id", file_size: 1000, width: 100, height: 100 }],
+        },
+      },
+    ],
+  };
+
+  const calls: { url: string; body: unknown }[] = [];
+  const transport: typeof fetch = async (input, init) => {
+    const url = String(input);
+    const body = init?.body ? JSON.parse(init.body as string) : undefined;
+    calls.push({ url, body });
+    if (url.includes("/getUpdates")) return { ok: true, json: async () => photoUpdate } as Response;
+    if (url.includes("/getFile")) return { ok: true, json: async () => ({ ok: true, result: { file_path: "photos/fail_id.jpg" } }) } as Response;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  let dispatched = false;
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => { dispatched = true; },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    downloadFileFn: async () => { throw new Error("disk full"); },
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  assert.equal(dispatched, false, "runTurn must not be called when the download fails");
+  const sendCall = calls.find((c) => c.url.includes("/sendMessage"));
+  assert.ok(sendCall, "expected a sendMessage failure reply to the user");
+  assert.match(String((sendCall!.body as Record<string, unknown>)["text"]), /Failed to download image/);
+});
+
 test("grep guard: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
   const source = await (await import("node:fs/promises")).readFile(new URL("./telegram-bridge.test.ts", import.meta.url), "utf8");
   const realFetchCall = /fetch\(\s*["'`]https:\/\/api\.telegram\.org/;
