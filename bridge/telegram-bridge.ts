@@ -7,7 +7,8 @@
 // the Telegram approval surface's handleCallbackQuery — never queued behind
 // pending chat turns, since a gate decision may be blocking a turn.
 
-import { tg, sendChunked, sendTyping, setMyCommands, getFileUrl, downloadFile, type ApiConfig } from "./api.ts";
+import { tg, sendChunked, sendTyping, setMyCommands, downloadFile, type ApiConfig } from "./api.ts";
+import { homedir } from "node:os";
 import type { TelegramApprovalSurface, TelegramCallbackQuery } from "../gate/surfaces/telegram.ts";
 import type { TurnEmit } from "../rachel.ts";
 
@@ -22,7 +23,7 @@ export interface CreateBridgeOptions {
   pollIntervalMs?: number;
   typingIntervalMs?: number;
   // Injectable for tests — avoids hitting the real filesystem/network.
-  downloadFileFn?: (url: string, destPath: string) => Promise<void>;
+  downloadFileFn?: (config: ApiConfig, fileId: string, destPath: string) => Promise<void>;
 }
 
 interface TelegramUpdate {
@@ -111,38 +112,42 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
       let ext = "jpg";
 
       if (msg.photo && msg.photo.length > 0) {
-        // Telegram sends multiple sizes; pick the last (largest).
-        const largest = msg.photo.reduce((a, b) =>
-          (a.file_size ?? 0) >= (b.file_size ?? 0) ? a : b,
-        );
+        // Telegram sends photo array ascending by size — last is largest.
+        const largest = msg.photo[msg.photo.length - 1]!;
         fileId = largest.file_id;
         ext = "jpg";
       } else if (msg.document) {
         const mime = msg.document.mime_type ?? "";
-        // Only handle image/* and application/pdf — skip plain text files etc.
-        if (!mime.startsWith("image/") && mime !== "application/pdf") return;
+        // Only handle image/* — skip PDFs, plain text, and other types.
+        if (!mime.startsWith("image/")) {
+          await reply("I can only receive images or PDFs. Try sending a JPEG, PNG, or PDF.");
+          return;
+        }
         fileId = msg.document.file_id;
-        if (mime === "application/pdf") {
-          ext = "pdf";
-        } else if (msg.document.file_name) {
+        if (msg.document.file_name) {
           const dot = msg.document.file_name.lastIndexOf(".");
           ext = dot >= 0 ? msg.document.file_name.slice(dot + 1) : "jpg";
         } else {
           // Derive from mime, e.g. image/png -> png
           ext = mime.split("/")[1] ?? "jpg";
         }
+        // Clamp to safe alphanumeric characters only.
+        ext = ext.replace(/[^a-zA-Z0-9]/g, "").slice(0, 10) || "bin";
       }
 
       if (!fileId) return;
 
-      const tmpDir = `${process.env["HOME"] ?? "~"}/.rachel/tmp`;
+      const tmpDir = `${homedir()}/.rachel/tmp`;
       const destPath = `${tmpDir}/${fileId}.${ext}`;
       try {
-        const fileUrl = await getFileUrl(config, fileId);
-        await downloadFileFn(fileUrl, destPath);
+        await downloadFileFn(config, fileId, destPath);
       } catch (err) {
         console.error(`[telegram-bridge] failed to download image: ${err instanceof Error ? err.message : String(err)}`);
-        await reply("Failed to download image — please try again.");
+        try {
+          await reply("Failed to download image — please try again.");
+        } catch (replyErr) {
+          console.error(`[telegram-bridge] also failed to send failure reply: ${replyErr instanceof Error ? replyErr.message : String(replyErr)}`);
+        }
         return;
       }
 

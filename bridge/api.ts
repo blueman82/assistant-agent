@@ -126,23 +126,26 @@ export async function setMyCommands(config: ApiConfig, commands: BotCommand[]): 
   await tg(config, "setMyCommands", { commands });
 }
 
-// Returns the HTTPS download URL for a given Telegram file_id.
-export async function getFileUrl(config: ApiConfig, fileId: string): Promise<string> {
-  const result = (await tg(config, "getFile", { file_id: fileId })) as { file_path: string };
-  return `https://api.telegram.org/file/bot${config.token}/${result.file_path}`;
-}
-
-// Downloads the file at url and writes it to destPath.
+// Downloads the Telegram file identified by fileId to destPath.
+// Calls getFile internally to resolve the file_path, then streams the
+// content to disk. The token-bearing download URL never leaves this function.
 // Uses the global fetch (Node 18+ built-in) and node:fs streams — no extra deps.
 // fetchFn is injectable for tests; defaults to global fetch.
 export async function downloadFile(
-  url: string,
+  config: ApiConfig,
+  fileId: string,
   destPath: string,
   fetchFn: typeof fetch = fetch,
 ): Promise<void> {
   const { createWriteStream } = await import("node:fs");
   const { mkdir } = await import("node:fs/promises");
   const { dirname } = await import("node:path");
+
+  const result = (await tg(config, "getFile", { file_id: fileId })) as { file_path?: string };
+  if (!result.file_path) {
+    throw new Error("Telegram did not return a file_path — file may exceed the 20 MB API limit");
+  }
+  const url = `https://api.telegram.org/file/bot${config.token}/${result.file_path}`;
 
   await mkdir(dirname(destPath), { recursive: true });
 
@@ -168,13 +171,17 @@ export async function downloadFile(
           }
           writer.write(value, (err) => {
             if (err) {
+              writer.destroy();
               reject(err);
               return;
             }
             pump();
           });
         })
-        .catch(reject);
+        .catch((err) => {
+          writer.destroy();
+          reject(err);
+        });
     }
     pump();
   });
