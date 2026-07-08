@@ -125,3 +125,55 @@ export interface BotCommand {
 export async function setMyCommands(config: ApiConfig, commands: BotCommand[]): Promise<void> {
   await tg(config, "setMyCommands", { commands });
 }
+
+// Returns the HTTPS download URL for a given Telegram file_id.
+export async function getFileUrl(config: ApiConfig, fileId: string): Promise<string> {
+  const result = (await tg(config, "getFile", { file_id: fileId })) as { file_path: string };
+  return `https://api.telegram.org/file/bot${config.token}/${result.file_path}`;
+}
+
+// Downloads the file at url and writes it to destPath.
+// Uses the global fetch (Node 18+ built-in) and node:fs streams — no extra deps.
+// fetchFn is injectable for tests; defaults to global fetch.
+export async function downloadFile(
+  url: string,
+  destPath: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<void> {
+  const { createWriteStream } = await import("node:fs");
+  const { mkdir } = await import("node:fs/promises");
+  const { dirname } = await import("node:path");
+
+  await mkdir(dirname(destPath), { recursive: true });
+
+  const res = await fetchFn(url);
+  if (!res.ok || !res.body) {
+    throw new Error(redact(`Failed to download file: HTTP ${res.status} from ${url}`));
+  }
+
+  const writer = createWriteStream(destPath);
+  await new Promise<void>((resolve, reject) => {
+    const reader = res.body!.getReader();
+    function pump(): void {
+      reader
+        .read()
+        .then(({ done, value }) => {
+          if (done) {
+            writer.end();
+            writer.once("finish", resolve);
+            writer.once("error", reject);
+            return;
+          }
+          writer.write(value, (err) => {
+            if (err) {
+              reject(err);
+              return;
+            }
+            pump();
+          });
+        })
+        .catch(reject);
+    }
+    pump();
+  });
+}

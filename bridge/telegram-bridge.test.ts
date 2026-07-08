@@ -669,6 +669,90 @@ test("importing rachel.ts as a module (as the bridge does) registers no SIGINT/S
   assert.equal(process.listenerCount("SIGTERM"), sigtermBefore, "rachel.ts must not add a SIGTERM handler when merely imported");
 });
 
+test("a photo message is downloaded and passed to runTurn as '[image: /path]' with the caption appended", async () => {
+  const photoUpdate = {
+    ok: true,
+    result: [
+      {
+        update_id: 1,
+        message: {
+          message_id: 1,
+          chat: { id: 12345 },
+          from: { id: 12345 },
+          caption: "what is this?",
+          photo: [
+            { file_id: "small_id", file_size: 1000, width: 100, height: 100 },
+            { file_id: "large_id", file_size: 5000, width: 800, height: 600 },
+          ],
+        },
+      },
+    ],
+  };
+
+  // The stub transport handles both getUpdates (returns the photo update) and
+  // getFile (returns a fake file_path so getFileUrl can build the download URL).
+  const calls: { url: string; body: unknown }[] = [];
+  const transport: typeof fetch = async (input, init) => {
+    const url = String(input);
+    const body = init?.body ? JSON.parse(init.body as string) : undefined;
+    calls.push({ url, body });
+    if (url.includes("/getUpdates")) {
+      return { ok: true, json: async () => photoUpdate } as Response;
+    }
+    if (url.includes("/getFile")) {
+      return { ok: true, json: async () => ({ ok: true, result: { file_path: "photos/large_id.jpg" } }) } as Response;
+    }
+    // sendMessage, sendChatAction, etc.
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  let capturedInput: string | undefined;
+  const runTurnStub: BridgeRunTurn = async (input, emit) => {
+    capturedInput = input;
+    emit("I see an image.", "text");
+  };
+
+  // Track what the downloadFileFn stub was called with.
+  let downloadedUrl: string | undefined;
+  let downloadedPath: string | undefined;
+  const downloadFileFnStub = async (url: string, destPath: string): Promise<void> => {
+    downloadedUrl = url;
+    downloadedPath = destPath;
+    // No actual filesystem write in tests.
+  };
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    downloadFileFn: downloadFileFnStub,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  // getFile was called with the largest photo's file_id.
+  const getFileCall = calls.find((c) => c.url.includes("/getFile"));
+  assert.ok(getFileCall, "expected a getFile API call for the photo");
+  assert.equal((getFileCall!.body as Record<string, unknown>)["file_id"], "large_id");
+
+  // downloadFileFn was called with the constructed download URL.
+  assert.ok(downloadedUrl, "expected downloadFileFn to have been called");
+  assert.match(downloadedUrl!, /photos\/large_id\.jpg/);
+
+  // The destPath is under ~/.rachel/tmp/.
+  assert.ok(downloadedPath, "expected downloadFileFn to receive a dest path");
+  assert.match(downloadedPath!, /\.rachel\/tmp\/large_id\.jpg/);
+
+  // runTurn received the image path string with the caption.
+  assert.ok(capturedInput, "expected runTurn to have been called with the image input");
+  assert.match(capturedInput!, /\[image: .*large_id\.jpg\]/);
+  assert.match(capturedInput!, /what is this\?/);
+});
+
 test("grep guard: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
   const source = await (await import("node:fs/promises")).readFile(new URL("./telegram-bridge.test.ts", import.meta.url), "utf8");
   const realFetchCall = /fetch\(\s*["'`]https:\/\/api\.telegram\.org/;
