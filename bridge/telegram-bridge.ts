@@ -120,7 +120,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         const mime = msg.document.mime_type ?? "";
         // Only handle image/* — skip PDFs, plain text, and other types.
         if (!mime.startsWith("image/")) {
-          await reply("I can only receive images or PDFs. Try sending a JPEG, PNG, or PDF.");
+          await reply("I can only receive images. Try sending a JPEG or PNG.");
           return;
         }
         fileId = msg.document.file_id;
