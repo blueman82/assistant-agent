@@ -37,7 +37,7 @@ This schema is a documented extension of the coderails wiki schema, not a fork o
 | Directory | Purpose |
 |-----------|---------|
 | `architecture/` | How the system is built — components, wiring, data flow |
-| `capabilities/` | What the secretary can do — one page per tool surface |
+| `capabilities/` | What Rachel can do — one page per tool surface |
 | `patterns/` | Reusable approaches — how to extend, configure, evolve |
 | `investigations/` | Filed-back answers to Gary's queries |
 | `sources/` | Ingested references — docs, gists, PRs |
