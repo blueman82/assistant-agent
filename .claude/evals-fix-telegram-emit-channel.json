@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "scope": "pr",
+  "task_ref": "fix/telegram-emit-channel",
+  "tier": 1,
+  "tier_justification": "Tier 1 predicate: 2 work-units (typed emit channel in secretary.ts's runTurn; text-only forwarding in bridge/telegram-bridge.ts), above tier 0 because no existing test covers the goal state (Telegram replies free of tool echoes and the done footer), below tier 2 because <3 work-units and no irreversible/outward surface in the diff (the post-merge launchd restart is reversible ops).",
+  "frozen_at": "2026-07-08T13:24:40Z",
+  "frozen_sha": "4a70688de895322d00016b6ac642288fdf202e50",
+  "evals": [
+    {
+      "id": "N1",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "fresh-clone",
+      "assert": "Real runTurn (injected queryFn) classifies its output such that a text-only consumer receives the model's text but neither the tool echo (tool name in brackets) nor the '[Rachel] done turns=' footer; the probe's text-only collector stands in for the bridge, whose own filtering is independently checked by N2 criterion 2 and must be structural, not regex.",
+      "cmd": "set -e; d=$(mktemp -d); git clone -q --depth 1 -b fix/telegram-emit-channel https://github.com/blueman82/assistant-agent.git \"$d\"; cd \"$d\"; npm install --silent >/dev/null 2>&1; cat > bridge/__eval_n1.ts <<'PROBE'\nimport assert from \"node:assert/strict\";\nprocess.env[\"RACHEL_TELEGRAM_TOKEN\"] = \"eval-fake-token\";\nprocess.env[\"RACHEL_TELEGRAM_CHAT_ID\"] = \"424242\";\nconst { runTurn } = await import(\"../rachel.ts\");\nconst fakeQuery = ((_args: unknown) => (async function* () {\n  yield { type: \"system\", subtype: \"init\", session_id: \"eval-session\" };\n  yield { type: \"assistant\", message: { content: [\n    { type: \"tool_use\", name: \"mcp__probe__calendar_lookup\", input: { day: \"today\" }, id: \"tu1\" },\n    { type: \"text\", text: \"Nothing on this afternoon. Evening free too.\" },\n  ] } };\n  yield { type: \"result\", num_turns: 2, total_cost_usd: 0.0123 };\n})()) as never;\nconst lines: string[] = [];\nawait runTurn(\"whats on\", ((line: string, ...rest: unknown[]) => { void rest; lines.push(line); }) as never, new AbortController().signal, fakeQuery);\nconst { createBridge } = await import(\"./telegram-bridge.ts\");\nvoid createBridge;\nconst sent: string[] = [];\nconst transport = (async (_url: unknown, init: { body?: unknown }) => {\n  const body = JSON.parse(String(init?.body ?? \"{}\"));\n  if (typeof body.text === \"string\") sent.push(body.text);\n  return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;\n}) as unknown as typeof fetch;\nconst { sendChunked } = await import(\"./api.ts\");\nconst bridgeEmit: string[] = [];\nawait runTurn(\"whats on\", ((line: string, kind?: string) => { if (kind === undefined || kind === \"text\") bridgeEmit.push(line); }) as never, new AbortController().signal, fakeQuery);\nawait sendChunked({ token: \"eval-fake-token\", chatId: \"424242\", transport }, bridgeEmit.join(\"\\n\").trim());\nconst out = sent.join(\"\");\nassert.ok(out.includes(\"Nothing on this afternoon\"), \"model text lost: \" + JSON.stringify(out));\nassert.ok(!out.includes(\"mcp__probe__calendar_lookup\"), \"tool echo leaked: \" + JSON.stringify(out));\nassert.ok(!out.includes(\"done turns=\"), \"done footer leaked: \" + JSON.stringify(out));\nconsole.log(\"N1 PASS\");\nPROBE\nnode --experimental-strip-types bridge/__eval_n1.ts",
+      "negative_control": "set -e; d=$(mktemp -d); git clone -q https://github.com/blueman82/assistant-agent.git \"$d\"; cd \"$d\"; git checkout -q 4a70688de895322d00016b6ac642288fdf202e50; npm install --silent >/dev/null 2>&1; cat > bridge/__eval_n1.ts <<'PROBE'\nimport assert from \"node:assert/strict\";\nprocess.env[\"SECRETARY_TELEGRAM_TOKEN\"] = \"eval-fake-token\";\nprocess.env[\"SECRETARY_TELEGRAM_CHAT_ID\"] = \"424242\";\nconst { runTurn } = await import(\"../secretary.ts\");\nconst fakeQuery = ((_args: unknown) => (async function* () {\n  yield { type: \"system\", subtype: \"init\", session_id: \"eval-session\" };\n  yield { type: \"assistant\", message: { content: [\n    { type: \"tool_use\", name: \"mcp__probe__calendar_lookup\", input: { day: \"today\" }, id: \"tu1\" },\n    { type: \"text\", text: \"Nothing on this afternoon. Evening free too.\" },\n  ] } };\n  yield { type: \"result\", num_turns: 2, total_cost_usd: 0.0123 };\n})()) as never;\nconst bridgeEmit: string[] = [];\nawait runTurn(\"whats on\", ((line: string, kind?: string) => { if (kind === undefined || kind === \"text\") bridgeEmit.push(line); }) as never, new AbortController().signal, fakeQuery);\nconst out = bridgeEmit.join(\"\\n\");\nassert.ok(!out.includes(\"mcp__probe__calendar_lookup\"), \"tool echo leaked: \" + JSON.stringify(out));\nassert.ok(!out.includes(\"done turns=\"), \"done footer leaked: \" + JSON.stringify(out));\nconsole.log(\"N1 PASS\");\nPROBE\nif node --experimental-strip-types bridge/__eval_n1.ts; then echo 'NEG CONTROL FAILED: probe passed on base SHA (flat emit should leak tool echo and footer)'; exit 1; else echo 'negative control ok: probe fails on base SHA'; fi",
+      "status": "pass",
+      "evidence": "Fresh clone at 46829c2: probe printed 'N1 PASS' (model text delivered, tool echo and footer absent from the text-only path through real runTurn + sendChunked). Negative control on pre-fix base 4a70688: probe failed with 'tool echo leaked' showing the exact reported bug (tool echo + [secretary] done footer in the buffer); harness printed 'negative control ok'. Graded 2026-07-08."
+    },
+    {
+      "id": "N2",
+      "priority": "P0",
+      "mode": "agent-run",
+      "surface": "fresh-clone",
+      "assert": "The terminal REPL still surfaces tool-use summaries and the done/cost footer (visibility unchanged for the terminal operator), while the Telegram bridge forwards only the model's text lines plus its own error line.",
+      "cmd": null,
+      "verifier_instruction": "Fresh clone: git clone -q --depth 1 -b fix/telegram-emit-channel https://github.com/blueman82/assistant-agent.git into a temp dir. Read rachel.ts and bridge/telegram-bridge.ts IN FULL. PASS only if (1) the terminal REPL path still receives/prints tool-use summary lines AND the done/cost footer (they must not have been deleted from runTurn, only classified), (2) the Telegram bridge's reply buffer collects ONLY the model's text output \u2014 tool summaries and the done footer must be excluded by a typed/structural mechanism, not by regex pattern-matching on line content, (3) the bridge's own '[secretary] error:' line still reaches the Telegram reply on a thrown turn. Return pass/fail per criterion with code excerpts as evidence. You receive only this instruction and the clone \u2014 no implementation conversation.",
+      "negative_control": null,
+      "status": "pass",
+      "evidence": "Independent verifier agent (fresh clone at 46829c2, no implementation context) returned PASS on all 3 criteria with code excerpts: terminal REPL prints every kind (rachel.ts:266 (line, _kind) callback), bridge buffers only kind==='text' via the TurnEmitKind union (bridge/telegram-bridge.ts:134-136, structural, no regex), and the '[Rachel] error:' catch line bypasses the filter into the reply buffer (137-138, sent at 144-145). Graded 2026-07-08."
+    },
+    {
+      "id": "N3",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "fresh-clone",
+      "assert": "Fresh clone of the PR branch typechecks and passes the full test suite (typecheck and test as separate commands per the documented hang quirk).",
+      "cmd": "set -e\nd=$(mktemp -d)\ngit clone -q --depth 1 -b fix/telegram-emit-channel https://github.com/blueman82/assistant-agent.git \"$d\"\ncd \"$d\"\nnpm install --silent >/dev/null 2>&1\nnpm run typecheck\nnpm test",
+      "negative_control": "set -e\nd=$(mktemp -d)\ngit clone -q --depth 1 -b fix/telegram-emit-channel https://github.com/blueman82/assistant-agent.git \"$d\"\ncd \"$d\"\nnpm install --silent >/dev/null 2>&1\nprintf 'import { test } from \"node:test\";\\nimport assert from \"node:assert/strict\";\\ntest(\"neg control\", () => { assert.equal(1, 2); });\\n' > bridge/__neg.test.ts\nif npm test >/dev/null 2>&1; then echo 'NEG CONTROL FAILED: suite passed with injected failing test'; exit 1; else echo 'negative control ok: suite fails when a failing test is injected'; fi",
+      "status": "pass",
+      "evidence": "Fresh clone at 46829c2: npm install, npm run typecheck (clean), npm test (separate commands) - suite PASS (90 tests incl. probe suite). Negative control: injected failing test made npm test fail; harness printed 'N3 negative control ok'. Graded 2026-07-08."
+    },
+    {
+      "id": "N4",
+      "priority": "P1",
+      "mode": "scripted",
+      "surface": "fresh-clone",
+      "assert": "Message-loss guard: when runTurn produces only non-text lines (e.g. a turn that emitted nothing textual), the bridge still sends a reply (its '(no output)' fallback), never an empty sendMessage.",
+      "cmd": "set -e; d=$(mktemp -d); git clone -q --depth 1 -b fix/telegram-emit-channel https://github.com/blueman82/assistant-agent.git \"$d\"; cd \"$d\"; grep -n '(no output)' bridge/telegram-bridge.ts && echo 'N4 PASS: no-output fallback present on the filtered path'",
+      "negative_control": "if printf 'const replyText = buffer.join(\"\");\\nawait reply(replyText);' | grep -q '(no output)'; then echo 'NEG CONTROL FAILED'; exit 1; else echo 'negative control ok: grep detects a missing fallback'; fi",
+      "status": "pass",
+      "evidence": "Fresh clone at 46829c2: grep found '(no output)' fallback at bridge/telegram-bridge.ts:145 on the filtered path; printed 'N4 PASS'. Negative control: grep on a fallback-less snippet detected the absence. Graded 2026-07-08."
+    }
+  ],
+  "amendments": [
+    {
+      "eval": "N1",
+      "when": "2026-07-08T13:50:00Z",
+      "why": "Upstream PR #15 (rachel rebrand) merged into main mid-flight and was reconciled into this branch: secretary.ts renamed to rachel.ts, env vars SECRETARY_* renamed to RACHEL_*, footer prefix now [Rachel]. Amendment retargets the probe's import path and fabricated env var names only; every assertion is unchanged (the 'done turns=' absence check already matches the rebranded footer). The negative control is deliberately NOT amended - it runs on pre-rename base 4a70688 where the old names are correct."
+    },
+    {
+      "eval": "N2",
+      "when": "2026-07-08T13:50:00Z",
+      "why": "Same upstream rename: verifier must read rachel.ts (secretary.ts no longer exists at the PR head). Criteria unchanged."
+    }
+  ],
+  "result": null,
+  "graded_at": null,
+  "head_sha": null
+}

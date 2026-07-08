@@ -36,7 +36,7 @@ globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createBridge } from "./telegram-bridge.ts";
+import { createBridge, type BridgeRunTurn } from "./telegram-bridge.ts";
 import { GATED_TOOL_NAMES } from "../gate/sendGate.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
@@ -150,7 +150,7 @@ test("gate integrity: a gated send-class tool call issued during a bridge-dispat
     return generate();
   }) as Parameters<typeof realRunTurn>[3];
 
-  const wrappedRunTurn = async (input: string, emit: (line: string) => void, signal: AbortSignal): Promise<void> => {
+  const wrappedRunTurn: BridgeRunTurn = async (input, emit, signal): Promise<void> => {
     // Bind the fake queryFn seam onto the REAL runTurn — the same function
     // rachel.ts exports and the bridge calls in production — rather than
     // reimplementing any gate logic here.
@@ -176,6 +176,58 @@ test("gate integrity: a gated send-class tool call issued during a bridge-dispat
   assert.equal(hookDecision, "deny", "a gated send-class tool call with no approval must be denied by the real gate wiring, not allowed through");
 });
 
+test("runTurn classifies its own emitted lines correctly: assistant text -> 'text', a tool_use block -> 'tool', the result footer -> 'meta'", async () => {
+  // Drives the REAL runTurn (imported from rachel.ts) with a fake queryFn
+  // seam (same idiom as the gate-integrity test above) that yields one
+  // assistant message containing BOTH a text block and a tool_use block,
+  // then a result message — so this pins runTurn's own kind classification
+  // at rachel.ts:203-222, not the bridge's filtering of it.
+  const { runTurn: realRunTurn } = await import("../rachel.ts");
+
+  const fakeQueryFn: Parameters<typeof realRunTurn>[3] = ((_params) => {
+    async function* generate(): AsyncGenerator<SDKMessage, void> {
+      yield {
+        type: "system",
+        subtype: "init",
+        session_id: "kind-classification-test-session",
+      } as unknown as SDKMessage;
+
+      yield {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "text", text: "Renamed the invoice draft as requested." },
+            { type: "tool_use", name: "Read", input: { file_path: "/tmp/kind-classification-fixture.txt" } },
+          ],
+        },
+      } as unknown as SDKMessage;
+
+      yield {
+        type: "result",
+        num_turns: 1,
+        total_cost_usd: 0.0042,
+      } as unknown as SDKMessage;
+    }
+    return generate();
+  }) as Parameters<typeof realRunTurn>[3];
+
+  const recorded: { line: string; kind: string }[] = [];
+  await realRunTurn(
+    "rename the invoice draft",
+    (line, kind) => recorded.push({ line, kind }),
+    new AbortController().signal,
+    fakeQueryFn,
+  );
+
+  assert.equal(recorded.length, 3, `expected exactly 3 emits, got: ${JSON.stringify(recorded)}`);
+  assert.equal(recorded[0]!.kind, "text");
+  assert.equal(recorded[0]!.line, "Renamed the invoice draft as requested.");
+  assert.equal(recorded[1]!.kind, "tool");
+  assert.match(recorded[1]!.line, /Read/);
+  assert.equal(recorded[2]!.kind, "meta");
+  assert.match(recorded[2]!.line, /done turns=/);
+});
+
 test("a text message round-trips through the bridge's FIFO dispatch into runTurn and the reply is sent back via sendChunked", async () => {
   const { transport, calls } = makeStubTransport([
     messageUpdate(1, "hello"),
@@ -183,8 +235,8 @@ test("a text message round-trips through the bridge's FIFO dispatch into runTurn
   ]);
 
   let stopped = false;
-  const runTurnStub = async (input: string, emit: (line: string) => void) => {
-    emit(`echo: ${input}`);
+  const runTurnStub: BridgeRunTurn = async (input, emit) => {
+    emit(`echo: ${input}`, "text");
   };
 
   const bridge = createBridge({
@@ -207,6 +259,123 @@ test("a text message round-trips through the bridge's FIFO dispatch into runTurn
   assert.ok(sendCall, `expected a sendMessage reply containing "echo: hello", got calls: ${JSON.stringify(calls.map((c) => c.url))}`);
 });
 
+test("a turn emitting text, tool, and meta lines sends only the text lines to Telegram — no tool echo, no done footer", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "run the report"),
+    { ok: true, result: [] },
+  ]);
+
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("Report generated for Q3.", "text");
+    emit("  [Bash] generate-report.sh", "tool");
+    emit("[Rachel] done turns=1 cost=$0.0120", "meta");
+  };
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  const sendCall = calls.find((c) => c.url.includes("/sendMessage"));
+  assert.ok(sendCall, "expected a sendMessage reply");
+  const sentText = (sendCall!.body as Record<string, unknown>)["text"];
+  assert.equal(sentText, "Report generated for Q3.");
+  assert.doesNotMatch(String(sentText), /\[Bash\]/);
+  assert.doesNotMatch(String(sentText), /\[Rachel\] done/);
+});
+
+test("a turn emitting only tool and meta lines (no text) falls back to '(no output)', not an empty send", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "just run tools"),
+    { ok: true, result: [] },
+  ]);
+
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("  [Grep] TODO", "tool");
+    emit("[Rachel] done turns=1", "meta");
+  };
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  const sendCall = calls.find((c) => c.url.includes("/sendMessage"));
+  assert.ok(sendCall, "expected a sendMessage reply");
+  assert.equal((sendCall!.body as Record<string, unknown>)["text"], "(no output)");
+});
+
+test("a throwing runTurn still produces a reply containing '[Rachel] error:'", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "trigger a failure"),
+    { ok: true, result: [] },
+  ]);
+
+  const runTurnStub: BridgeRunTurn = async () => {
+    throw new Error("boom - synthetic failure for this test");
+  };
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  const sendCall = calls.find((c) => c.url.includes("/sendMessage"));
+  assert.ok(sendCall, "expected a sendMessage reply");
+  assert.match(String((sendCall!.body as Record<string, unknown>)["text"]), /\[Rachel\] error:/);
+});
+
+test("a runTurn that emits partial text then throws produces a reply containing both the emitted text and '[Rachel] error:'", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "start the migration"),
+    { ok: true, result: [] },
+  ]);
+
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("Migration step 1 of 3 complete.", "text");
+    throw new Error("boom - migration step 2 failed for this test");
+  };
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  const sendCall = calls.find((c) => c.url.includes("/sendMessage"));
+  assert.ok(sendCall, "expected a sendMessage reply");
+  const sentText = String((sendCall!.body as Record<string, unknown>)["text"]);
+  assert.match(sentText, /Migration step 1 of 3 complete\./);
+  assert.match(sentText, /\[Rachel\] error:/);
+});
+
 test("/reset clears the session id so the next dispatched turn calls query() without a resume option", async () => {
   const { transport } = makeStubTransport([
     messageUpdate(1, "/reset"),
@@ -214,8 +383,8 @@ test("/reset clears the session id so the next dispatched turn calls query() wit
   ]);
 
   let resetCalled = false;
-  const runTurnStub = async (_input: string, emit: (line: string) => void) => {
-    emit("ok");
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("ok", "text");
   };
 
   const bridge = createBridge({
@@ -243,7 +412,7 @@ test("/stop aborts an in-flight turn via the AbortController passed to runTurn",
   ]);
 
   let sawAbort = false;
-  const runTurnStub = (_input: string, emit: (line: string) => void, signal: AbortSignal) =>
+  const runTurnStub: BridgeRunTurn = (_input, _emit, signal) =>
     new Promise<void>((resolve) => {
       signal.addEventListener("abort", () => {
         sawAbort = true;

@@ -9,8 +9,9 @@
 
 import { tg, sendChunked, sendTyping, setMyCommands, type ApiConfig } from "./api.ts";
 import type { TelegramApprovalSurface, TelegramCallbackQuery } from "../gate/surfaces/telegram.ts";
+import type { TurnEmit } from "../rachel.ts";
 
-export type BridgeRunTurn = (input: string, emit: (line: string) => void, signal: AbortSignal) => Promise<void>;
+export type BridgeRunTurn = (input: string, emit: TurnEmit, signal: AbortSignal) => Promise<void>;
 
 export interface CreateBridgeOptions {
   config: ApiConfig;
@@ -130,7 +131,9 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
 
         const buffer: string[] = [];
         try {
-          await runTurn(text, (line) => buffer.push(line), abortController.signal);
+          await runTurn(text, (line, kind) => {
+            if (kind === "text") buffer.push(line);
+          }, abortController.signal);
         } catch (err) {
           buffer.push(`[Rachel] error: ${err instanceof Error ? err.message : String(err)}`);
         } finally {

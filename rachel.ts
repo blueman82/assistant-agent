@@ -116,11 +116,16 @@ export function resetSession(): void {
   sessionId = undefined;
 }
 
+// Kind of a single emitted line — lets callers (the Telegram bridge, in
+// particular) distinguish the model's own reply text from tool-use echoes
+// and the turn's completion footer, without pattern-matching on content.
+export type TurnEmitKind = "text" | "tool" | "meta";
+
 // Emits one piece of turn output to the caller — assistant text, a tool-use
-// summary line, or a final status line. The terminal REPL below writes these
-// straight to stdout; the Telegram bridge instead buffers them for a
-// chunked reply.
-export type TurnEmit = (line: string) => void;
+// summary line, or a final status line — tagged with its kind. The terminal
+// REPL below writes every kind straight to stdout; the Telegram bridge
+// instead buffers only "text" lines for a chunked reply.
+export type TurnEmit = (line: string, kind: TurnEmitKind) => void;
 
 // Runs one turn of the Rachel agent loop against `userInput`, invoking
 // `emit` for each line of output as it streams in. `signal` aborts the SDK
@@ -198,7 +203,7 @@ export async function runTurn(
       if (msg.type === "assistant") {
         for (const block of msg.message.content) {
           if (block.type === "text" && block.text.trim()) {
-            emit(block.text);
+            emit(block.text, "text");
           } else if (block.type === "tool_use") {
             const input = block.input as Record<string, unknown>;
             const summary =
@@ -207,14 +212,14 @@ export async function runTurn(
                 : block.name === "Read" || block.name === "Write" || block.name === "Edit"
                   ? String(input["file_path"] ?? "")
                   : JSON.stringify(block.input).slice(0, 100);
-            emit(`  [${block.name}] ${summary}`);
+            emit(`  [${block.name}] ${summary}`, "tool");
           }
         }
       }
 
       if (msg.type === "result") {
         const cost = msg.total_cost_usd != null ? ` cost=$${msg.total_cost_usd.toFixed(4)}` : "";
-        emit(`[Rachel] done turns=${msg.num_turns}${cost}`);
+        emit(`[Rachel] done turns=${msg.num_turns}${cost}`, "meta");
       }
     }
   } catch (err) {
@@ -258,7 +263,7 @@ async function main(): Promise<void> {
 
     process.stdout.write("\n");
     try {
-      await runTurn(userInput, (line) => process.stdout.write(line + "\n"), abortController.signal);
+      await runTurn(userInput, (line, _kind) => process.stdout.write(line + "\n"), abortController.signal);
     } finally {
       process.stdin.removeListener("data", onKeypress);
       if (process.stdin.isTTY) {

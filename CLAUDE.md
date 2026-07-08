@@ -34,7 +34,7 @@ The codebase is intentionally tiny and splits cleanly into **plumbing** and **br
 - **`bridge/telegram-bridge.ts`** — a second front-end onto the same Rachel. Owns the single Telegram `getUpdates` long-poll loop (Telegram allows exactly one consumer per bot token), routes ordinary chat messages into a FIFO queue drained through `rachel.ts`'s `runTurn`, and routes `callback_query` taps (Approve/Deny) immediately into the imported `telegramSurface` from `rachel.ts` rather than constructing its own — a callback must resolve the same surface instance the send gate is waiting on. `bridge/api.ts` is the thin plain-fetch Telegram client (markdown stripping, chunked replies, typing indicator, token redaction in logs). See `bridge/launchd.plist` to run it as a background service.
 - **`prompts/system.md`** — the brain. All behaviour lives here: tool-routing rules, capability docs, and ground rules. **To change how Rachel behaves, edit this file, not the TypeScript.**
 
-To understand the agent you must read both files together — `rachel.ts` tells you which tools are wired in; `system.md` tells you how they're meant to be used. `bridge/telegram-bridge.ts` is a thin transport layer on top of both — it adds no new behaviour, only a second way to reach the same `runTurn`.
+To understand the agent you must read both files together — `rachel.ts` tells you which tools are wired in; `system.md` tells you how they're meant to be used. `bridge/telegram-bridge.ts` is a thin transport layer on top of both — it adds no new Rachel behaviour, only the text-only reply filter and a second way to reach the same `runTurn`.
 
 ### Agent configuration (in `rachel.ts`)
 
