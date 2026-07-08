@@ -319,7 +319,7 @@ test("a turn emitting only tool and meta lines (no text) falls back to '(no outp
   assert.equal((sendCall!.body as Record<string, unknown>)["text"], "(no output)");
 });
 
-test("a throwing runTurn still produces a reply containing '[secretary] error:'", async () => {
+test("a throwing runTurn still produces a reply containing '[Rachel] error:'", async () => {
   const { transport, calls } = makeStubTransport([
     messageUpdate(1, "trigger a failure"),
     { ok: true, result: [] },
@@ -343,10 +343,10 @@ test("a throwing runTurn still produces a reply containing '[secretary] error:'"
 
   const sendCall = calls.find((c) => c.url.includes("/sendMessage"));
   assert.ok(sendCall, "expected a sendMessage reply");
-  assert.match(String((sendCall!.body as Record<string, unknown>)["text"]), /\[secretary\] error:/);
+  assert.match(String((sendCall!.body as Record<string, unknown>)["text"]), /\[Rachel\] error:/);
 });
 
-test("a runTurn that emits partial text then throws produces a reply containing both the emitted text and '[secretary] error:'", async () => {
+test("a runTurn that emits partial text then throws produces a reply containing both the emitted text and '[Rachel] error:'", async () => {
   const { transport, calls } = makeStubTransport([
     messageUpdate(1, "start the migration"),
     { ok: true, result: [] },
@@ -373,7 +373,7 @@ test("a runTurn that emits partial text then throws produces a reply containing 
   assert.ok(sendCall, "expected a sendMessage reply");
   const sentText = String((sendCall!.body as Record<string, unknown>)["text"]);
   assert.match(sentText, /Migration step 1 of 3 complete\./);
-  assert.match(sentText, /\[secretary\] error:/);
+  assert.match(sentText, /\[Rachel\] error:/);
 });
 
 test("/reset clears the session id so the next dispatched turn calls query() without a resume option", async () => {
