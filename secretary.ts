@@ -263,7 +263,7 @@ async function main(): Promise<void> {
 
     process.stdout.write("\n");
     try {
-      await runTurn(userInput, (line) => process.stdout.write(line + "\n"), abortController.signal);
+      await runTurn(userInput, (line, _kind) => process.stdout.write(line + "\n"), abortController.signal);
     } finally {
       process.stdin.removeListener("data", onKeypress);
       if (process.stdin.isTTY) {
