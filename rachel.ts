@@ -85,15 +85,15 @@ if (telegramSurface) {
 // than leaving stale "pending" entries the dashboard would render as
 // phantom approval cards.
 approvalSurfaces.push(
-  process.env["SECRETARY_QUEUE_DIR"]
-    ? createQueueApprovalSurface(process.env["SECRETARY_QUEUE_DIR"])
+  process.env["RACHEL_QUEUE_DIR"]
+    ? createQueueApprovalSurface(process.env["RACHEL_QUEUE_DIR"])
     : createQueueApprovalSurface(),
 );
 
 // Internal deny-timeout override — unset in production (falls back to
 // createSendGateHook's own 60s default); exists so tests can exercise the
 // real gate's timeout-denies-by-default path without waiting 60s.
-const gateTimeoutMs = process.env["SECRETARY_GATE_TIMEOUT_MS"]
+const gateTimeoutMs = process.env["RACHEL_GATE_TIMEOUT_MS"]
   ? parseInt(process.env["SECRETARY_GATE_TIMEOUT_MS"], 10)
   : undefined;
 const sendGateHook = gateTimeoutMs !== undefined
