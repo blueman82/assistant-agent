@@ -346,6 +346,36 @@ test("a throwing runTurn still produces a reply containing '[secretary] error:'"
   assert.match(String((sendCall!.body as Record<string, unknown>)["text"]), /\[secretary\] error:/);
 });
 
+test("a runTurn that emits partial text then throws produces a reply containing both the emitted text and '[secretary] error:'", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "start the migration"),
+    { ok: true, result: [] },
+  ]);
+
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("Migration step 1 of 3 complete.", "text");
+    throw new Error("boom - migration step 2 failed for this test");
+  };
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  const sendCall = calls.find((c) => c.url.includes("/sendMessage"));
+  assert.ok(sendCall, "expected a sendMessage reply");
+  const sentText = String((sendCall!.body as Record<string, unknown>)["text"]);
+  assert.match(sentText, /Migration step 1 of 3 complete\./);
+  assert.match(sentText, /\[secretary\] error:/);
+});
+
 test("/reset clears the session id so the next dispatched turn calls query() without a resume option", async () => {
   const { transport } = makeStubTransport([
     messageUpdate(1, "/reset"),
