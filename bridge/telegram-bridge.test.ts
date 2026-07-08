@@ -176,6 +176,58 @@ test("gate integrity: a gated send-class tool call issued during a bridge-dispat
   assert.equal(hookDecision, "deny", "a gated send-class tool call with no approval must be denied by the real gate wiring, not allowed through");
 });
 
+test("runTurn classifies its own emitted lines correctly: assistant text -> 'text', a tool_use block -> 'tool', the result footer -> 'meta'", async () => {
+  // Drives the REAL runTurn (imported from secretary.ts) with a fake queryFn
+  // seam (same idiom as the gate-integrity test above) that yields one
+  // assistant message containing BOTH a text block and a tool_use block,
+  // then a result message — so this pins runTurn's own kind classification
+  // at secretary.ts:203-222, not the bridge's filtering of it.
+  const { runTurn: realRunTurn } = await import("../secretary.ts");
+
+  const fakeQueryFn: Parameters<typeof realRunTurn>[3] = (() => {
+    async function* generate(): AsyncGenerator<SDKMessage, void> {
+      yield {
+        type: "system",
+        subtype: "init",
+        session_id: "kind-classification-test-session",
+      } as unknown as SDKMessage;
+
+      yield {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "text", text: "Renamed the invoice draft as requested." },
+            { type: "tool_use", name: "Read", input: { file_path: "/tmp/kind-classification-fixture.txt" } },
+          ],
+        },
+      } as unknown as SDKMessage;
+
+      yield {
+        type: "result",
+        num_turns: 1,
+        total_cost_usd: 0.0042,
+      } as unknown as SDKMessage;
+    }
+    return generate();
+  }) as Parameters<typeof realRunTurn>[3];
+
+  const recorded: { line: string; kind: string }[] = [];
+  await realRunTurn(
+    "rename the invoice draft",
+    (line, kind) => recorded.push({ line, kind }),
+    new AbortController().signal,
+    fakeQueryFn,
+  );
+
+  assert.equal(recorded.length, 3, `expected exactly 3 emits, got: ${JSON.stringify(recorded)}`);
+  assert.equal(recorded[0]!.kind, "text");
+  assert.equal(recorded[0]!.line, "Renamed the invoice draft as requested.");
+  assert.equal(recorded[1]!.kind, "tool");
+  assert.match(recorded[1]!.line, /Read/);
+  assert.equal(recorded[2]!.kind, "meta");
+  assert.match(recorded[2]!.line, /done turns=/);
+});
+
 test("a text message round-trips through the bridge's FIFO dispatch into runTurn and the reply is sent back via sendChunked", async () => {
   const { transport, calls } = makeStubTransport([
     messageUpdate(1, "hello"),
