@@ -12,21 +12,32 @@ export interface ApiConfig {
 
 const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 
-// Strips stray markdown from a reply so Telegram (which gets no parse_mode)
-// never shows literal **bold**/## headers/backticks. Belt-and-braces behind
-// the plain-text rule in prompts/system.md — deterministic stripping can't
-// lose a message the way a parse_mode 400 would.
+// Strips stray inline markdown from a reply so Telegram (which gets no
+// parse_mode) doesn't show literal **bold**/## headers/backticks. Fenced
+// code blocks pass through untouched — the plain-text rule in
+// prompts/system.md permits fences when quoting actual code. Belt-and-braces
+// behind that rule: deterministic stripping can't lose a message the way a
+// parse_mode 400 would.
 export function stripMarkdown(text: string): string {
+  return text
+    .split(/(```[\s\S]*?```)/)
+    .map((segment) => (segment.startsWith("```") ? segment : stripInline(segment)))
+    .join("");
+}
+
+function stripInline(text: string): string {
   return (
     text
       .replace(/^#{1,6}\s+/gm, "")
       .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)")
-      .replace(/\*\*(\S(?:[^*]*\S)?)\*\*/g, "$1")
-      // Emphasis content must not start/end with whitespace, so a lone
-      // asterisk or underscore used literally (maths, snake_case URLs) is
-      // never treated as a marker.
-      .replace(/\*(\S(?:[^*]*\S)?)\*/g, "$1")
-      .replace(/__(\S(?:[^_]*\S)?)__/g, "$1")
+      // Emphasis openers must not be preceded by a word character and content
+      // must not start/end with whitespace, so spaced maths (2 * 3) and
+      // unspaced arithmetic (3*4=12) survive.
+      .replace(/(?<!\w)\*\*(\S(?:[^*]*\S)?)\*\*/g, "$1")
+      .replace(/(?<!\w)\*(\S(?:[^*]*\S)?)\*/g, "$1")
+      // Single underscores are never matched at all — only __double__ pairs —
+      // so snake_case and URLs are safe; don't add a single-underscore rule.
+      .replace(/(?<!\w)__(\S(?:[^_]*\S)?)__/g, "$1")
       .replace(/`([^`]+)`/g, "$1")
   );
 }
