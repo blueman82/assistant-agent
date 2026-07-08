@@ -8,15 +8,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # Assistant Agent
 
-Gary's personal AI secretary, built on the Claude Agent SDK. It runs as a single long-lived CLI agent that handles email, calendar, and tasks.
+Gary's personal AI assistant, Rachel, built on the Claude Agent SDK. It runs as a single long-lived CLI agent that handles email, calendar, and tasks.
 
 ## Commands
 
 ```bash
 npm install                 # install dependencies
-npx tsx secretary.ts        # run interactively
-npx tsx secretary.ts "..."  # run a one-shot request, then drop into interactive
-npm start                   # alias for tsx secretary.ts
+npx tsx rachel.ts           # run interactively
+npx tsx rachel.ts "..."     # run a one-shot request, then drop into interactive
+npm start                   # alias for tsx rachel.ts
 npm run bridge              # tsx bridge/telegram-bridge.ts (Telegram front-end)
 npm run typecheck           # tsc --noEmit
 npm test                    # gate/**/*.test.ts + bridge/**/*.test.ts + hooks/scripts/tests/probe_conventions.test.sh
@@ -24,7 +24,7 @@ npm test                    # gate/**/*.test.ts + bridge/**/*.test.ts + hooks/sc
 
 There is no build step (run directly via `tsx`) and no linter. `.claude/test_command` runs `npm run typecheck && npm test`, which the coderails `test_gate` hook enforces before commits. (Known quirk: run `npm run typecheck` and `npm test` as separate commands — the combined `&&` invocation can hang.)
 
-To run the Telegram bridge persistently (survives reboots/crashes), copy `bridge/launchd.plist` to `~/Library/LaunchAgents/com.secretary.telegram-bridge.plist`, replace `__REPO_PATH__` with the absolute path to this checkout, then `launchctl load ~/Library/LaunchAgents/com.secretary.telegram-bridge.plist`. Logs land at `.secretary/telegram-bridge.log`, redacted of the bot token before they're ever written.
+To run the Telegram bridge persistently (survives reboots/crashes), copy `bridge/launchd.plist` to `~/Library/LaunchAgents/com.rachel.telegram-bridge.plist`, replace `__REPO_PATH__` with the absolute path to this checkout, then `launchctl load ~/Library/LaunchAgents/com.rachel.telegram-bridge.plist`. Logs land at `.rachel/telegram-bridge.log`, redacted of the bot token before they're ever written.
 
 ## Architecture
 
