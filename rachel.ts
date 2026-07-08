@@ -274,7 +274,7 @@ async function main(): Promise<void> {
     try {
       await runTerminalTurn(initialPrompt);
     } catch (err) {
-      console.error(`[secretary] error: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(`[Rachel] error: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -290,19 +290,19 @@ async function main(): Promise<void> {
     // Reset session
     if (input.trim() === "/reset") {
       resetSession();
-      console.log("[secretary] session reset.\n");
+      console.log("[Rachel] session reset.\n");
       continue;
     }
 
     try {
       await runTerminalTurn(input.trim());
     } catch (err) {
-      console.error(`[secretary] error: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(`[Rachel] error: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 }
 
-// Only run the REPL when this file is executed directly (tsx secretary.ts),
+// Only run the REPL when this file is executed directly (tsx rachel.ts),
 // not when imported as a module (e.g. by the Telegram bridge).
 if (import.meta.url === `file://${process.argv[1]}`) {
   await main();
