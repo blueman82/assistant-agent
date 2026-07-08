@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { tg, sendChunked, sendTyping, setMyCommands } from "./api.ts";
+import { tg, sendChunked, sendTyping, setMyCommands, stripMarkdown } from "./api.ts";
 
 function makeStubTransport(handler: (url: string, body: unknown) => unknown) {
   const calls: { url: string; body: unknown }[] = [];
@@ -118,6 +118,95 @@ test("setMyCommands posts the given command list", async () => {
   assert.ok(call);
   const body = call!.body as Record<string, unknown>;
   assert.equal((body["commands"] as unknown[]).length, 3);
+});
+
+test("stripMarkdown removes ** bold markers keeping the content", () => {
+  assert.equal(stripMarkdown("an **urgent** reply"), "an urgent reply");
+});
+
+test("stripMarkdown removes single-asterisk italic markers keeping the content", () => {
+  assert.equal(stripMarkdown("that *really* matters"), "that really matters");
+});
+
+test("stripMarkdown removes double-underscore markers keeping the content", () => {
+  assert.equal(stripMarkdown("__note__ this"), "note this");
+});
+
+test("stripMarkdown removes leading header hashes at line start", () => {
+  assert.equal(stripMarkdown("## Today\nfirst thing"), "Today\nfirst thing");
+  assert.equal(stripMarkdown("### Deeper\nbody"), "Deeper\nbody");
+});
+
+test("stripMarkdown removes inline-code backticks keeping the content", () => {
+  assert.equal(stripMarkdown("run `npm start` now"), "run npm start now");
+});
+
+test("stripMarkdown converts [text](url) links to text (url)", () => {
+  assert.equal(stripMarkdown("[calendar](https://cal.example/week)"), "calendar (https://cal.example/week)");
+});
+
+test("stripMarkdown leaves list hyphens alone", () => {
+  assert.equal(stripMarkdown("- milk\n- eggs"), "- milk\n- eggs");
+});
+
+test("stripMarkdown is a no-op on already-plain text", () => {
+  const plain = "Meeting moved to 3pm. Room 4. Bring the printout.";
+  assert.equal(stripMarkdown(plain), plain);
+});
+
+test("stripMarkdown does not mangle URLs containing single underscores", () => {
+  assert.equal(stripMarkdown("see https://docs.example/api_reference_v2"), "see https://docs.example/api_reference_v2");
+});
+
+test("stripMarkdown leaves genuine asterisk maths with surrounding spaces alone", () => {
+  assert.equal(stripMarkdown("2 * 3 * 4 = 24"), "2 * 3 * 4 = 24");
+});
+
+test("stripMarkdown leaves fenced code blocks byte-identical, including hashes, backticks, and asterisks inside", () => {
+  const fenced = "```python\n# fetch the data\ndef f(*args, **kwargs):\n    pass\n```";
+  assert.equal(stripMarkdown(fenced), fenced);
+});
+
+test("stripMarkdown sanitises text around a fence while leaving the fence untouched", () => {
+  const input = "Here's the script, **run it**:\n```sh\n# step one\necho *glob*\n```\nthen `reboot`.";
+  assert.equal(stripMarkdown(input), "Here's the script, run it:\n```sh\n# step one\necho *glob*\n```\nthen reboot.");
+});
+
+test("stripMarkdown leaves unspaced asterisk arithmetic alone", () => {
+  assert.equal(stripMarkdown("3*4=12 and 5*6=30"), "3*4=12 and 5*6=30");
+});
+
+test("stripMarkdown leaves single-underscore emphasis untouched by design (only double underscores are markers)", () => {
+  assert.equal(stripMarkdown("_important_ note"), "_important_ note");
+});
+
+test("sendChunked strips markdown on the whole text before chunking, so a marker straddling the 4096 boundary never leaks", async () => {
+  const { transport, calls } = makeStubTransport(() => ({ ok: true, result: {} }));
+  // Place ** markers so the bold span crosses the 4096-unit boundary: if
+  // stripping ran per-chunk instead of pre-chunk, the pair would be split
+  // across chunks and both halves would leak literal asterisks.
+  const text = "a".repeat(4090) + " **bold across the boundary** " + "b".repeat(200);
+  await sendChunked({ token: "t", chatId: "1", transport }, text);
+  const rejoined = calls
+    .filter((c) => c.url.includes("/sendMessage"))
+    .map((c) => (c.body as Record<string, unknown>)["text"] as string)
+    .join("");
+  assert.ok(!rejoined.includes("*"), `asterisks leaked to Telegram: ${JSON.stringify(rejoined.slice(4080, 4130))}`);
+  assert.ok(rejoined.includes("bold across the boundary"));
+});
+
+test("stripMarkdown handles a mixed markdown message in one pass", () => {
+  assert.equal(
+    stripMarkdown("## Inbox\n**Two** new mails, reply via *phone* or [webmail](https://mail.example)"),
+    "Inbox\nTwo new mails, reply via phone or webmail (https://mail.example)",
+  );
+});
+
+test("sendChunked strips markdown before the text reaches the sendMessage body", async () => {
+  const { transport, calls } = makeStubTransport(() => ({ ok: true, result: {} }));
+  await sendChunked({ token: "t", chatId: "1", transport }, "**Done.** Draft saved to `drafts/`");
+  const sendCalls = calls.filter((c) => c.url.includes("/sendMessage"));
+  assert.equal((sendCalls[0]!.body as Record<string, unknown>)["text"], "Done. Draft saved to drafts/");
 });
 
 test("grep guard: no test in this file ever calls the real api.telegram.org network endpoint", async () => {

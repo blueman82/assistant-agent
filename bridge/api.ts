@@ -12,6 +12,36 @@ export interface ApiConfig {
 
 const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 
+// Strips stray inline markdown from a reply so Telegram (which gets no
+// parse mode) doesn't show literal **bold**/## headers/backticks. Fenced
+// code blocks pass through untouched — the plain-text rule in
+// prompts/system.md permits fences when quoting actual code. Belt-and-braces
+// behind that rule: deterministic stripping can't lose a message the way a
+// parse-mode 400 would.
+export function stripMarkdown(text: string): string {
+  return text
+    .split(/(```[\s\S]*?```)/)
+    .map((segment) => (segment.startsWith("```") ? segment : stripInline(segment)))
+    .join("");
+}
+
+function stripInline(text: string): string {
+  return (
+    text
+      .replace(/^#{1,6}\s+/gm, "")
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)")
+      // Emphasis openers must not be preceded by a word character and content
+      // must not start/end with whitespace, so spaced maths (2 * 3) and
+      // unspaced arithmetic (3*4=12) survive.
+      .replace(/(?<!\w)\*\*(\S(?:[^*]*\S)?)\*\*/g, "$1")
+      .replace(/(?<!\w)\*(\S(?:[^*]*\S)?)\*/g, "$1")
+      // Single underscores are never matched at all — only __double__ pairs —
+      // so snake_case and URLs are safe; don't add a single-underscore rule.
+      .replace(/(?<!\w)__(\S(?:[^_]*\S)?)__/g, "$1")
+      .replace(/`([^`]+)`/g, "$1")
+  );
+}
+
 // Strips the bot token out of any URL string before it reaches a log line
 // or thrown error — launchd persists stdout/stderr to disk with every
 // request URL otherwise carrying the token in plaintext.
@@ -77,7 +107,7 @@ function chunkText(text: string, maxLength: number): string[] {
 }
 
 export async function sendChunked(config: ApiConfig, text: string): Promise<void> {
-  const chunks = chunkText(text, TELEGRAM_MAX_MESSAGE_LENGTH);
+  const chunks = chunkText(stripMarkdown(text), TELEGRAM_MAX_MESSAGE_LENGTH);
   for (const chunk of chunks) {
     await tg(config, "sendMessage", { chat_id: config.chatId, text: chunk });
   }
