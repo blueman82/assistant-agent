@@ -9,6 +9,7 @@
 
 import { tg, sendChunked, sendTyping, setMyCommands, type ApiConfig } from "./api.ts";
 import type { TelegramApprovalSurface, TelegramCallbackQuery } from "../gate/surfaces/telegram.ts";
+import type { TurnEmit } from "../secretary.ts";
 
 export type BridgeRunTurn = (input: string, emit: TurnEmit, signal: AbortSignal) => Promise<void>;
 
