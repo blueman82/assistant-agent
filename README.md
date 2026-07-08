@@ -65,5 +65,5 @@ npm run typecheck           # tsc --noEmit
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `SECRETARY_MODEL` | `claude-sonnet-4-6` | Model to run |
-| `SECRETARY_MAX_TURNS` | `200` | Max agent turns per request |
+| `RACHEL_MODEL` | `claude-sonnet-4-6` | Model to run |
+| `RACHEL_MAX_TURNS` | `200` | Max agent turns per request |
