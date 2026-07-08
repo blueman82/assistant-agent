@@ -212,7 +212,7 @@ export async function runTurn(
                 : block.name === "Read" || block.name === "Write" || block.name === "Edit"
                   ? String(input["file_path"] ?? "")
                   : JSON.stringify(block.input).slice(0, 100);
-            emit(`  [${block.name}] ${summary}`, "tool");
+            emit(`  [${block.name}] ${summary}`, "text");
           }
         }
       }
