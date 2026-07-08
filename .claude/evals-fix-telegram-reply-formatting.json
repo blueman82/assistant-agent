@@ -38,8 +38,8 @@
       "assert": "Fresh clone of the PR branch typechecks and passes the full test suite (typecheck and test run as separate commands per the documented hang quirk).",
       "cmd": "set -e\nd=$(mktemp -d)\ngit clone -q --depth 1 -b fix/telegram-reply-formatting https://github.com/blueman82/assistant-agent.git \"$d\"\ncd \"$d\"\nnpm install --silent >/dev/null 2>&1\nnpm run typecheck\nnpm test",
       "negative_control": "set -e\nd=$(mktemp -d)\ngit clone -q --depth 1 -b fix/telegram-reply-formatting https://github.com/blueman82/assistant-agent.git \"$d\"\ncd \"$d\"\nnpm install --silent >/dev/null 2>&1\nprintf 'import { test } from \"node:test\";\\nimport assert from \"node:assert/strict\";\\ntest(\"neg control\", () => { assert.equal(1, 2); });\\n' > bridge/__neg.test.ts\nif npm test >/dev/null 2>&1; then echo 'NEG CONTROL FAILED: suite passed with injected failing test'; exit 1; else echo 'negative control ok: suite fails when a failing test is injected'; fi",
-      "status": "pending",
-      "evidence": ""
+      "status": "pass",
+      "evidence": "Fresh clone at 9c1381c: npm install, npm run typecheck (clean), npm test ran as separate commands — suite ended PASS (85 tests incl. probe_conventions.test.sh 'PASS'). Negative control: injected bridge/__neg.test.ts asserting 1==2 made npm test fail; harness printed 'E3 negative control ok: suite fails when a failing test is injected'. Graded 2026-07-08."
     },
     {
       "id": "E4",
