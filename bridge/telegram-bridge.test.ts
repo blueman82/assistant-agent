@@ -268,7 +268,7 @@ test("a turn emitting text, tool, and meta lines sends only the text lines to Te
   const runTurnStub: BridgeRunTurn = async (_input, emit) => {
     emit("Report generated for Q3.", "text");
     emit("  [Bash] generate-report.sh", "tool");
-    emit("[secretary] done turns=1 cost=$0.0120", "meta");
+    emit("[Rachel] done turns=1 cost=$0.0120", "meta");
   };
 
   const bridge = createBridge({
@@ -288,7 +288,7 @@ test("a turn emitting text, tool, and meta lines sends only the text lines to Te
   const sentText = (sendCall!.body as Record<string, unknown>)["text"];
   assert.equal(sentText, "Report generated for Q3.");
   assert.doesNotMatch(String(sentText), /\[Bash\]/);
-  assert.doesNotMatch(String(sentText), /\[secretary\] done/);
+  assert.doesNotMatch(String(sentText), /\[Rachel\] done/);
 });
 
 test("a turn emitting only tool and meta lines (no text) falls back to '(no output)', not an empty send", async () => {
