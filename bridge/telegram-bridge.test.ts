@@ -184,7 +184,7 @@ test("runTurn classifies its own emitted lines correctly: assistant text -> 'tex
   // at secretary.ts:203-222, not the bridge's filtering of it.
   const { runTurn: realRunTurn } = await import("../secretary.ts");
 
-  const fakeQueryFn: Parameters<typeof realRunTurn>[3] = (() => {
+  const fakeQueryFn: Parameters<typeof realRunTurn>[3] = ((_params) => {
     async function* generate(): AsyncGenerator<SDKMessage, void> {
       yield {
         type: "system",
