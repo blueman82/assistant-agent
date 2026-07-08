@@ -132,7 +132,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         try {
           await runTurn(text, (line) => buffer.push(line), abortController.signal);
         } catch (err) {
-          buffer.push(`[secretary] error: ${err instanceof Error ? err.message : String(err)}`);
+          buffer.push(`[Rachel] error: ${err instanceof Error ? err.message : String(err)}`);
         } finally {
           clearInterval(typingTimer);
           currentAbort = undefined;
