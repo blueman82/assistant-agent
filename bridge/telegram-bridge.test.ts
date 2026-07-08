@@ -330,7 +330,7 @@ test("/stop aborts an in-flight turn via the AbortController passed to runTurn",
   ]);
 
   let sawAbort = false;
-  const runTurnStub = (_input: string, emit: (line: string) => void, signal: AbortSignal) =>
+  const runTurnStub: BridgeRunTurn = (_input, _emit, signal) =>
     new Promise<void>((resolve) => {
       signal.addEventListener("abort", () => {
         sawAbort = true;
