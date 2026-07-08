@@ -207,6 +207,93 @@ test("a text message round-trips through the bridge's FIFO dispatch into runTurn
   assert.ok(sendCall, `expected a sendMessage reply containing "echo: hello", got calls: ${JSON.stringify(calls.map((c) => c.url))}`);
 });
 
+test("a turn emitting text, tool, and meta lines sends only the text lines to Telegram — no tool echo, no done footer", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "run the report"),
+    { ok: true, result: [] },
+  ]);
+
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("Report generated for Q3.", "text");
+    emit("  [Bash] generate-report.sh", "tool");
+    emit("[secretary] done turns=1 cost=$0.0120", "meta");
+  };
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  const sendCall = calls.find((c) => c.url.includes("/sendMessage"));
+  assert.ok(sendCall, "expected a sendMessage reply");
+  const sentText = (sendCall!.body as Record<string, unknown>)["text"];
+  assert.equal(sentText, "Report generated for Q3.");
+  assert.doesNotMatch(String(sentText), /\[Bash\]/);
+  assert.doesNotMatch(String(sentText), /\[secretary\] done/);
+});
+
+test("a turn emitting only tool and meta lines (no text) falls back to '(no output)', not an empty send", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "just run tools"),
+    { ok: true, result: [] },
+  ]);
+
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("  [Grep] TODO", "tool");
+    emit("[secretary] done turns=1", "meta");
+  };
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  const sendCall = calls.find((c) => c.url.includes("/sendMessage"));
+  assert.ok(sendCall, "expected a sendMessage reply");
+  assert.equal((sendCall!.body as Record<string, unknown>)["text"], "(no output)");
+});
+
+test("a throwing runTurn still produces a reply containing '[secretary] error:'", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "trigger a failure"),
+    { ok: true, result: [] },
+  ]);
+
+  const runTurnStub: BridgeRunTurn = async () => {
+    throw new Error("boom - synthetic failure for this test");
+  };
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  const sendCall = calls.find((c) => c.url.includes("/sendMessage"));
+  assert.ok(sendCall, "expected a sendMessage reply");
+  assert.match(String((sendCall!.body as Record<string, unknown>)["text"]), /\[secretary\] error:/);
+});
+
 test("/reset clears the session id so the next dispatched turn calls query() without a resume option", async () => {
   const { transport } = makeStubTransport([
     messageUpdate(1, "/reset"),
