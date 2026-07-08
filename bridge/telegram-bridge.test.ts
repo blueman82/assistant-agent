@@ -299,7 +299,7 @@ test("a turn emitting only tool and meta lines (no text) falls back to '(no outp
 
   const runTurnStub: BridgeRunTurn = async (_input, emit) => {
     emit("  [Grep] TODO", "tool");
-    emit("[secretary] done turns=1", "meta");
+    emit("[Rachel] done turns=1", "meta");
   };
 
   const bridge = createBridge({
