@@ -1,0 +1,6 @@
+#!/usr/bin/env zsh
+# Launch Gary's assistant Rachel from anywhere.
+# Resolves its own location (following symlinks via zsh's ${0:A}), so the
+# repo can live anywhere and ~/bin/rachel can symlink here.
+REPO="${0:A:h:h}"
+exec "$REPO/node_modules/.bin/tsx" "$REPO/rachel.ts" "$@"

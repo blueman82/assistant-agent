@@ -3,9 +3,9 @@
 <!--
   Template launchd job for the Telegram bridge — the single getUpdates
   consumer for the configured bot token. Copy to
-  ~/Library/LaunchAgents/com.secretary.telegram-bridge.plist, replace
+  ~/Library/LaunchAgents/com.rachel.telegram-bridge.plist, replace
   __REPO_PATH__ with the absolute path to this repo checkout, then:
-    launchctl load ~/Library/LaunchAgents/com.secretary.telegram-bridge.plist
+    launchctl load ~/Library/LaunchAgents/com.rachel.telegram-bridge.plist
 
   KeepAlive restarts the process on crash or on the loud exit(1) the bridge
   performs when it detects a second getUpdates consumer (HTTP 409).
@@ -24,7 +24,7 @@
   </dict>
 
   <key>Label</key>
-  <string>com.secretary.telegram-bridge</string>
+  <string>com.rachel.telegram-bridge</string>
 
   <key>ProgramArguments</key>
   <array>
@@ -42,9 +42,9 @@
   <true/>
 
   <key>StandardOutPath</key>
-  <string>__REPO_PATH__/.secretary/telegram-bridge.log</string>
+  <string>__REPO_PATH__/.rachel/telegram-bridge.log</string>
 
   <key>StandardErrorPath</key>
-  <string>__REPO_PATH__/.secretary/telegram-bridge.log</string>
+  <string>__REPO_PATH__/.rachel/telegram-bridge.log</string>
 </dict>
 </plist>

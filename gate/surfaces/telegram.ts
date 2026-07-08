@@ -28,17 +28,17 @@ export interface TelegramApprovalSurface extends ApprovalSurface {
   handleCallbackQuery(cb: TelegramCallbackQuery): Promise<boolean>;
 }
 
-// Reads SECRETARY_TELEGRAM_TOKEN / ~/.secretary/telegram.json — never
+// Reads RACHEL_TELEGRAM_TOKEN / ~/.rachel/telegram.json — never
 // committed. Returns undefined (surface disabled) if no token is configured;
 // the gate must still function fully via the remaining surfaces.
 export function loadTelegramConfig(): { token: string; chatId: string } | undefined {
-  const envToken = process.env["SECRETARY_TELEGRAM_TOKEN"];
-  const envChatId = process.env["SECRETARY_TELEGRAM_CHAT_ID"];
+  const envToken = process.env["RACHEL_TELEGRAM_TOKEN"];
+  const envChatId = process.env["RACHEL_TELEGRAM_CHAT_ID"];
   if (envToken && envChatId) {
     return { token: envToken, chatId: envChatId };
   }
 
-  const configPath = join(homedir(), ".secretary", "telegram.json");
+  const configPath = join(homedir(), ".rachel", "telegram.json");
   if (existsSync(configPath)) {
     try {
       const parsed = JSON.parse(readFileSync(configPath, "utf8")) as { token?: string; chatId?: string };

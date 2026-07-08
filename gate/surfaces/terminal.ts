@@ -9,7 +9,7 @@ export interface TerminalSurfaceOptions {
 }
 
 // Prints the recipient + full canonicalised input and reads a y/n keystroke.
-// A no-op (never resolves) when stdin isn't a TTY — a headless secretary run
+// A no-op (never resolves) when stdin isn't a TTY — a headless Rachel run
 // has no terminal to prompt, so this surface just sits out of the race and
 // lets another surface (or the internal timeout) decide.
 export function createTerminalApprovalSurface(options: TerminalSurfaceOptions = {}): ApprovalSurface {
