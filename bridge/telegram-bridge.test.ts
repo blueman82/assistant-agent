@@ -84,11 +84,11 @@ function messageUpdate(updateId: number, text: string, chatId = 12345) {
 // module.
 test("gate integrity: a gated send-class tool call issued during a bridge-dispatched turn, with no approval, is denied via the real runTurn/sendGateHook wiring", async () => {
   // Drives the bridge with a stub Telegram transport AND the real runTurn
-  // (imported from secretary.ts, not a runTurnStub) so this test exercises
+  // (imported from rachel.ts, not a runTurnStub) so this test exercises
   // the actual hooks.PreToolUse wiring at bridge/telegram-bridge.ts:133 that
-  // secretary.ts's real runTurn sets up at secretary.ts:134-141 — not a
+  // rachel.ts's real runTurn sets up at rachel.ts:134-141 — not a
   // bypass. The real query() would hit the network, so a fake queryFn is
-  // injected via runTurn's queryFn seam (secretary.ts) that plays the one
+  // injected via runTurn's queryFn seam (rachel.ts) that plays the one
   // part only the network normally plays: reading the PreToolUse hook the
   // caller wired in and invoking it exactly as the SDK does, for a gated
   // tool call, with no approval surface ever resolving. If someone removes
