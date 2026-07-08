@@ -116,11 +116,16 @@ export function resetSession(): void {
   sessionId = undefined;
 }
 
+// Kind of a single emitted line — lets callers (the Telegram bridge, in
+// particular) distinguish the model's own reply text from tool-use echoes
+// and the turn's completion footer, without pattern-matching on content.
+export type TurnEmitKind = "text" | "tool" | "meta";
+
 // Emits one piece of turn output to the caller — assistant text, a tool-use
-// summary line, or a final status line. The terminal REPL below writes these
-// straight to stdout; the Telegram bridge instead buffers them for a
-// chunked reply.
-export type TurnEmit = (line: string) => void;
+// summary line, or a final status line — tagged with its kind. The terminal
+// REPL below writes every kind straight to stdout; the Telegram bridge
+// instead buffers only "text" lines for a chunked reply.
+export type TurnEmit = (line: string, kind: TurnEmitKind) => void;
 
 // Runs one turn of the secretary agent loop against `userInput`, invoking
 // `emit` for each line of output as it streams in. `signal` aborts the SDK
