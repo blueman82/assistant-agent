@@ -36,7 +36,7 @@ globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createBridge } from "./telegram-bridge.ts";
+import { createBridge, type BridgeRunTurn } from "./telegram-bridge.ts";
 import { GATED_TOOL_NAMES } from "../gate/sendGate.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
