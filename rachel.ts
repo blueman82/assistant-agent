@@ -267,7 +267,7 @@ async function main(): Promise<void> {
     }
   }
 
-  // Handle initial prompt from CLI args: secretary "check my email"
+  // Handle initial prompt from CLI args: rachel "check my email"
   const initialPrompt = process.argv.slice(2).join(" ").trim();
 
   if (initialPrompt) {
