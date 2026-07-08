@@ -22,7 +22,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // handlers get a chance to run).
 // ---------------------------------------------------------------------------
 function exitClean(signal: string): void {
-  console.log(`\n[secretary] ${signal} — goodbye.`);
+  console.log(`\n[Rachel] ${signal} — goodbye.`);
   process.exit(0);
 }
 if (import.meta.url === `file://${process.argv[1]}`) {
