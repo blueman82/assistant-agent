@@ -65,7 +65,7 @@
     }
   ],
   "amendments": [],
-  "result": null,
-  "graded_at": null,
-  "head_sha": null
+  "result": "GO",
+  "graded_at": "2026-07-08T08:05:00Z",
+  "head_sha": "9c1381cbe84deda36a412601226671a4870a0333"
 }
