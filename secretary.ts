@@ -219,7 +219,7 @@ export async function runTurn(
 
       if (msg.type === "result") {
         const cost = msg.total_cost_usd != null ? ` cost=$${msg.total_cost_usd.toFixed(4)}` : "";
-        emit(`[secretary] done turns=${msg.num_turns}${cost}`);
+        emit(`[secretary] done turns=${msg.num_turns}${cost}`, "meta");
       }
     }
   } catch (err) {
