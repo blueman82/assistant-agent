@@ -13,11 +13,11 @@ export interface ApiConfig {
 const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 
 // Strips stray inline markdown from a reply so Telegram (which gets no
-// parse_mode) doesn't show literal **bold**/## headers/backticks. Fenced
+// parse mode) doesn't show literal **bold**/## headers/backticks. Fenced
 // code blocks pass through untouched — the plain-text rule in
 // prompts/system.md permits fences when quoting actual code. Belt-and-braces
 // behind that rule: deterministic stripping can't lose a message the way a
-// parse_mode 400 would.
+// parse-mode 400 would.
 export function stripMarkdown(text: string): string {
   return text
     .split(/(```[\s\S]*?```)/)
