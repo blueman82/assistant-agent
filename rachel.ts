@@ -33,12 +33,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
-const MODEL = process.env["SECRETARY_MODEL"] ?? "claude-sonnet-4-6";
-const MAX_TURNS = parseInt(process.env["SECRETARY_MAX_TURNS"] ?? "200", 10);
+const MODEL = process.env["RACHEL_MODEL"] ?? "claude-sonnet-4-6";
+const MAX_TURNS = parseInt(process.env["RACHEL_MAX_TURNS"] ?? "200", 10);
 
 const SYSTEM_PROMPT_PATH = join(__dirname, "prompts", "system.md");
 if (!existsSync(SYSTEM_PROMPT_PATH)) {
-  console.error(`[secretary] missing system prompt at ${SYSTEM_PROMPT_PATH}`);
+  console.error(`[Rachel] missing system prompt at ${SYSTEM_PROMPT_PATH}`);
   process.exit(2);
 }
 const systemPrompt = readFileSync(SYSTEM_PROMPT_PATH, "utf8");
