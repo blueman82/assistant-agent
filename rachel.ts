@@ -75,7 +75,7 @@ export const telegramSurface = telegramConfig ? createTelegramApprovalSurface(te
 if (telegramSurface) {
   approvalSurfaces.push(telegramSurface);
 } else {
-  console.log("[secretary] Telegram approval surface disabled (no SECRETARY_TELEGRAM_TOKEN / ~/.secretary/telegram.json) — gate remains functional via terminal/queue surfaces.");
+  console.log("[Rachel] Telegram approval surface disabled (no RACHEL_TELEGRAM_TOKEN / ~/.rachel/telegram.json) — gate remains functional via terminal/queue surfaces.");
 }
 
 // Queue-dir override — same env-seam idiom as above; unset in production
