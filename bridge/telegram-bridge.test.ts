@@ -301,8 +301,8 @@ test("/reset clears the session id so the next dispatched turn calls query() wit
   ]);
 
   let resetCalled = false;
-  const runTurnStub = async (_input: string, emit: (line: string) => void) => {
-    emit("ok");
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("ok", "text");
   };
 
   const bridge = createBridge({
