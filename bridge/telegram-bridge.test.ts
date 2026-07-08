@@ -152,7 +152,7 @@ test("gate integrity: a gated send-class tool call issued during a bridge-dispat
 
   const wrappedRunTurn = async (input: string, emit: (line: string) => void, signal: AbortSignal): Promise<void> => {
     // Bind the fake queryFn seam onto the REAL runTurn — the same function
-    // secretary.ts exports and the bridge calls in production — rather than
+    // rachel.ts exports and the bridge calls in production — rather than
     // reimplementing any gate logic here.
     await realRunTurn(input, emit, signal, fakeQueryFn);
   };
