@@ -1,10 +1,10 @@
 {
   "name": "assistant-agent",
   "version": "0.1.0",
-  "description": "Gary's AI secretary — email, calendar, Slack, tasks, and wiki via the Claude Agent SDK.",
+  "description": "Gary's AI assistant Rachel — email, calendar, Slack, tasks, and wiki via the Claude Agent SDK.",
   "type": "module",
   "scripts": {
-    "start": "tsx secretary.ts",
+    "start": "tsx rachel.ts",
     "bridge": "tsx bridge/telegram-bridge.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test 'gate/**/*.test.ts' 'bridge/**/*.test.ts' && bash hooks/scripts/tests/probe_conventions.test.sh"
