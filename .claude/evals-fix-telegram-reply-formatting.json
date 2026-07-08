@@ -27,8 +27,8 @@
       "cmd": null,
       "verifier_instruction": "Fresh clone: git clone -q --depth 1 -b fix/telegram-reply-formatting https://github.com/blueman82/assistant-agent.git into a temp dir. Read prompts/system.md IN FULL. PASS only if (1) a rule exists stating replies are read in Telegram/terminal and must be plain conversational text without markdown formatting (headers, bold, tables, code fences), (2) it allows an exception for quoting actual code, (3) it sits in a sensible section (e.g. Ground rules) and matches the file's existing bullet style. Return pass/fail per criterion with the rule quoted verbatim as evidence. You receive only this instruction and the clone — no implementation conversation.",
       "negative_control": null,
-      "status": "pending",
-      "evidence": ""
+      "status": "pass",
+      "evidence": "Independent verifier agent (fresh clone, no implementation context) returned PASS on all 3 criteria, quoting the rule verbatim from prompts/system.md line 74 in Ground rules: '**Plain text replies** — your replies are read in Telegram and the terminal REPL, not a markdown renderer. Write plain conversational text: no headers, no bold/italic markers, no tables, no code fences unless quoting actual code. Simple hyphen bullets are fine'. Verifier's clone was at d6999cd; prompts/system.md is byte-identical at head 9c1381c (git diff d6999cd..9c1381c -- prompts/system.md is empty), so the verdict transfers. Graded 2026-07-08."
     },
     {
       "id": "E3",
