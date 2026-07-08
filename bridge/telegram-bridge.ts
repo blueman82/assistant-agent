@@ -1,6 +1,6 @@
 #!/usr/bin/env -S npx tsx
 
-// Telegram front-end for the secretary — owns THE single getUpdates
+// Telegram front-end for Rachel — owns THE single getUpdates
 // consumer for the configured bot token (Telegram allows exactly one).
 // Routes ordinary chat messages into a FIFO turn queue dispatched through
 // runTurn(), and routes callback_query taps (approve/deny) immediately into
