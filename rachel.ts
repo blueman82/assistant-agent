@@ -94,7 +94,7 @@ approvalSurfaces.push(
 // createSendGateHook's own 60s default); exists so tests can exercise the
 // real gate's timeout-denies-by-default path without waiting 60s.
 const gateTimeoutMs = process.env["RACHEL_GATE_TIMEOUT_MS"]
-  ? parseInt(process.env["SECRETARY_GATE_TIMEOUT_MS"], 10)
+  ? parseInt(process.env["RACHEL_GATE_TIMEOUT_MS"], 10)
   : undefined;
 const sendGateHook = gateTimeoutMs !== undefined
   ? createSendGateHook(approvalSurfaces, auditLogPath, new Map(), gateTimeoutMs)
