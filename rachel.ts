@@ -122,7 +122,7 @@ export function resetSession(): void {
 // chunked reply.
 export type TurnEmit = (line: string) => void;
 
-// Runs one turn of the secretary agent loop against `userInput`, invoking
+// Runs one turn of the Rachel agent loop against `userInput`, invoking
 // `emit` for each line of output as it streams in. `signal` aborts the SDK
 // query when triggered (wired to an AbortController the caller owns — e.g.
 // a terminal 'q' keypress or a Telegram /stop command). Session continuity
