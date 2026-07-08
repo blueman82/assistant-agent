@@ -9,15 +9,15 @@
 # already prove those scripts' LOGIC is correct in isolation. This file instead
 # proves what assistant-agent's actual runtime environment does RIGHT NOW — the
 # globally installed plugin copy, not the coderails source checkout — because a
-# secretary SDK session only ever sees whatever plugin version is installed.
+# Rachel SDK session only ever sees whatever plugin version is installed.
 #
 # Live-probe findings this encodes (raw observed evidence, 2026-07-06 23:0x BST):
-#   1. `npx tsx secretary.ts` piped "create tasks/2026-07-06-hook-probe.md..." ran
+#   1. `npx tsx rachel.ts` piped "create tasks/2026-07-06-hook-probe.md..." ran
 #      clean (Write, Bash, Read, Edit all proceeded, turns=5, exit 0) — tasks/*.md
 #      is not misfired on. CLAUDE_DISCIPLINE_LOG showed only Stop-hook entries
 #      (confidence_labels, did_not_verify) for that session, no deny.
-#   2. `npx tsx secretary.ts` in a disposable clone of assistant-agent checked out
-#      on `main`, piped "Edit secretary.ts to add a one-line comment... then stop":
+#   2. `npx tsx rachel.ts` in a disposable clone of assistant-agent checked out
+#      on `main`, piped "Edit rachel.ts to add a one-line comment... then stop":
 #      the Edit PROCEEDED (turns=3, exit 0, `// probe` landed as line 1). This is
 #      the code-arm-on-main case that no_edit_on_main.sh is documented (in the
 #      coderails source) to universally deny — it did NOT fire here.
@@ -134,8 +134,8 @@ if [ -f "$SOURCE_HOOKS/no_edit_on_main.sh" ]; then
 
   check "source hook: main, tasks/*.md Write -> allow (matches live probe #1)" \
     ALLOW "$(run_source_hook "$(payload Write tasks/2026-07-06-hook-probe.md)")"
-  check "source hook: main, secretary.ts Edit -> deny (contradicts live probe #2 — the gap)" \
-    DENY "$(run_source_hook "$(payload Edit secretary.ts)")"
+  check "source hook: main, rachel.ts Edit -> deny (contradicts live probe #2 — the gap)" \
+    DENY "$(run_source_hook "$(payload Edit rachel.ts)")"
   check "source hook: main, .claude/test_command Edit -> deny (finding 5)" \
     DENY "$(run_source_hook "$(payload Edit .claude/test_command)")"
 else
@@ -143,7 +143,7 @@ else
   # checks — record the loss as a failure rather than a quiet no-op, even
   # though the PRESENT/MISSING check above would already fail the suite.
   check "source hook: main, tasks/*.md Write -> allow (matches live probe #1)" ALLOW "SKIPPED-no-source-checkout"
-  check "source hook: main, secretary.ts Edit -> deny (contradicts live probe #2 — the gap)" DENY "SKIPPED-no-source-checkout"
+  check "source hook: main, rachel.ts Edit -> deny (contradicts live probe #2 — the gap)" DENY "SKIPPED-no-source-checkout"
   check "source hook: main, .claude/test_command Edit -> deny (finding 5)" DENY "SKIPPED-no-source-checkout"
 fi
 

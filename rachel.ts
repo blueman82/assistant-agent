@@ -22,7 +22,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // handlers get a chance to run).
 // ---------------------------------------------------------------------------
 function exitClean(signal: string): void {
-  console.log(`\n[secretary] ${signal} — goodbye.`);
+  console.log(`\n[Rachel] ${signal} — goodbye.`);
   process.exit(0);
 }
 if (import.meta.url === `file://${process.argv[1]}`) {
@@ -33,12 +33,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
-const MODEL = process.env["SECRETARY_MODEL"] ?? "claude-sonnet-4-6";
-const MAX_TURNS = parseInt(process.env["SECRETARY_MAX_TURNS"] ?? "200", 10);
+const MODEL = process.env["RACHEL_MODEL"] ?? "claude-sonnet-4-6";
+const MAX_TURNS = parseInt(process.env["RACHEL_MAX_TURNS"] ?? "200", 10);
 
 const SYSTEM_PROMPT_PATH = join(__dirname, "prompts", "system.md");
 if (!existsSync(SYSTEM_PROMPT_PATH)) {
-  console.error(`[secretary] missing system prompt at ${SYSTEM_PROMPT_PATH}`);
+  console.error(`[Rachel] missing system prompt at ${SYSTEM_PROMPT_PATH}`);
   process.exit(2);
 }
 const systemPrompt = readFileSync(SYSTEM_PROMPT_PATH, "utf8");
@@ -58,12 +58,12 @@ const mcpServers = {};
 // Constructed once at module scope so approval state (the one-shot Map) and
 // the audit log persist across turns within a session, not reset per-turn.
 // ---------------------------------------------------------------------------
-// Audit-log path override — same env-seam idiom as SECRETARY_GATE_TIMEOUT_MS
-// below; unset in production (falls back to the real ~/.secretary path), so
+// Audit-log path override — same env-seam idiom as RACHEL_GATE_TIMEOUT_MS
+// below; unset in production (falls back to the real ~/.rachel path), so
 // tests can redirect audit writes away from the operator's real home
 // directory.
-const auditLogPath = process.env["SECRETARY_AUDIT_LOG_PATH"]
-  ?? join(homedir(), ".secretary", "send-gate-audit.jsonl");
+const auditLogPath = process.env["RACHEL_AUDIT_LOG_PATH"]
+  ?? join(homedir(), ".rachel", "send-gate-audit.jsonl");
 
 const approvalSurfaces = [createTerminalApprovalSurface()];
 
@@ -75,7 +75,7 @@ export const telegramSurface = telegramConfig ? createTelegramApprovalSurface(te
 if (telegramSurface) {
   approvalSurfaces.push(telegramSurface);
 } else {
-  console.log("[secretary] Telegram approval surface disabled (no SECRETARY_TELEGRAM_TOKEN / ~/.secretary/telegram.json) — gate remains functional via terminal/queue surfaces.");
+  console.log("[Rachel] Telegram approval surface disabled (no RACHEL_TELEGRAM_TOKEN / ~/.rachel/telegram.json) — gate remains functional via terminal/queue surfaces.");
 }
 
 // Queue-dir override — same env-seam idiom as above; unset in production
@@ -85,16 +85,16 @@ if (telegramSurface) {
 // than leaving stale "pending" entries the dashboard would render as
 // phantom approval cards.
 approvalSurfaces.push(
-  process.env["SECRETARY_QUEUE_DIR"]
-    ? createQueueApprovalSurface(process.env["SECRETARY_QUEUE_DIR"])
+  process.env["RACHEL_QUEUE_DIR"]
+    ? createQueueApprovalSurface(process.env["RACHEL_QUEUE_DIR"])
     : createQueueApprovalSurface(),
 );
 
 // Internal deny-timeout override — unset in production (falls back to
 // createSendGateHook's own 60s default); exists so tests can exercise the
 // real gate's timeout-denies-by-default path without waiting 60s.
-const gateTimeoutMs = process.env["SECRETARY_GATE_TIMEOUT_MS"]
-  ? parseInt(process.env["SECRETARY_GATE_TIMEOUT_MS"], 10)
+const gateTimeoutMs = process.env["RACHEL_GATE_TIMEOUT_MS"]
+  ? parseInt(process.env["RACHEL_GATE_TIMEOUT_MS"], 10)
   : undefined;
 const sendGateHook = gateTimeoutMs !== undefined
   ? createSendGateHook(approvalSurfaces, auditLogPath, new Map(), gateTimeoutMs)
@@ -127,7 +127,7 @@ export type TurnEmitKind = "text" | "tool" | "meta";
 // instead buffers only "text" lines for a chunked reply.
 export type TurnEmit = (line: string, kind: TurnEmitKind) => void;
 
-// Runs one turn of the secretary agent loop against `userInput`, invoking
+// Runs one turn of the Rachel agent loop against `userInput`, invoking
 // `emit` for each line of output as it streams in. `signal` aborts the SDK
 // query when triggered (wired to an AbortController the caller owns — e.g.
 // a terminal 'q' keypress or a Telegram /stop command). Session continuity
@@ -178,10 +178,10 @@ export async function runTurn(
         },
       ],
     },
-    agent: "secretary",
+    agent: "rachel",
     agents: {
-      secretary: {
-        description: "Gary's AI secretary — email, calendar, and tasks.",
+      rachel: {
+        description: "Gary's AI assistant Rachel — email, calendar, and tasks.",
         prompt: systemPrompt,
         skills: [],
       },
@@ -219,7 +219,7 @@ export async function runTurn(
 
       if (msg.type === "result") {
         const cost = msg.total_cost_usd != null ? ` cost=$${msg.total_cost_usd.toFixed(4)}` : "";
-        emit(`[secretary] done turns=${msg.num_turns}${cost}`, "meta");
+        emit(`[Rachel] done turns=${msg.num_turns}${cost}`, "meta");
       }
     }
   } catch (err) {
@@ -241,8 +241,8 @@ async function main(): Promise<void> {
     output: process.stdout,
   });
 
-  console.log(`[secretary] model=${MODEL} maxTurns=${MAX_TURNS}`);
-  console.log(`[secretary] Type your request. Ctrl+C to exit.\n`);
+  console.log(`[Rachel] model=${MODEL} maxTurns=${MAX_TURNS}`);
+  console.log(`[Rachel] Type your request. Ctrl+C to exit.\n`);
 
   async function runTerminalTurn(userInput: string): Promise<void> {
     const abortController = new AbortController();
@@ -256,7 +256,7 @@ async function main(): Promise<void> {
       const ch = data.toString();
       if (ch === "q" || ch === "Q") {
         abortController.abort();
-        console.log("\n[secretary] interrupted.\n");
+        console.log("\n[Rachel] interrupted.\n");
       }
     };
     process.stdin.on("data", onKeypress);
@@ -272,14 +272,14 @@ async function main(): Promise<void> {
     }
   }
 
-  // Handle initial prompt from CLI args: secretary "check my email"
+  // Handle initial prompt from CLI args: rachel "check my email"
   const initialPrompt = process.argv.slice(2).join(" ").trim();
 
   if (initialPrompt) {
     try {
       await runTerminalTurn(initialPrompt);
     } catch (err) {
-      console.error(`[secretary] error: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(`[Rachel] error: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -295,19 +295,19 @@ async function main(): Promise<void> {
     // Reset session
     if (input.trim() === "/reset") {
       resetSession();
-      console.log("[secretary] session reset.\n");
+      console.log("[Rachel] session reset.\n");
       continue;
     }
 
     try {
       await runTerminalTurn(input.trim());
     } catch (err) {
-      console.error(`[secretary] error: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(`[Rachel] error: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 }
 
-// Only run the REPL when this file is executed directly (tsx secretary.ts),
+// Only run the REPL when this file is executed directly (tsx rachel.ts),
 // not when imported as a module (e.g. by the Telegram bridge).
 if (import.meta.url === `file://${process.argv[1]}`) {
   await main();

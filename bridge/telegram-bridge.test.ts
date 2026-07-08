@@ -3,25 +3,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // Fabricated Telegram creds — set before any import in this file (env-first
-// in gate/surfaces/telegram.ts:35-36) so secretary.ts's module-scope
-// loadTelegramConfig() call (secretary.ts:70, which runs once on first
+// in gate/surfaces/telegram.ts:35-36) so rachel.ts's module-scope
+// loadTelegramConfig() call (rachel.ts:70, which runs once on first
 // import anywhere in this file, per ESM module caching) never reads the
-// real ~/.secretary/telegram.json and never constructs a surface capable of
+// real ~/.rachel/telegram.json and never constructs a surface capable of
 // sending to the operator's real Telegram chat. This must stay ahead of
 // every import in this file, static or dynamic.
-process.env["SECRETARY_TELEGRAM_TOKEN"] = "000000000:FAKE-TEST-TOKEN";
-process.env["SECRETARY_TELEGRAM_CHAT_ID"] = "1";
+process.env["RACHEL_TELEGRAM_TOKEN"] = "000000000:FAKE-TEST-TOKEN";
+process.env["RACHEL_TELEGRAM_CHAT_ID"] = "1";
 
 // Same reasoning for the queue approval surface: without this override,
-// secretary.ts's module-scope createQueueApprovalSurface() call defaults to
+// rachel.ts's module-scope createQueueApprovalSurface() call defaults to
 // ~/.claude/coderails-dashboard/approvals (queue.ts's DEFAULT_QUEUE_DIR) and
-// ~/.secretary/send-gate-audit.jsonl for the audit log — real paths under
+// ~/.rachel/send-gate-audit.jsonl for the audit log — real paths under
 // the operator's home directory that a denied-by-timeout test call would
 // leave a stale "pending" entry in, which the real dashboard would then
 // render as a phantom approval card. Redirect both into a throwaway tmpdir.
-const testQueueDir = mkdtempSync(join(tmpdir(), "secretary-test-queue-"));
-process.env["SECRETARY_QUEUE_DIR"] = testQueueDir;
-process.env["SECRETARY_AUDIT_LOG_PATH"] = join(testQueueDir, "audit.jsonl");
+const testQueueDir = mkdtempSync(join(tmpdir(), "rachel-test-queue-"));
+process.env["RACHEL_QUEUE_DIR"] = testQueueDir;
+process.env["RACHEL_AUDIT_LOG_PATH"] = join(testQueueDir, "audit.jsonl");
 
 // Defense-in-depth on top of the env-creds fix above: every test in this
 // file injects its own stub transport (config.transport) rather than
@@ -74,8 +74,8 @@ function messageUpdate(updateId: number, text: string, chatId = 12345) {
 }
 
 // This test must run FIRST in the file (before any other test imports
-// secretary.ts) and sets SECRETARY_GATE_TIMEOUT_MS before its own dynamic
-// import of secretary.ts below — secretary.ts's module-scope
+// rachel.ts) and sets RACHEL_GATE_TIMEOUT_MS before its own dynamic
+// import of rachel.ts below — rachel.ts's module-scope
 // createSendGateHook(...) call runs once, at first import, and node:test
 // runs tests in a single file sequentially in declaration order (no
 // concurrency is configured anywhere in this file), so being first
@@ -84,18 +84,18 @@ function messageUpdate(updateId: number, text: string, chatId = 12345) {
 // module.
 test("gate integrity: a gated send-class tool call issued during a bridge-dispatched turn, with no approval, is denied via the real runTurn/sendGateHook wiring", async () => {
   // Drives the bridge with a stub Telegram transport AND the real runTurn
-  // (imported from secretary.ts, not a runTurnStub) so this test exercises
+  // (imported from rachel.ts, not a runTurnStub) so this test exercises
   // the actual hooks.PreToolUse wiring at bridge/telegram-bridge.ts:133 that
-  // secretary.ts's real runTurn sets up at secretary.ts:134-141 — not a
+  // rachel.ts's real runTurn sets up at rachel.ts:134-141 — not a
   // bypass. The real query() would hit the network, so a fake queryFn is
-  // injected via runTurn's queryFn seam (secretary.ts) that plays the one
+  // injected via runTurn's queryFn seam (rachel.ts) that plays the one
   // part only the network normally plays: reading the PreToolUse hook the
   // caller wired in and invoking it exactly as the SDK does, for a gated
   // tool call, with no approval surface ever resolving. If someone removes
   // the hooks.PreToolUse wiring from runTurn, options.hooks is undefined
   // here and this test throws/fails instead of silently passing.
-  process.env["SECRETARY_GATE_TIMEOUT_MS"] = "200";
-  const { runTurn: realRunTurn } = await import("../secretary.ts");
+  process.env["RACHEL_GATE_TIMEOUT_MS"] = "200";
+  const { runTurn: realRunTurn } = await import("../rachel.ts");
 
   const { transport } = makeStubTransport([
     { ok: true, result: [{ update_id: 1, message: { message_id: 1, chat: { id: 12345 }, text: "send the slack message", from: { id: 12345 } } }] },
@@ -152,7 +152,7 @@ test("gate integrity: a gated send-class tool call issued during a bridge-dispat
 
   const wrappedRunTurn: BridgeRunTurn = async (input, emit, signal): Promise<void> => {
     // Bind the fake queryFn seam onto the REAL runTurn — the same function
-    // secretary.ts exports and the bridge calls in production — rather than
+    // rachel.ts exports and the bridge calls in production — rather than
     // reimplementing any gate logic here.
     await realRunTurn(input, emit, signal, fakeQueryFn);
   };
@@ -167,7 +167,7 @@ test("gate integrity: a gated send-class tool call issued during a bridge-dispat
 
   await bridge.drainOnce();
   // The real gate races the never-resolving approval surfaces against its
-  // own internal deny timeout (shortened to 200ms via SECRETARY_GATE_TIMEOUT_MS
+  // own internal deny timeout (shortened to 200ms via RACHEL_GATE_TIMEOUT_MS
   // above) — wait past that so the timeout branch actually fires.
   await new Promise((resolve) => setTimeout(resolve, 400));
   await bridge.stop();
@@ -661,12 +661,12 @@ test("run() does NOT exit on a non-409/conflict poll error — only the single-p
   assert.ok(callCount >= 2, "the poll loop should have retried after the transient error");
 });
 
-test("importing secretary.ts as a module (as the bridge does) registers no SIGINT/SIGTERM handlers of its own — those must only fire for the standalone terminal REPL, or they'd win the race against the bridge's graceful-shutdown handlers and kill the process before bridge.stop() runs", async () => {
+test("importing rachel.ts as a module (as the bridge does) registers no SIGINT/SIGTERM handlers of its own — those must only fire for the standalone terminal REPL, or they'd win the race against the bridge's graceful-shutdown handlers and kill the process before bridge.stop() runs", async () => {
   const sigintBefore = process.listenerCount("SIGINT");
   const sigtermBefore = process.listenerCount("SIGTERM");
-  await import("../secretary.ts");
-  assert.equal(process.listenerCount("SIGINT"), sigintBefore, "secretary.ts must not add a SIGINT handler when merely imported");
-  assert.equal(process.listenerCount("SIGTERM"), sigtermBefore, "secretary.ts must not add a SIGTERM handler when merely imported");
+  await import("../rachel.ts");
+  assert.equal(process.listenerCount("SIGINT"), sigintBefore, "rachel.ts must not add a SIGINT handler when merely imported");
+  assert.equal(process.listenerCount("SIGTERM"), sigtermBefore, "rachel.ts must not add a SIGTERM handler when merely imported");
 });
 
 test("grep guard: no test in this file ever calls the real api.telegram.org network endpoint", async () => {

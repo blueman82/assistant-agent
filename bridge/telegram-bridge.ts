@@ -1,6 +1,6 @@
 #!/usr/bin/env -S npx tsx
 
-// Telegram front-end for the secretary — owns THE single getUpdates
+// Telegram front-end for Rachel — owns THE single getUpdates
 // consumer for the configured bot token (Telegram allows exactly one).
 // Routes ordinary chat messages into a FIFO turn queue dispatched through
 // runTurn(), and routes callback_query taps (approve/deny) immediately into
@@ -80,7 +80,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
       await reply(
         `uptime: ${Math.floor(process.uptime())}s\n` +
           `session: ${sessionId ?? "(none)"}\n` +
-          `model: ${process.env["SECRETARY_MODEL"] ?? "claude-sonnet-4-6"}\n` +
+          `model: ${process.env["RACHEL_MODEL"] ?? "claude-sonnet-4-6"}\n` +
           `turn in flight: ${currentAbort ? "yes" : "no"}`,
       );
       return;
@@ -135,7 +135,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
             if (kind === "text") buffer.push(line);
           }, abortController.signal);
         } catch (err) {
-          buffer.push(`[secretary] error: ${err instanceof Error ? err.message : String(err)}`);
+          buffer.push(`[Rachel] error: ${err instanceof Error ? err.message : String(err)}`);
         } finally {
           clearInterval(typingTimer);
           currentAbort = undefined;
@@ -233,19 +233,19 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
 // imported by tests.
 if (import.meta.url === `file://${process.argv[1]}`) {
   const { loadTelegramConfig } = await import("../gate/surfaces/telegram.ts");
-  // Import secretary.ts's OWN telegramSurface instance — the one its
+  // Import rachel.ts's OWN telegramSurface instance — the one its
   // send-gate hook actually races against — rather than constructing a
   // second, disconnected surface here. A callback tap must resolve the same
   // instance the gate is waiting on.
-  const { runTurn, getSessionId, resetSession, telegramSurface } = await import("../secretary.ts");
+  const { runTurn, getSessionId, resetSession, telegramSurface } = await import("../rachel.ts");
 
   const telegramConfig = loadTelegramConfig();
   if (!telegramConfig) {
-    console.error("[telegram-bridge] no Telegram config found (SECRETARY_TELEGRAM_TOKEN/SECRETARY_TELEGRAM_CHAT_ID or ~/.secretary/telegram.json) — exiting.");
+    console.error("[telegram-bridge] no Telegram config found (RACHEL_TELEGRAM_TOKEN/RACHEL_TELEGRAM_CHAT_ID or ~/.rachel/telegram.json) — exiting.");
     process.exit(2);
   }
   if (!telegramSurface) {
-    console.error("[telegram-bridge] secretary.ts loaded but its telegramSurface is undefined — config mismatch, exiting.");
+    console.error("[telegram-bridge] rachel.ts loaded but its telegramSurface is undefined — config mismatch, exiting.");
     process.exit(2);
   }
 
