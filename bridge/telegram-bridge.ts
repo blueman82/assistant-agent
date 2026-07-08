@@ -131,7 +131,9 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
 
         const buffer: string[] = [];
         try {
-          await runTurn(text, (line) => buffer.push(line), abortController.signal);
+          await runTurn(text, (line, kind) => {
+            if (kind === "text") buffer.push(line);
+          }, abortController.signal);
         } catch (err) {
           buffer.push(`[secretary] error: ${err instanceof Error ? err.message : String(err)}`);
         } finally {
