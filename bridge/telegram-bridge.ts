@@ -79,7 +79,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
       await reply(
         `uptime: ${Math.floor(process.uptime())}s\n` +
           `session: ${sessionId ?? "(none)"}\n` +
-          `model: ${process.env["SECRETARY_MODEL"] ?? "claude-sonnet-4-6"}\n` +
+          `model: ${process.env["RACHEL_MODEL"] ?? "claude-sonnet-4-6"}\n` +
           `turn in flight: ${currentAbort ? "yes" : "no"}`,
       );
       return;
