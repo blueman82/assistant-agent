@@ -183,8 +183,8 @@ test("a text message round-trips through the bridge's FIFO dispatch into runTurn
   ]);
 
   let stopped = false;
-  const runTurnStub = async (input: string, emit: (line: string) => void) => {
-    emit(`echo: ${input}`);
+  const runTurnStub: BridgeRunTurn = async (input, emit) => {
+    emit(`echo: ${input}`, "text");
   };
 
   const bridge = createBridge({
