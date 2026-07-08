@@ -173,10 +173,10 @@ export async function runTurn(
         },
       ],
     },
-    agent: "secretary",
+    agent: "rachel",
     agents: {
-      secretary: {
-        description: "Gary's AI secretary — email, calendar, and tasks.",
+      rachel: {
+        description: "Gary's AI assistant Rachel — email, calendar, and tasks.",
         prompt: systemPrompt,
         skills: [],
       },
