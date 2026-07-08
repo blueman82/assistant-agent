@@ -203,7 +203,7 @@ export async function runTurn(
       if (msg.type === "assistant") {
         for (const block of msg.message.content) {
           if (block.type === "text" && block.text.trim()) {
-            emit(block.text);
+            emit(block.text, "text");
           } else if (block.type === "tool_use") {
             const input = block.input as Record<string, unknown>;
             const summary =
@@ -212,7 +212,7 @@ export async function runTurn(
                 : block.name === "Read" || block.name === "Write" || block.name === "Edit"
                   ? String(input["file_path"] ?? "")
                   : JSON.stringify(block.input).slice(0, 100);
-            emit(`  [${block.name}] ${summary}`);
+            emit(`  [${block.name}] ${summary}`, "tool");
           }
         }
       }
