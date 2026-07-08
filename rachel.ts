@@ -58,12 +58,12 @@ const mcpServers = {};
 // Constructed once at module scope so approval state (the one-shot Map) and
 // the audit log persist across turns within a session, not reset per-turn.
 // ---------------------------------------------------------------------------
-// Audit-log path override — same env-seam idiom as SECRETARY_GATE_TIMEOUT_MS
-// below; unset in production (falls back to the real ~/.secretary path), so
+// Audit-log path override — same env-seam idiom as RACHEL_GATE_TIMEOUT_MS
+// below; unset in production (falls back to the real ~/.rachel path), so
 // tests can redirect audit writes away from the operator's real home
 // directory.
-const auditLogPath = process.env["SECRETARY_AUDIT_LOG_PATH"]
-  ?? join(homedir(), ".secretary", "send-gate-audit.jsonl");
+const auditLogPath = process.env["RACHEL_AUDIT_LOG_PATH"]
+  ?? join(homedir(), ".rachel", "send-gate-audit.jsonl");
 
 const approvalSurfaces = [createTerminalApprovalSurface()];
 
