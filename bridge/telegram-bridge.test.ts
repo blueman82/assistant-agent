@@ -94,8 +94,8 @@ test("gate integrity: a gated send-class tool call issued during a bridge-dispat
   // tool call, with no approval surface ever resolving. If someone removes
   // the hooks.PreToolUse wiring from runTurn, options.hooks is undefined
   // here and this test throws/fails instead of silently passing.
-  process.env["SECRETARY_GATE_TIMEOUT_MS"] = "200";
-  const { runTurn: realRunTurn } = await import("../secretary.ts");
+  process.env["RACHEL_GATE_TIMEOUT_MS"] = "200";
+  const { runTurn: realRunTurn } = await import("../rachel.ts");
 
   const { transport } = makeStubTransport([
     { ok: true, result: [{ update_id: 1, message: { message_id: 1, chat: { id: 12345 }, text: "send the slack message", from: { id: 12345 } } }] },
