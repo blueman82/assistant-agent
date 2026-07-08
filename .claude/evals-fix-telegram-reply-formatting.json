@@ -49,8 +49,8 @@
       "assert": "The PR introduces no parse_mode anywhere in the bridge send path (parse_mode HTML/MarkdownV2 was explicitly rejected: a malformed entity loses the reply entirely).",
       "cmd": "set -e; d=$(mktemp -d); git clone -q --depth 1 -b fix/telegram-reply-formatting https://github.com/blueman82/assistant-agent.git \"$d\"; cd \"$d\"; if grep -n parse_mode bridge/api.ts bridge/telegram-bridge.ts; then echo 'FAIL: parse_mode introduced against frozen decision'; exit 1; else echo 'PASS: no parse_mode in bridge send path'; fi",
       "negative_control": "printf 'body.parse_mode = \"HTML\"' | grep -q parse_mode && echo 'negative control ok: grep detects parse_mode when present'",
-      "status": "pending",
-      "evidence": ""
+      "status": "pass",
+      "evidence": "First run at d6999cd FAILED: grep matched the literal token inside two doc comments in bridge/api.ts (no functional use). Fixed by rewording the comments (9c1381c) rather than weakening the frozen grep. Re-run in fresh clone at 9c1381c: grep empty, printed 'E4 PASS: no parse_mode in bridge send path'; negative control detected an injected occurrence. Graded 2026-07-08."
     },
     {
       "id": "E5",
