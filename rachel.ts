@@ -236,8 +236,8 @@ async function main(): Promise<void> {
     output: process.stdout,
   });
 
-  console.log(`[secretary] model=${MODEL} maxTurns=${MAX_TURNS}`);
-  console.log(`[secretary] Type your request. Ctrl+C to exit.\n`);
+  console.log(`[Rachel] model=${MODEL} maxTurns=${MAX_TURNS}`);
+  console.log(`[Rachel] Type your request. Ctrl+C to exit.\n`);
 
   async function runTerminalTurn(userInput: string): Promise<void> {
     const abortController = new AbortController();
