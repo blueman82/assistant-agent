@@ -983,3 +983,644 @@ test("grep guard: no test in this file ever calls the real api.telegram.org netw
   const realFetchCall = /fetch\(\s*["'`]https:\/\/api\.telegram\.org/;
   assert.equal(realFetchCall.test(source), false);
 });
+
+// ---------------------------------------------------------------------------
+// Watchdog tests — helpers
+// ---------------------------------------------------------------------------
+
+import { type WatchdogEntry, type FsFunctions, checkLaunchAllowed, type CheckLaunchAllowedOpts } from "./telegram-bridge.ts";
+
+// makeStubFs builds an in-memory FsFunctions from a Map<string, string> of
+// path→content. mtimes is a separate Map<string, number> for path→mtimeMs.
+// globResults is returned verbatim from every .glob() call.
+// written and unlinked are tracked for assertion.
+function makeStubFs(opts: {
+  watchdogDir: string;
+  files?: Map<string, string>;
+  mtimes?: Map<string, number>;
+  globResults?: string[];
+}): FsFunctions & { written: { path: string; content: string }[]; unlinked: string[] } {
+  const files: Map<string, string> = opts.files ?? new Map();
+  const mtimes: Map<string, number> = opts.mtimes ?? new Map();
+  const globResults: string[] = opts.globResults ?? [];
+  const existingDirs: Set<string> = new Set([opts.watchdogDir]);
+  const written: { path: string; content: string }[] = [];
+  const unlinked: string[] = [];
+
+  return {
+    written,
+    unlinked,
+    readdir(dir: string): string[] {
+      const prefix = dir.endsWith("/") ? dir : dir + "/";
+      const names: string[] = [];
+      for (const p of files.keys()) {
+        if (p.startsWith(prefix)) {
+          const rest = p.slice(prefix.length);
+          if (!rest.includes("/")) names.push(rest);
+        }
+      }
+      return names;
+    },
+    readFile(path: string): string {
+      const content = files.get(path);
+      if (content === undefined) throw new Error(`ENOENT: ${path}`);
+      return content;
+    },
+    writeFile(path: string, content: string): void {
+      files.set(path, content);
+      written.push({ path, content });
+    },
+    unlink(path: string): void {
+      files.delete(path);
+      unlinked.push(path);
+    },
+    stat(path: string): { mtimeMs: number } {
+      const mtime = mtimes.get(path);
+      if (mtime === undefined) throw new Error(`ENOENT stat: ${path}`);
+      return { mtimeMs: mtime };
+    },
+    mkdirSync(path: string, _opts: { recursive: boolean }): void {
+      existingDirs.add(path);
+    },
+    existsSync(path: string): boolean {
+      return files.has(path) || existingDirs.has(path);
+    },
+    glob(_pattern: string): string[] {
+      return globResults;
+    },
+  };
+}
+
+// Minimal WatchdogEntry factory — fills in all required fields so TypeScript
+// strict mode is satisfied; tests override only what they care about.
+function makeWatchdogEntry(overrides: Partial<WatchdogEntry> & { slug: string; loop_name: string; pid: number }): WatchdogEntry {
+  return {
+    expected_cmd: "claude",
+    repo: "/Users/harrison/Github/test-repo",
+    log_path: "/tmp/test.log",
+    progress_json_glob: "/fake/.claude/agentic-loop/*test-repo*/*/progress.json",
+    progress_json_path: null,
+    session_id: null,
+    spawn_time: Date.now() - 70 * 60 * 1000,
+    last_check: null,
+    wake_floor: null,
+    pinged_at: null,
+    done: false,
+    ...overrides,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Watchdog test 1: pid-gone with complete LOOP-STOP → event path injects turn
+// ---------------------------------------------------------------------------
+
+test("watchdog: pid-gone with complete LOOP-STOP injects a synthetic turn and unlinks the watchdog file", async () => {
+  const now = Date.now();
+  const watchdogDir = "/fake/watchdog";
+  const watchdogPath = watchdogDir + "/test-loop.watchdog.json";
+  const progressPath = "/fake/progress.json";
+
+  const entry = makeWatchdogEntry({
+    slug: "test-loop",
+    loop_name: "Test Loop",
+    pid: 99999,
+    progress_json_path: progressPath,
+    spawn_time: now - 70 * 60 * 1000,
+    last_check: now - 70 * 60 * 1000,
+    done: false,
+  });
+
+  const progressContent = JSON.stringify({
+    status: "complete",
+    loop_stop_counts: { complete: 1 },
+  });
+
+  const fsFn = makeStubFs({
+    watchdogDir,
+    files: new Map([
+      [watchdogPath, JSON.stringify(entry)],
+      [progressPath, progressContent],
+    ]),
+    mtimes: new Map([[progressPath, now - 5 * 60 * 1000]]),
+  });
+
+  const capturedInputs: string[] = [];
+  const runTurnStub: BridgeRunTurn = async (input, emit) => {
+    capturedInputs.push(input);
+    emit("ok", "text");
+  };
+
+  const { transport } = makeStubTransport([{ ok: true, result: [] }]);
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    watchdogDir,
+    fsFn,
+    isPidAliveFn: () => false,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await bridge.stop();
+
+  assert.ok(
+    capturedInputs.some((s) => /complete:1/.test(s)),
+    `expected a turn containing "complete:1", got: ${JSON.stringify(capturedInputs)}`,
+  );
+  assert.ok(
+    fsFn.unlinked.includes(watchdogPath),
+    `expected watchdog file to be unlinked, got unlinked: ${JSON.stringify(fsFn.unlinked)}`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Watchdog test 2: pid alive, 61 min silence → stall path injects turn
+// ---------------------------------------------------------------------------
+
+test("watchdog: pid alive with 61 min progress.json silence injects a stall turn and writes pinged_at", async () => {
+  const now = Date.now();
+  const watchdogDir = "/fake/watchdog";
+  const watchdogPath = watchdogDir + "/stall-loop.watchdog.json";
+  const progressPath = "/fake/stall-progress.json";
+
+  const entry = makeWatchdogEntry({
+    slug: "stall-loop",
+    loop_name: "Stall Loop",
+    pid: 88888,
+    progress_json_path: progressPath,
+    spawn_time: now - 70 * 60 * 1000,
+    last_check: now - 70 * 60 * 1000,
+    pinged_at: null,
+    done: false,
+  });
+
+  const progressContent = JSON.stringify({ status: "in_progress" });
+
+  const fsFn = makeStubFs({
+    watchdogDir,
+    files: new Map([
+      [watchdogPath, JSON.stringify(entry)],
+      [progressPath, progressContent],
+    ]),
+    mtimes: new Map([[progressPath, now - 61 * 60 * 1000]]),
+  });
+
+  const capturedInputs: string[] = [];
+  const runTurnStub: BridgeRunTurn = async (input, emit) => {
+    capturedInputs.push(input);
+    emit("ok", "text");
+  };
+
+  const { transport } = makeStubTransport([{ ok: true, result: [] }]);
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    watchdogDir,
+    fsFn,
+    isPidAliveFn: () => true,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await bridge.stop();
+
+  assert.ok(
+    capturedInputs.some((s) => /gone quiet/i.test(s)),
+    `expected a turn containing "gone quiet", got: ${JSON.stringify(capturedInputs)}`,
+  );
+  assert.ok(
+    capturedInputs.some((s) => /Stall Loop/.test(s)),
+    `expected the loop name in the turn, got: ${JSON.stringify(capturedInputs)}`,
+  );
+
+  // The watchdog should have been written with pinged_at set.
+  const writtenForWatchdog = fsFn.written.filter((w) => w.path === watchdogPath);
+  assert.ok(writtenForWatchdog.length > 0, "expected watchdog to be written");
+  const lastWritten = JSON.parse(writtenForWatchdog[writtenForWatchdog.length - 1]!.content) as WatchdogEntry;
+  assert.ok(lastWritten.pinged_at !== null, `expected pinged_at to be set, got: ${JSON.stringify(lastWritten.pinged_at)}`);
+});
+
+// ---------------------------------------------------------------------------
+// Watchdog test 3: sleep detection — large gap sets wake_floor, no false stall
+// ---------------------------------------------------------------------------
+
+test("watchdog: sleep gap sets wake_floor and suppresses false stall ping", async () => {
+  const now = Date.now();
+  const watchdogDir = "/fake/watchdog";
+  const watchdogPath = watchdogDir + "/sleep-loop.watchdog.json";
+  const progressPath = "/fake/sleep-progress.json";
+
+  // last_check = now-2h simulates a machine sleep gap (now - last_check >> 5*pollIntervalMs)
+  // mtime = now-2h means the loop would stall WITHOUT wake_floor.
+  const entry = makeWatchdogEntry({
+    slug: "sleep-loop",
+    loop_name: "Sleep Loop",
+    pid: 77777,
+    progress_json_path: progressPath,
+    spawn_time: now - 3 * 60 * 60 * 1000,
+    last_check: now - 2 * 60 * 60 * 1000,
+    wake_floor: null,
+    pinged_at: null,
+    done: false,
+  });
+
+  const progressContent = JSON.stringify({ status: "in_progress" });
+
+  const fsFn = makeStubFs({
+    watchdogDir,
+    files: new Map([
+      [watchdogPath, JSON.stringify(entry)],
+      [progressPath, progressContent],
+    ]),
+    // mtime is 2h ago — old enough to stall without wake_floor
+    mtimes: new Map([[progressPath, now - 2 * 60 * 60 * 1000]]),
+  });
+
+  const capturedInputs: string[] = [];
+  const runTurnStub: BridgeRunTurn = async (input, emit) => {
+    capturedInputs.push(input);
+    emit("ok", "text");
+  };
+
+  const { transport } = makeStubTransport([{ ok: true, result: [] }]);
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 2000,  // non-zero, critical: 5×2000 = 10000; 2h gap >> 10s
+    watchdogDir,
+    fsFn,
+    isPidAliveFn: () => true,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  // No stall ping should have been injected.
+  assert.equal(
+    capturedInputs.length,
+    0,
+    `expected no stall ping after sleep gap, got: ${JSON.stringify(capturedInputs)}`,
+  );
+
+  // The written watchdog should have wake_floor set to approximately now.
+  const writtenForWatchdog = fsFn.written.filter((w) => w.path === watchdogPath);
+  assert.ok(writtenForWatchdog.length > 0, "expected watchdog to be written with wake_floor");
+  const lastWritten = JSON.parse(writtenForWatchdog[writtenForWatchdog.length - 1]!.content) as WatchdogEntry;
+  assert.ok(lastWritten.wake_floor !== null, "expected wake_floor to be set after sleep gap");
+  assert.ok(
+    lastWritten.wake_floor! >= now - 5000 && lastWritten.wake_floor! <= now + 5000,
+    `expected wake_floor ≈ now, got: ${lastWritten.wake_floor}`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Watchdog test 4: session-id binding — progress_json_path via session_id
+// ---------------------------------------------------------------------------
+
+test("watchdog: session-id binding resolves progress_json_path via session_id, not mtime", async () => {
+  const now = Date.now();
+  const watchdogDir = "/fake/watchdog";
+  const watchdogPath = watchdogDir + "/bind-loop.watchdog.json";
+  const logPath = "/fake/bind-loop.log";
+
+  // session_id=null, progress_json_path=null on entry
+  const entry = makeWatchdogEntry({
+    slug: "bind-loop",
+    loop_name: "Bind Loop",
+    pid: 66666,
+    session_id: null,
+    progress_json_path: null,
+    progress_json_glob: "/fake/.claude/agentic-loop/*test-repo*/*/progress.json",
+    log_path: logPath,
+    // spawn_time = now so that neither candidate's mtime triggers a stall
+    spawn_time: now,
+    last_check: now,
+    pinged_at: null,
+    done: false,
+  });
+
+  // Log file contains a system/init line with session_id="abc123"
+  const logContent = JSON.stringify({ type: "system", subtype: "init", session_id: "abc123" });
+
+  // Two progress.json candidates: one with /abc123/ (mtime=now-70min, older)
+  // and one WITHOUT abc123 (mtime=now-5min, NEWER — adversarial)
+  const correctPath = "/fake/.claude/agentic-loop/test-repo-slug/abc123/progress.json";
+  const wrongPath = "/fake/.claude/agentic-loop/test-repo-slug/other-session/progress.json";
+
+  const fsFn = makeStubFs({
+    watchdogDir,
+    files: new Map([
+      [watchdogPath, JSON.stringify(entry)],
+      [logPath, logContent],
+      [correctPath, JSON.stringify({ status: "in_progress" })],
+      [wrongPath, JSON.stringify({ status: "in_progress" })],
+    ]),
+    mtimes: new Map([
+      [correctPath, now - 70 * 60 * 1000],  // older — should still be chosen
+      [wrongPath, now - 5 * 60 * 1000],     // newer — adversarial
+    ]),
+    // glob returns BOTH paths; the stub ignores the pattern
+    globResults: [correctPath, wrongPath],
+  });
+
+  const { transport } = makeStubTransport([{ ok: true, result: [] }]);
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (_input, emit) => { emit("ok", "text"); },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    watchdogDir,
+    fsFn,
+    isPidAliveFn: () => true,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  const writtenForWatchdog = fsFn.written.filter((w) => w.path === watchdogPath);
+  assert.ok(writtenForWatchdog.length > 0, "expected watchdog to be written");
+  const lastWritten = JSON.parse(writtenForWatchdog[writtenForWatchdog.length - 1]!.content) as WatchdogEntry;
+  assert.equal(lastWritten.session_id, "abc123", `expected session_id="abc123", got: ${lastWritten.session_id}`);
+  assert.equal(
+    lastWritten.progress_json_path,
+    correctPath,
+    `expected progress_json_path to be the abc123 path, got: ${lastWritten.progress_json_path}`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Watchdog test 5: stall debounce clear — mtime advance past pinged_at
+// ---------------------------------------------------------------------------
+
+test("watchdog: mtime advance past pinged_at clears the stall debounce (pinged_at → null)", async () => {
+  const now = Date.now();
+  const watchdogDir = "/fake/watchdog";
+  const watchdogPath = watchdogDir + "/debounce-loop.watchdog.json";
+  const progressPath = "/fake/debounce-progress.json";
+
+  const entry = makeWatchdogEntry({
+    slug: "debounce-loop",
+    loop_name: "Debounce Loop",
+    pid: 55555,
+    progress_json_path: progressPath,
+    spawn_time: now - 3 * 60 * 60 * 1000,
+    last_check: now - 30 * 60 * 1000,
+    pinged_at: now - 30 * 60 * 1000,
+    done: false,
+  });
+
+  const progressContent = JSON.stringify({ status: "in_progress" });
+
+  const fsFn = makeStubFs({
+    watchdogDir,
+    files: new Map([
+      [watchdogPath, JSON.stringify(entry)],
+      [progressPath, progressContent],
+    ]),
+    // mtime = now-5min, which is after pinged_at (now-30min) → clears debounce
+    mtimes: new Map([[progressPath, now - 5 * 60 * 1000]]),
+  });
+
+  const capturedInputs: string[] = [];
+  const runTurnStub: BridgeRunTurn = async (input, emit) => {
+    capturedInputs.push(input);
+    emit("ok", "text");
+  };
+
+  const { transport } = makeStubTransport([{ ok: true, result: [] }]);
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 2000,
+    watchdogDir,
+    fsFn,
+    isPidAliveFn: () => true,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  const writtenForWatchdog = fsFn.written.filter((w) => w.path === watchdogPath);
+  assert.ok(writtenForWatchdog.length > 0, "expected watchdog to be written");
+  const lastWritten = JSON.parse(writtenForWatchdog[writtenForWatchdog.length - 1]!.content) as WatchdogEntry;
+  assert.equal(
+    lastWritten.pinged_at,
+    null,
+    `expected pinged_at=null after mtime advance, got: ${lastWritten.pinged_at}`,
+  );
+  // No new stall ping (mtime=now-5min is not stale — liveMtime = max(spawn_time=now-3h,
+  // mtime=now-5min, wake_floor) where wake_floor gets set due to sleep gap detection,
+  // so either way no stall fires on this cycle)
+  assert.equal(capturedInputs.length, 0, `expected no stall ping, got: ${JSON.stringify(capturedInputs)}`);
+});
+
+// ---------------------------------------------------------------------------
+// Watchdog test 6: done=true watchdog is skipped and removed
+// ---------------------------------------------------------------------------
+
+test("watchdog: done=true watchdog file is unlinked and no turn is injected", async () => {
+  const now = Date.now();
+  const watchdogDir = "/fake/watchdog";
+  const watchdogPath = watchdogDir + "/done-loop.watchdog.json";
+
+  const entry = makeWatchdogEntry({
+    slug: "done-loop",
+    loop_name: "Done Loop",
+    pid: 44444,
+    spawn_time: now - 60 * 60 * 1000,
+    done: true,
+  });
+
+  const fsFn = makeStubFs({
+    watchdogDir,
+    files: new Map([[watchdogPath, JSON.stringify(entry)]]),
+  });
+
+  const capturedInputs: string[] = [];
+  const runTurnStub: BridgeRunTurn = async (input, emit) => {
+    capturedInputs.push(input);
+    emit("ok", "text");
+  };
+
+  const { transport } = makeStubTransport([{ ok: true, result: [] }]);
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    watchdogDir,
+    fsFn,
+    isPidAliveFn: () => false,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  assert.ok(fsFn.unlinked.includes(watchdogPath), "expected done=true watchdog to be unlinked");
+  assert.equal(capturedInputs.length, 0, `expected no turn injection for done=true watchdog, got: ${JSON.stringify(capturedInputs)}`);
+});
+
+// ---------------------------------------------------------------------------
+// Watchdog test 7: empty watchdog dir → no error, no injection
+// ---------------------------------------------------------------------------
+
+test("watchdog: empty watchdog dir produces no error and no turn injection", async () => {
+  const watchdogDir = "/fake/empty-watchdog";
+
+  // No .watchdog.json files — only the dir itself is present in existingDirs.
+  const fsFn = makeStubFs({ watchdogDir });
+
+  const capturedInputs: string[] = [];
+  const runTurnStub: BridgeRunTurn = async (input, emit) => {
+    capturedInputs.push(input);
+    emit("ok", "text");
+  };
+
+  const { transport } = makeStubTransport([{ ok: true, result: [] }]);
+
+  let threw = false;
+  try {
+    const bridge = createBridge({
+      config: { token: "t", chatId: "12345", transport },
+      runTurn: runTurnStub,
+      getSessionId: () => undefined,
+      resetSession: () => {},
+      pollIntervalMs: 5,
+      watchdogDir,
+      fsFn,
+      isPidAliveFn: () => false,
+    });
+
+    await bridge.drainOnce();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await bridge.stop();
+  } catch {
+    threw = true;
+  }
+
+  assert.equal(threw, false, "expected no error for empty watchdog dir");
+  assert.equal(capturedInputs.length, 0, `expected no turn injection for empty dir, got: ${JSON.stringify(capturedInputs)}`);
+});
+
+// ---------------------------------------------------------------------------
+// checkLaunchAllowed tests (direct import — no bridge)
+// ---------------------------------------------------------------------------
+
+function makeCheckLaunchOpts(overrides: {
+  watchdogDir?: string;
+  fsFn: FsFunctions;
+  isPidAliveFn?: (pid: number, expectedCmd?: string) => boolean;
+  staleThresholdMs?: number;
+}): CheckLaunchAllowedOpts {
+  return {
+    watchdogDir: overrides.watchdogDir ?? "/fake/watchdog",
+    fs: overrides.fsFn,
+    isPidAlive: overrides.isPidAliveFn ?? (() => false),
+    staleThresholdMs: overrides.staleThresholdMs,
+  };
+}
+
+test("checkLaunchAllowed: fresh non-complete progress.json (mtime=now-5min) blocks launch", () => {
+  const now = Date.now();
+  const watchdogDir = "/fake/watchdog";
+  const progressPath = "/fake/.claude/agentic-loop/coderails-session/session1/progress.json";
+
+  const fsFn = makeStubFs({
+    watchdogDir,
+    files: new Map([[progressPath, JSON.stringify({ status: "in_progress" })]]),
+    mtimes: new Map([[progressPath, now - 5 * 60 * 1000]]),
+    globResults: [progressPath],
+  });
+
+  const result = checkLaunchAllowed("/Users/harrison/Github/coderails", makeCheckLaunchOpts({ fsFn, watchdogDir }));
+
+  assert.equal(result.allowed, false, "expected launch to be blocked by fresh progress.json");
+  assert.ok(result.reason, "expected a reason to be provided");
+  assert.match(result.reason!, /active/i, `expected reason to mention "active", got: ${result.reason}`);
+});
+
+test("checkLaunchAllowed: stale progress.json (mtime=now-90min) allows launch", () => {
+  const now = Date.now();
+  const watchdogDir = "/fake/watchdog";
+  const progressPath = "/fake/.claude/agentic-loop/coderails-session/session1/progress.json";
+
+  const fsFn = makeStubFs({
+    watchdogDir,
+    files: new Map([[progressPath, JSON.stringify({ status: "in_progress" })]]),
+    mtimes: new Map([[progressPath, now - 90 * 60 * 1000]]),
+    globResults: [progressPath],
+  });
+
+  const result = checkLaunchAllowed("/Users/harrison/Github/coderails", makeCheckLaunchOpts({ fsFn, watchdogDir }));
+
+  assert.equal(result.allowed, true, "expected stale progress.json to allow launch");
+});
+
+test("checkLaunchAllowed: live watchdog pid for same repo blocks launch", () => {
+  const now = Date.now();
+  const watchdogDir = "/fake/watchdog";
+  const watchdogPath = watchdogDir + "/coderails.watchdog.json";
+
+  const entry = makeWatchdogEntry({
+    slug: "coderails",
+    loop_name: "Coderails Loop",
+    pid: 33333,
+    repo: "/Users/harrison/Github/coderails",
+    spawn_time: now - 30 * 60 * 1000,
+    done: false,
+  });
+
+  const fsFn = makeStubFs({
+    watchdogDir,
+    files: new Map([[watchdogPath, JSON.stringify(entry)]]),
+    globResults: [],  // no progress.json files
+  });
+
+  const result = checkLaunchAllowed(
+    "/Users/harrison/Github/coderails",
+    makeCheckLaunchOpts({ fsFn, watchdogDir, isPidAliveFn: () => true }),
+  );
+
+  assert.equal(result.allowed, false, "expected live watchdog pid to block launch");
+  assert.ok(result.reason, "expected a reason to be provided");
+  assert.match(result.reason!, /already running/i, `expected reason to mention "already running", got: ${result.reason}`);
+});
+
+test("checkLaunchAllowed: worktree path containing repo basename blocks launch (slug family)", () => {
+  const now = Date.now();
+  const watchdogDir = "/fake/watchdog";
+  // Path contains "coderails-worktree-abc" which includes "coderails"
+  const progressPath = "/fake/.claude/agentic-loop/coderails-worktree-abc/session1/progress.json";
+
+  const fsFn = makeStubFs({
+    watchdogDir,
+    files: new Map([[progressPath, JSON.stringify({ status: "in_progress" })]]),
+    mtimes: new Map([[progressPath, now - 5 * 60 * 1000]]),
+    globResults: [progressPath],
+  });
+
+  const result = checkLaunchAllowed("/Users/harrison/Github/coderails", makeCheckLaunchOpts({ fsFn, watchdogDir }));
+
+  assert.equal(result.allowed, false, `expected worktree slug to block launch for repo "coderails", got allowed=true`);
