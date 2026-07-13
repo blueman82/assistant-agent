@@ -17,6 +17,33 @@ import { execSync } from "node:child_process";
 
 export type BridgeRunTurn = (input: string, emit: TurnEmit, signal: AbortSignal) => Promise<void>;
 
+export interface WatchdogEntry {
+  slug: string;
+  loop_name: string;
+  pid: number;
+  repo: string;
+  log_path: string;
+  progress_json_glob: string;   // ~/.claude/agentic-loop/*<repo-fragment>*/*/progress.json
+  progress_json_path: string | null;
+  session_id: string | null;
+  spawn_time: number;           // ms since epoch
+  last_check: number | null;    // ms since epoch; null on first poll
+  wake_floor: number | null;    // ms since epoch; set after a sleep gap
+  pinged_at: number | null;     // ms since epoch; null until first stall ping
+  done: boolean;
+}
+
+export interface FsFunctions {
+  readdir: (dir: string) => string[];           // returns filenames
+  readFile: (path: string) => string;
+  writeFile: (path: string, content: string) => void;
+  unlink: (path: string) => void;
+  stat: (path: string) => { mtimeMs: number };
+  mkdirSync: (path: string, opts: { recursive: boolean }) => void;
+  existsSync: (path: string) => boolean;
+  glob: (pattern: string) => string[];          // returns matching paths
+}
+
 export interface CreateBridgeOptions {
   config: ApiConfig;
   runTurn: BridgeRunTurn;
@@ -27,6 +54,9 @@ export interface CreateBridgeOptions {
   typingIntervalMs?: number;
   // Injectable for tests — avoids hitting the real filesystem/network.
   downloadFileFn?: (config: ApiConfig, fileId: string, destPath: string) => Promise<void>;
+  watchdogDir?: string;                              // defaults to ~/.rachel/loops (expanded, not ~)
+  fsFn?: FsFunctions;                               // defaults to real node:fs wrappers
+  isPidAliveFn?: (pid: number) => boolean;          // defaults to kill -0 check; injectable for tests
 }
 
 interface TelegramUpdate {
