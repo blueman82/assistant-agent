@@ -576,6 +576,16 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     const result = (await tg(config, `getUpdates?${params.toString()}`, {})) as TelegramUpdate[];
     backoffMs = 1000;
     await processUpdates(result ?? []);
+    await checkWatchdogs({
+      watchdogDir,
+      fifo,
+      pollPeriodMs: pollIntervalMs,
+      fs: resolvedFs,
+      isPidAlive: resolvedIsPidAlive,
+      drainFifo: () => void drainFifo().catch((err) => {
+        console.error(`[telegram-bridge] watchdog drain error: ${err instanceof Error ? err.message : String(err)}`);
+      }),
+    });
   }
 
   return {
