@@ -1624,3 +1624,4 @@ test("checkLaunchAllowed: worktree path containing repo basename blocks launch (
   const result = checkLaunchAllowed("/Users/harrison/Github/coderails", makeCheckLaunchOpts({ fsFn, watchdogDir }));
 
   assert.equal(result.allowed, false, `expected worktree slug to block launch for repo "coderails", got allowed=true`);
+});
