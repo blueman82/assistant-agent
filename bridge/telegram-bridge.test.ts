@@ -1147,13 +1147,16 @@ test("watchdog: pid alive with 61 min progress.json silence injects a stall turn
   const watchdogPath = watchdogDir + "/stall-loop.watchdog.json";
   const progressPath = "/fake/stall-progress.json";
 
+  // last_check=null so sleep detection (entry.last_check !== null check) is
+  // skipped, preventing wake_floor from being set to ~now, which would
+  // suppress the stall ping by making liveMtime ≈ now.
   const entry = makeWatchdogEntry({
     slug: "stall-loop",
     loop_name: "Stall Loop",
     pid: 88888,
     progress_json_path: progressPath,
     spawn_time: now - 70 * 60 * 1000,
-    last_check: now - 70 * 60 * 1000,
+    last_check: null,
     pinged_at: null,
     done: false,
   });
