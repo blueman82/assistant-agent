@@ -378,6 +378,13 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   const pollIntervalMs = options.pollIntervalMs ?? 2000;
   const typingIntervalMs = options.typingIntervalMs ?? DEFAULT_TYPING_INTERVAL_MS;
 
+  // Tilde expansion: watchdogDir must be an absolute path — Node's fs never expands ~.
+  const watchdogDir = options.watchdogDir ?? join(homedir(), ".rachel", "loops");
+  const resolvedFs = options.fsFn ?? defaultFsFn();
+  const resolvedIsPidAlive = options.isPidAliveFn ?? isPidAlive;
+
+  try { resolvedFs.mkdirSync(watchdogDir, { recursive: true }); } catch { /* already exists */ }
+
   const fifo: string[] = [];
   let offset: number | undefined;
   let stopped = false;
