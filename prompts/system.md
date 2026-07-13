@@ -104,8 +104,8 @@ When Gary says "run the X loop" or "launch the X loop":
    npx tsx -e "import {checkLaunchAllowed,defaultFsFn,isPidAlive} from './bridge/telegram-bridge.ts'; const r=checkLaunchAllowed('<repo>',{watchdogDir:process.env.HOME+'/.rachel/loops',fs:defaultFsFn(),isPidAlive}); if(!r.allowed){process.stdout.write(r.reason??'blocked');process.exit(1);}"
    ```
    If exit code is 1, relay the reason to Gary verbatim and abort. Do not re-implement the glob logic by hand.
-3. Spawn: `~/.rachel/loops/` already exists (created by the bridge at startup). Use it for logs too:
-   `cd <repo> && nohup claude -p "<body>" --permission-mode <permission_mode> --output-format stream-json --include-partial-messages --verbose > ~/.rachel/loops/<slug>-<timestamp>.log 2>&1 &`
+3. Spawn: `~/.rachel/loops/` is created by the bridge at startup, but run `mkdir -p ~/.rachel/loops` first in case you're launching from terminal mode without the bridge running. Use it for logs:
+   `mkdir -p ~/.rachel/loops && cd <repo> && nohup claude -p "<body>" --permission-mode <permission_mode> --output-format stream-json --include-partial-messages --verbose > ~/.rachel/loops/<slug>-<timestamp>.log 2>&1 &`
    Do not write logs to `~/.claude/coderails-dashboard/runs/` — that dir is the dashboard collector's domain and fs-watched for UI refreshes.
 4. Write `~/.rachel/loops/<slug>.watchdog.json` — all paths must be fully expanded (no `~`), use `$HOME` or the absolute path. Include `expected_cmd: "claude"` so the bridge can guard against pid recycling (if the OS reuses the pid for a different process, `ps -p <pid> -o command=` won't contain "claude" and the bridge treats it as dead). The `progress_json_glob` field must be `<absolute-home>/.claude/agentic-loop/*<repo-basename>*/*/progress.json` — note the two wildcard levels: one for the repo-slug dir, one for the session-id dir. Example for repo `coderails`: `/Users/harrison/.claude/agentic-loop/*coderails*/*/progress.json`.
 5. Flip task file `status` to `launched`.
