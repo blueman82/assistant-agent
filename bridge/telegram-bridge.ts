@@ -340,7 +340,7 @@ export function checkLaunchAllowed(repo: string, opts: CheckLaunchAllowedOpts): 
     try {
       for (const filename of fs.readdir(watchdogDir).filter((f) => f.endsWith(".watchdog.json"))) {
         let entry: WatchdogEntry;
-        try { entry = JSON.parse(fs.readFile(`${watchdogDir}/${filename}`)) as WatchdogEntry; }
+        try { entry = JSON.parse(fs.readFile(join(watchdogDir, filename))) as WatchdogEntry; }
         catch { continue; }
         if (entry.done) continue;
         if (!entry.repo.includes(repoBasename)) continue;
