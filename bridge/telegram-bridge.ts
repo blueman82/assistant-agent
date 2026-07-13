@@ -24,7 +24,7 @@ export interface WatchdogEntry {
   expected_cmd: string;          // "claude" — used to guard against pid recycling
   repo: string;
   log_path: string;
-  progress_json_glob: string;   // ~/.claude/agentic-loop/*<repo-fragment>*/*/progress.json
+  progress_json_glob: string;   // <home>/.claude/agentic-loop/*<repo-fragment>*/*/progress.json — fully expanded, no ~
   progress_json_path: string | null;
   session_id: string | null;
   spawn_time: number;           // ms since epoch
