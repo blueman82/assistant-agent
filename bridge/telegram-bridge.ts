@@ -57,7 +57,7 @@ export interface CreateBridgeOptions {
   downloadFileFn?: (config: ApiConfig, fileId: string, destPath: string) => Promise<void>;
   watchdogDir?: string;                              // defaults to ~/.rachel/loops (expanded, not ~)
   fsFn?: FsFunctions;                               // defaults to real node:fs wrappers
-  isPidAliveFn?: (pid: number) => boolean;          // defaults to kill -0 check; injectable for tests
+  isPidAliveFn?: (pid: number, expectedCmd?: string) => boolean;  // defaults to kill -0 check; injectable for tests
 }
 
 interface TelegramUpdate {
