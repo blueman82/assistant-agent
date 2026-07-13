@@ -11,6 +11,9 @@ import { tg, sendChunked, sendTyping, setMyCommands, downloadFile, type ApiConfi
 import { homedir } from "node:os";
 import type { TelegramApprovalSurface, TelegramCallbackQuery } from "../gate/surfaces/telegram.ts";
 import type { TurnEmit } from "../rachel.ts";
+import { readdirSync, readFileSync, writeFileSync, unlinkSync, statSync, mkdirSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { execSync } from "node:child_process";
 
 export type BridgeRunTurn = (input: string, emit: TurnEmit, signal: AbortSignal) => Promise<void>;
 
