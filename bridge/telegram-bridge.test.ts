@@ -792,30 +792,55 @@ test("/status reports last_error (recovered) after a 409 that self-healed", asyn
 });
 
 test("/status includes 'ongoing' suffix in last_error line when error has not yet recovered", async () => {
-  // Sequence: poll 1 = 409 (enters conflict, sets lastError.recovered=false),
-  // then a /status message is injected BEFORE the recovery poll by stopping run()
-  // after the 409 fires and before the backoff completes, then using drainOnce().
-  //
-  // The health state machine only mutates lastError inside run()'s catch.
-  // drainOnce() bypasses run() — so we use run() for the 409 but need to
-  // inject /status before the recovery. We do this by having the second getUpdates
-  // (which run() calls after the 5ms backoff) return the /status message.
-  // At that point health is still "conflict" because poll 2 SUCCEEDS (transitions to healthy)
-  // BEFORE processing the /status message text. So health would be "healthy" and
-  // lastError.recovered would be true — the same as 3e-recovered.
-  //
-  // The ongoing state is only observable in the brief window between the 409 catch
-  // and the next successful poll — not cleanly testable through the run() loop.
-  // We therefore verify the "ongoing" code path structurally: confirm the source
-  // contains the conditional producing ", ongoing" when recovered===false.
-  const { readFileSync } = await import("node:fs");
-  const src = readFileSync(
-    new URL("./telegram-bridge.ts", import.meta.url),
-    "utf8",
-  );
+  // Sequence: poll 1 = 409 (enters conflict, sets lastError.recovered=false).
+  // Poll 2 succeeds BUT carries a /status message in its result.
+  // processUpdates() fires the /status handler BEFORE pollOnce() returns,
+  // and lastError.recovered is set to true only AFTER pollOnce() returns in the
+  // recovery block. So the /status reply is generated while recovered===false.
+  const statusReplies: string[] = [];
+  let getUpdatesCount = 0;
+  const statusUpdate = {
+    update_id: 2,
+    message: { message_id: 2, chat: { id: 12345 }, from: { id: 12345 }, text: "/status", date: 0 },
+  };
+  const transport: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) {
+      getUpdatesCount++;
+      if (getUpdatesCount === 1) {
+        // First poll: 409 conflict — sets lastError.recovered=false.
+        return { ok: false, json: async () => ({ ok: false, description: "Conflict: terminated by other getUpdates request" }) } as Response;
+      }
+      // Second poll: success with a /status message embedded.
+      return { ok: true, json: async () => ({ ok: true, result: [statusUpdate] }) } as Response;
+    }
+    if (url.includes("/sendMessage")) {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+      statusReplies.push(String(body.text ?? ""));
+    }
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {},
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    conflictBackoffMs: 5,
+  });
+
+  const runPromise = bridge.run();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  await bridge.stop();
+  await runPromise.catch(() => {});
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const statusReply = statusReplies.find((m) => m.includes("last error:"));
+  assert.ok(statusReply !== undefined, `expected a /status reply containing "last error:" — got: ${JSON.stringify(statusReplies)}`);
   assert.ok(
-    src.includes(`lastError.recovered ? ", recovered" : ", ongoing"`),
-    "status handler must contain the ternary producing \", ongoing\" when lastError.recovered===false",
+    statusReply.includes(", ongoing"),
+    `expected ", ongoing" suffix in /status reply while error not yet recovered — got: ${statusReply}`,
   );
 });
 
@@ -869,6 +894,100 @@ test("4 consecutive 409s (N-1, boundary) followed by success does NOT exit and s
     sendMessages.some((m) => m.toLowerCase().includes("recovered")),
     `expected a recovery alert after 4 409s then success — got: ${JSON.stringify(sendMessages)}`,
   );
+  const conflictAlerts = sendMessages.filter((m) => m.toLowerCase().includes("conflict detected"));
+  assert.equal(conflictAlerts.length, 1, `conflict entry alert must fire exactly once per episode — got ${conflictAlerts.length}: ${JSON.stringify(conflictAlerts)}`);
+});
+
+test("non-409 poll error sends a Telegram alert on first occurrence (healthy → failed) then recovery alert on success", async () => {
+  // Sequence: poll 1 errors (healthy → failed, alert fires), poll 2 succeeds (failed → healthy, recovery alert).
+  // backoffMs is not injectable and starts at 1000ms — one cycle costs ~1000ms total (acceptable for this test).
+  let getUpdatesCount = 0;
+  const sendMessages: string[] = [];
+  const transport: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) {
+      getUpdatesCount++;
+      if (getUpdatesCount === 1) {
+        return { ok: false, json: async () => ({ ok: false, description: "Internal Server Error" }) } as Response;
+      }
+      return { ok: true, json: async () => ({ ok: true, result: [] }) } as Response;
+    }
+    if (url.includes("/sendMessage")) {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+      sendMessages.push(String(body.text ?? ""));
+    }
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {},
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  const runPromise = bridge.run();
+  // Poll 1 errors → 1000ms backoff → poll 2 succeeds → recovery alert (fire-and-forget).
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  await bridge.stop();
+  await runPromise.catch(() => {});
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  const errorAlerts = sendMessages.filter((m) => m.toLowerCase().includes("poll error") && !m.toLowerCase().includes("recovered"));
+  assert.equal(errorAlerts.length, 1, `expected exactly 1 poll-error entry alert — got ${errorAlerts.length}: ${JSON.stringify(errorAlerts)}`);
+  const recoveryAlerts = sendMessages.filter((m) => m.toLowerCase().includes("recovered from poll error"));
+  assert.ok(recoveryAlerts.length >= 1, `expected a recovery alert after non-409 errors resolved — got: ${JSON.stringify(sendMessages)}`);
+});
+
+test("consecutive409 resets on non-409 error — mixed 409/non-409 streak does not trigger exit", async () => {
+  // 4 × 409 (one short of threshold), then 1 non-409 error (resets counter), then 1 × 409.
+  // Total 409s = 5, but they're not consecutive — must NOT exit.
+  let getUpdatesCount = 0;
+  let exitCalled = false;
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) {
+      getUpdatesCount++;
+      if (getUpdatesCount <= 4) {
+        return { ok: false, json: async () => ({ ok: false, description: "Conflict: terminated by other getUpdates request" }) } as Response;
+      }
+      if (getUpdatesCount === 5) {
+        return { ok: false, json: async () => ({ ok: false, description: "Internal Server Error" }) } as Response;
+      }
+      if (getUpdatesCount === 6) {
+        return { ok: false, json: async () => ({ ok: false, description: "Conflict: terminated by other getUpdates request" }) } as Response;
+      }
+      return { ok: true, json: async () => ({ ok: true, result: [] }) } as Response;
+    }
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  const originalExit = process.exit;
+  process.exit = () => {
+    exitCalled = true;
+    throw new Error("process.exit must not fire — consecutive409 should have reset on the non-409 error");
+  };
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {},
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    conflictBackoffMs: 5,
+  });
+
+  try {
+    const runPromise = bridge.run();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await bridge.stop();
+    await runPromise.catch(() => {});
+  } finally {
+    process.exit = originalExit;
+  }
+
+  assert.equal(exitCalled, false, "bridge must NOT exit when a non-409 error interrupts the 409 streak (resets consecutive409)");
 });
 
 test("run() does NOT exit on a non-409/conflict poll error — only the single-poller conflict is fatal", async () => {
