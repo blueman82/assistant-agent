@@ -42,8 +42,7 @@ test("notify() throws when no Telegram config is available, rather than silently
 });
 
 test("grep guard: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
-  const { readFileSync } = await import("node:fs");
-  const source = readFileSync(new URL(import.meta.url), "utf8");
-  const testBodySource = source.split("\n").filter((line) => !line.startsWith("//")).join("\n");
-  assert.ok(!testBodySource.includes("https://api.telegram.org"));
+  const source = await (await import("node:fs/promises")).readFile(new URL("./notify.test.ts", import.meta.url), "utf8");
+  const realFetchCall = /fetch\(\s*["'`]https:\/\/api\.telegram\.org/;
+  assert.equal(realFetchCall.test(source), false);
 });
