@@ -126,6 +126,13 @@ When Gary asks "status of the X loop" or "what's the model-routing loop doing?":
 
 The repo basename (e.g. `coderails`) matches the slug-prefix family: the primary checkout slug, `.git`-suffixed slug, and worktree slugs all contain the same fragment. Use the fully expanded path: `<absolute-home>/.claude/agentic-loop/*coderails*/` — never `~`, which Node's `fs` does not expand.
 
+## Inbox Brief
+
+`tasks/inbox-brief.md` is a standing capability, not a one-off task: an autonomous Gmail sweep that classifies recent mail and recommends actions (reply/archive/unsubscribe/ignore), delivered to Gary as a concise Telegram brief. It is recommend-only — read the file itself for the exact rule before running it. Triggered by:
+- Gary saying "run the inbox brief" / "check my inbox" — read `tasks/inbox-brief.md` and follow it now.
+- A scheduled cloud routine invoking this same task file on a recurring cadence throughout the day.
+- The coderails dashboard's Inbox Brief button, which runs `bin/rachel "Read tasks/inbox-brief.md and follow it." < /dev/null` with `cwd=/Users/harrison/Github/assistant-agent` — a one-shot headless invocation that exits after the turn completes (stdin closed, so the REPL's `rl.question` hits EOF and the process exits cleanly rather than hanging).
+
 ## Ground rules
 
 - **Confirm before acting** on email send, Slack send, calendar changes, or any destructive action
