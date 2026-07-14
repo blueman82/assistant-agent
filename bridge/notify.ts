@@ -27,19 +27,34 @@ import { readFileSync } from "node:fs";
 import { sendChunked } from "./api.ts";
 import { loadTelegramConfig } from "../gate/surfaces/telegram.ts";
 
-const filePath = process.argv[2];
-if (!filePath) {
-  console.error("[notify] usage: notify.ts <path-to-message-file>");
-  process.exit(2);
+// configFn is injectable so tests can supply fabricated creds + a stub
+// transport without touching the operator's real ~/.rachel/telegram.json —
+// same seam idiom as rachel.ts's queryFn parameter on runTurn.
+export async function notify(
+  filePath: string,
+  configFn: typeof loadTelegramConfig = loadTelegramConfig,
+): Promise<void> {
+  const text = readFileSync(filePath, "utf8");
+  const config = configFn();
+  if (!config) {
+    throw new Error("no Telegram config (RACHEL_TELEGRAM_TOKEN/RACHEL_TELEGRAM_CHAT_ID or ~/.rachel/telegram.json) — cannot send.");
+  }
+  await sendChunked(config, text);
 }
 
-const text = readFileSync(filePath, "utf8");
-
-const config = loadTelegramConfig();
-if (!config) {
-  console.error("[notify] no Telegram config (RACHEL_TELEGRAM_TOKEN/RACHEL_TELEGRAM_CHAT_ID or ~/.rachel/telegram.json) — cannot send.");
-  process.exit(1);
+// Only run as a CLI when executed directly (tsx bridge/notify.ts <file>),
+// not when imported by a test — same guard rachel.ts uses for its own main().
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const filePath = process.argv[2];
+  if (!filePath) {
+    console.error("[notify] usage: notify.ts <path-to-message-file>");
+    process.exit(2);
+  }
+  try {
+    await notify(filePath);
+    console.log("[notify] sent.");
+  } catch (err) {
+    console.error(`[notify] ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
 }
-
-await sendChunked(config, text);
-console.log("[notify] sent.");
