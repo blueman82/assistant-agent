@@ -76,6 +76,8 @@ interface TelegramUpdate {
 }
 
 const DEFAULT_TYPING_INTERVAL_MS = 5000;
+const CONFLICT_BACKOFF_MS = 65_000;   // Telegram releases getUpdates lock in ~30-60s; 65s gives safe margin
+const CONFLICT_EXIT_THRESHOLD = 5;    // 5 consecutive 409s (~5 min) = genuine second consumer, not launchd race
 
 export interface Bridge {
   // Runs one getUpdates cycle (and processes whatever it returns) — the
