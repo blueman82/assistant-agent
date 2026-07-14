@@ -708,14 +708,13 @@ test("recovery from 409 sends a recovery Telegram alert", async () => {
 
 test("409 persisting to threshold sends FATAL alert before exiting", async () => {
   const sendMessages: string[] = [];
-  const transport: typeof fetch = async (input) => {
+  const transport: typeof fetch = async (input, init) => {
     const url = String(input);
     if (url.includes("/getUpdates")) {
       return { ok: false, json: async () => ({ ok: false, description: "Conflict: terminated by other getUpdates request" }) } as Response;
     }
     if (url.includes("/sendMessage")) {
-      const req = input as Request;
-      const body = typeof req.json === "function" ? (await req.json() as { text?: string }) : {};
+      const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
       sendMessages.push(String(body.text ?? ""));
     }
     return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
