@@ -383,6 +383,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   const watchdogDir = options.watchdogDir ?? join(homedir(), ".rachel", "loops");
   const resolvedFs = options.fsFn ?? defaultFsFn();
   const resolvedIsPidAlive = options.isPidAliveFn ?? isPidAlive;
+  const resolvedConflictBackoffMs = options.conflictBackoffMs ?? CONFLICT_BACKOFF_MS;
 
   try { resolvedFs.mkdirSync(watchdogDir, { recursive: true }); } catch { /* already exists */ }
 
