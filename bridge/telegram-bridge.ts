@@ -58,6 +58,7 @@ export interface CreateBridgeOptions {
   watchdogDir?: string;                              // defaults to ~/.rachel/loops (expanded, not ~)
   fsFn?: FsFunctions;                               // defaults to real node:fs wrappers
   isPidAliveFn?: (pid: number, expectedCmd?: string) => boolean;  // defaults to kill -0 check; injectable for tests
+  conflictBackoffMs?: number;  // defaults to CONFLICT_BACKOFF_MS (65s); injectable for tests to avoid real waits
 }
 
 interface TelegramUpdate {
@@ -75,6 +76,8 @@ interface TelegramUpdate {
 }
 
 const DEFAULT_TYPING_INTERVAL_MS = 5000;
+const CONFLICT_BACKOFF_MS = 65_000;   // Telegram releases getUpdates lock in ~30-60s; 65s gives safe margin
+const CONFLICT_EXIT_THRESHOLD = 5;    // 5 consecutive 409s (~5 min) = genuine second consumer, not launchd race
 
 export interface Bridge {
   // Runs one getUpdates cycle (and processes whatever it returns) — the
@@ -249,7 +252,11 @@ async function checkWatchdogs(opts: {
     }
 
     // ALIVE PATH — sleep-aware clock update first.
-    if (entry.last_check !== null && now - entry.last_check > 5 * pollPeriodMs) {
+    // Use a fixed 5-minute gap rather than a multiple of pollPeriodMs: the cycle
+    // time is dominated by the server-side long-poll timeout (30s), not the
+    // configured poll interval, so 5 * pollPeriodMs would fire on every normal
+    // cycle and defeat the sleep-detection logic entirely.
+    if (entry.last_check !== null && now - entry.last_check > 5 * 60_000) {
       entry.wake_floor = now; // machine slept; restart the silence window
     }
     entry.last_check = now;
@@ -382,6 +389,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   const watchdogDir = options.watchdogDir ?? join(homedir(), ".rachel", "loops");
   const resolvedFs = options.fsFn ?? defaultFsFn();
   const resolvedIsPidAlive = options.isPidAliveFn ?? isPidAlive;
+  const resolvedConflictBackoffMs = options.conflictBackoffMs ?? CONFLICT_BACKOFF_MS;
 
   try { resolvedFs.mkdirSync(watchdogDir, { recursive: true }); } catch { /* already exists */ }
 
@@ -392,6 +400,13 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   let draining = false;
   let backoffMs = 1000;
   const MAX_BACKOFF_MS = 30_000;
+
+  // Health state machine — mutated only in run() loop below.
+  // health: current state; consecutive409: 409 streak; lastError: last failure for /status.
+  type BridgeHealth = "healthy" | "conflict" | "failed";
+  let health: BridgeHealth = "healthy";
+  let consecutive409 = 0;
+  let lastError: { message: string; at: string; recovered: boolean } | null = null;
 
   async function reply(text: string): Promise<void> {
     await sendChunked(config, text);
@@ -415,11 +430,16 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     }
     if (text === "/status") {
       const sessionId = getSessionId();
+      const lastErrLine = lastError !== null
+        ? `\nlast error: ${lastError.message} (${lastError.at}${lastError.recovered ? ", recovered" : ", ongoing"})`
+        : "";
       await reply(
         `uptime: ${Math.floor(process.uptime())}s\n` +
+          `health: ${health}\n` +
           `session: ${sessionId ?? "(none)"}\n` +
           `model: ${process.env["RACHEL_MODEL"] ?? "claude-sonnet-4-6"}\n` +
-          `turn in flight: ${currentAbort ? "yes" : "no"}`,
+          `turn in flight: ${currentAbort ? "yes" : "no"}` +
+          lastErrLine,
       );
       return;
     }
@@ -605,17 +625,75 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
       while (!stopped) {
         try {
           await pollOnce();
+          // Successful poll — reset 409 counter and alert Gary on recovery.
+          consecutive409 = 0;
+          if (health !== "healthy") {
+            const prev = health;
+            health = "healthy";
+            if (lastError !== null) lastError = { ...lastError, recovered: true };
+            const msg = prev === "conflict"
+              ? "Rachel bridge recovered from Telegram conflict — back online."
+              : "Rachel bridge recovered from poll error — back online.";
+            console.log(`[telegram-bridge] recovered from ${prev} state.`);
+            sendChunked(config, msg).catch((alertErr) => {
+              console.error(`[telegram-bridge] failed to send recovery alert: ${alertErr instanceof Error ? alertErr.message : String(alertErr)}`);
+            });
+          }
+          // Yield to the macrotask queue so that bridge.stop() → stopped=true
+          // is observable before the next iteration. A zero-delay setTimeout is
+          // sufficient — the getUpdates long poll already governs real cadence
+          // (30s server-side timeout), so we don't want to add extra latency here.
+          await new Promise((r) => setTimeout(r, 0));
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          if (message.includes("409") || message.toLowerCase().includes("conflict")) {
-            // A second getUpdates consumer on this token is fatal — Telegram
-            // allows exactly one. Exit loud; launchd restarts the process.
-            console.error(`[telegram-bridge] FATAL: ${message} — a second getUpdates consumer detected, exiting.`);
-            process.exit(1);
+          const isConflict = message.includes("409") || message.toLowerCase().includes("conflict");
+
+          if (isConflict) {
+            consecutive409++;
+            lastError = { message, at: new Date().toISOString(), recovered: false };
+
+            if (health !== "conflict") {
+              health = "conflict";
+              console.error(`[telegram-bridge] 409 conflict (${consecutive409}/${CONFLICT_EXIT_THRESHOLD}): ${message} — backing off ${resolvedConflictBackoffMs / 1000}s, will auto-recover.`);
+              sendChunked(config,
+                `Rachel bridge: Telegram 409 conflict detected. Backing off ${resolvedConflictBackoffMs / 1000}s and retrying — will auto-recover if this is a launchd restart race.`
+              ).catch((alertErr) => {
+                console.error(`[telegram-bridge] failed to send conflict alert: ${alertErr instanceof Error ? alertErr.message : String(alertErr)}`);
+              });
+            } else {
+              console.error(`[telegram-bridge] 409 conflict (${consecutive409}/${CONFLICT_EXIT_THRESHOLD}): ${message}`);
+            }
+
+            if (consecutive409 >= CONFLICT_EXIT_THRESHOLD) {
+              console.error(`[telegram-bridge] FATAL: 409 conflict persisted for ${consecutive409} consecutive attempts — genuine second consumer, exiting.`);
+              // Await the alert before exiting — fire-and-forget would be killed by process.exit
+              // before the HTTP request completes. "Never block the poll loop" doesn't apply here
+              // since we're exiting immediately after.
+              await sendChunked(config,
+                `Rachel bridge FATAL: Telegram 409 conflict persisted for ${consecutive409} attempts (~${Math.round(consecutive409 * resolvedConflictBackoffMs / 60_000)} min). Genuine second consumer detected. Exiting — launchd will restart.`
+              ).catch((alertErr) => {
+                console.error(`[telegram-bridge] FATAL: failed to send exit alert: ${alertErr instanceof Error ? alertErr.message : String(alertErr)}`);
+              });
+              process.exit(1);
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, resolvedConflictBackoffMs));
+          } else {
+            // Non-conflict error — reset 409 streak regardless of current state.
+            consecutive409 = 0;
+            lastError = { message, at: new Date().toISOString(), recovered: false };
+            if (health !== "failed") {
+              health = "failed";
+              console.error(`[telegram-bridge] poll error (entering failed state): ${message}`);
+              sendChunked(config, `Rachel bridge poll error: ${message}. Retrying with backoff.`).catch((alertErr) => {
+                console.error(`[telegram-bridge] failed to send poll-error alert: ${alertErr instanceof Error ? alertErr.message : String(alertErr)}`);
+              });
+            } else {
+              console.error(`[telegram-bridge] poll error: ${message}`);
+            }
+            await new Promise((resolve) => setTimeout(resolve, backoffMs));
+            backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
           }
-          console.error(`[telegram-bridge] poll error: ${message}`);
-          await new Promise((resolve) => setTimeout(resolve, backoffMs));
-          backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
         }
       }
     },
