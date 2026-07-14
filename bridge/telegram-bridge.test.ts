@@ -827,7 +827,7 @@ test("/status includes 'ongoing' suffix in last_error line when error has not ye
 test("4 consecutive 409s (N-1, boundary) followed by success does NOT exit and sends recovery alert", async () => {
   let getUpdatesCount = 0;
   const sendMessages: string[] = [];
-  const transport: typeof fetch = async (input) => {
+  const transport: typeof fetch = async (input, init) => {
     const url = String(input);
     if (url.includes("/getUpdates")) {
       getUpdatesCount++;
@@ -838,8 +838,7 @@ test("4 consecutive 409s (N-1, boundary) followed by success does NOT exit and s
       return { ok: true, json: async () => ({ ok: true, result: [] }) } as Response;
     }
     if (url.includes("/sendMessage")) {
-      const req = input as Request;
-      const body = typeof req.json === "function" ? (await req.json() as { text?: string }) : {};
+      const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
       sendMessages.push(String(body.text ?? ""));
     }
     return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
