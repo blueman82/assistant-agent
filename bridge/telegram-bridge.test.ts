@@ -581,15 +581,10 @@ test("/status replies without dispatching to runTurn", async () => {
 
 test("run() exits fatally after CONFLICT_EXIT_THRESHOLD (5) consecutive 409s — genuine second consumer", async () => {
   // Transport always 409s — bridge must NOT exit on first 409, only after 5 consecutive.
-  const sendMessages: string[] = [];
-  const transport: typeof fetch = async (input, init) => {
+  const transport: typeof fetch = async (input) => {
     const url = String(input);
     if (url.includes("/getUpdates")) {
       return { ok: false, json: async () => ({ ok: false, description: "Conflict: terminated by other getUpdates request" }) } as Response;
-    }
-    if (url.includes("/sendMessage")) {
-      const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
-      sendMessages.push(String(body.text ?? ""));
     }
     return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
   };
