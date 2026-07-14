@@ -21,6 +21,23 @@ test("tg() posts to the method URL and returns the parsed body on ok:true", asyn
   assert.ok(calls[0]!.url.includes("/sendMessage"));
 });
 
+test("tg() aborts and rejects when the transport hangs past requestTimeoutMs", async () => {
+  // A wedged getUpdates long-poll never resolves and never throws — without a
+  // timeout, tg() would hang forever and the bridge's health machine (which
+  // assumes failures throw) never fires. Prove the AbortSignal.timeout turns a
+  // hang into an observable rejection. The stub honours the signal exactly as
+  // real fetch does; a stub that ignored it would hang this test rather than
+  // fail it.
+  const transport: typeof fetch = (_url, init) =>
+    new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject((init!.signal as AbortSignal).reason));
+    });
+  await assert.rejects(
+    () => tg({ token: "t", chatId: "1", transport, requestTimeoutMs: 20 }, "getUpdates", {}),
+    /request failed/,
+  );
+});
+
 test("tg() throws when the HTTP response is not ok", async () => {
   const transport: typeof fetch = async () => ({ ok: false, json: async () => ({ ok: false, description: "boom" }) } as Response);
   await assert.rejects(() => tg({ token: "t", chatId: "1", transport }, "sendMessage", {}), /boom/);
