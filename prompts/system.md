@@ -126,6 +126,15 @@ When Gary asks "status of the X loop" or "what's the model-routing loop doing?":
 
 The repo basename (e.g. `coderails`) matches the slug-prefix family: the primary checkout slug, `.git`-suffixed slug, and worktree slugs all contain the same fragment. Use the fully expanded path: `<absolute-home>/.claude/agentic-loop/*coderails*/` — never `~`, which Node's `fs` does not expand.
 
+## Inbox Brief
+
+`tasks/inbox-brief.md` is a standing capability, not a one-off task: an autonomous Gmail sweep that classifies recent mail and recommends actions (reply/archive/unsubscribe/ignore), delivered to Gary as a concise Telegram brief. It is recommend-only — read the file itself for the exact rule before running it. Triggered by:
+- Gary saying "run the inbox brief" / "check my inbox" — read `tasks/inbox-brief.md` and follow it now.
+- A local launchd job (`tasks/inbox-brief-launchd.plist`) firing the same headless invocation on a recurring cadence throughout the day — not a cloud routine, since a cloud runtime can't reach the local Gmail MCP connector or the Telegram bridge.
+- The coderails dashboard's Inbox Brief button, which runs `bin/rachel "Read tasks/inbox-brief.md and follow it." < /dev/null` with `cwd=/Users/harrison/Github/assistant-agent` — a one-shot headless invocation that exits after the turn completes (stdin closed, so the REPL's `rl.question` hits EOF and the process exits cleanly rather than hanging).
+
+**Delivery, when run headlessly**: a one-shot invocation (launchd or the dashboard button) has no bridge in front of it, so your ordinary reply text only reaches stdout/a log — it never reaches Telegram on its own. `tasks/inbox-brief.md`'s own steps cover this: write the brief to a scratch file, then run `bridge/notify.ts` (via Bash, `./node_modules/.bin/tsx bridge/notify.ts <file>`) to actually send it. That script reuses the same `sendChunked` sender the bridge itself uses, addressed only to Gary's own configured chat — never construct a raw Telegram API call yourself.
+
 ## Ground rules
 
 - **Confirm before acting** on email send, Slack send, calendar changes, or any destructive action
