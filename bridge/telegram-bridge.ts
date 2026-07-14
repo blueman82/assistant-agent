@@ -616,17 +616,60 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
       while (!stopped) {
         try {
           await pollOnce();
+          // Successful poll — reset 409 counter and alert Gary on recovery.
+          consecutive409 = 0;
+          if (health !== "healthy") {
+            const prev = health;
+            health = "healthy";
+            if (lastError !== null) lastError = { ...lastError, recovered: true };
+            const msg = prev === "conflict"
+              ? "Rachel bridge recovered from Telegram conflict — back online."
+              : "Rachel bridge recovered from poll error — back online.";
+            console.log(`[telegram-bridge] recovered from ${prev} state.`);
+            sendChunked(config, msg).catch(() => {});
+          }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          if (message.includes("409") || message.toLowerCase().includes("conflict")) {
-            // A second getUpdates consumer on this token is fatal — Telegram
-            // allows exactly one. Exit loud; launchd restarts the process.
-            console.error(`[telegram-bridge] FATAL: ${message} — a second getUpdates consumer detected, exiting.`);
-            process.exit(1);
+          const isConflict = message.includes("409") || message.toLowerCase().includes("conflict");
+
+          if (isConflict) {
+            consecutive409++;
+            lastError = { message, at: new Date().toISOString(), recovered: false };
+
+            if (health !== "conflict") {
+              health = "conflict";
+              console.error(`[telegram-bridge] 409 conflict (1/${CONFLICT_EXIT_THRESHOLD}): ${message} — backing off ${resolvedConflictBackoffMs / 1000}s, will auto-recover.`);
+              sendChunked(config,
+                `Rachel bridge: Telegram 409 conflict detected. Backing off ${resolvedConflictBackoffMs / 1000}s and retrying — will auto-recover if this is a launchd restart race.`
+              ).catch(() => {});
+            } else {
+              console.error(`[telegram-bridge] 409 conflict (${consecutive409}/${CONFLICT_EXIT_THRESHOLD}): ${message}`);
+            }
+
+            if (consecutive409 >= CONFLICT_EXIT_THRESHOLD) {
+              console.error(`[telegram-bridge] FATAL: 409 conflict persisted for ${consecutive409} consecutive attempts — genuine second consumer, exiting.`);
+              // Await the alert before exiting — fire-and-forget would be killed by process.exit
+              // before the HTTP request completes. "Never block the poll loop" doesn't apply here
+              // since we're exiting immediately after.
+              await sendChunked(config,
+                `Rachel bridge FATAL: Telegram 409 conflict persisted for ${consecutive409} attempts (~${Math.round(consecutive409 * resolvedConflictBackoffMs / 60_000)} min). Genuine second consumer detected. Exiting — launchd will restart.`
+              ).catch(() => {});
+              process.exit(1);
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, resolvedConflictBackoffMs));
+          } else {
+            if (health === "healthy") {
+              health = "failed";
+              lastError = { message, at: new Date().toISOString(), recovered: false };
+              console.error(`[telegram-bridge] poll error (entering failed state): ${message}`);
+              sendChunked(config, `Rachel bridge poll error: ${message}. Retrying with backoff.`).catch(() => {});
+            } else {
+              console.error(`[telegram-bridge] poll error: ${message}`);
+            }
+            await new Promise((resolve) => setTimeout(resolve, backoffMs));
+            backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
           }
-          console.error(`[telegram-bridge] poll error: ${message}`);
-          await new Promise((resolve) => setTimeout(resolve, backoffMs));
-          backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
         }
       }
     },
