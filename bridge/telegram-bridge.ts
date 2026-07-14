@@ -622,6 +622,11 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         console.error(`[telegram-bridge] setMyCommands failed: ${err instanceof Error ? err.message : String(err)}`);
       });
 
+      // Startup alert — best-effort, non-blocking. A restart is the only signal
+      // Gary gets for a non-409 death (OOM, uncaught exception, reboot): those
+      // exits can't alert themselves, so the NEXT boot announces it happened.
+      sendChunked(config, "Rachel bridge started.").catch(() => {});
+
       while (!stopped) {
         try {
           await pollOnce();
