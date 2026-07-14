@@ -632,6 +632,11 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
             console.log(`[telegram-bridge] recovered from ${prev} state.`);
             sendChunked(config, msg).catch(() => {});
           }
+          // Yield to the macrotask queue between successful polls so that
+          // bridge.stop() → stopped=true is observable before the next iteration.
+          // Without this, a stub transport that resolves immediately (microtask)
+          // causes the loop to spin forever, starving the timer queue.
+          if (!stopped) await new Promise((r) => setTimeout(r, pollIntervalMs));
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           const isConflict = message.includes("409") || message.toLowerCase().includes("conflict");
