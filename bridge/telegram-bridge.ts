@@ -11,8 +11,39 @@ import { tg, sendChunked, sendTyping, setMyCommands, downloadFile, type ApiConfi
 import { homedir } from "node:os";
 import type { TelegramApprovalSurface, TelegramCallbackQuery } from "../gate/surfaces/telegram.ts";
 import type { TurnEmit } from "../rachel.ts";
+import { readdirSync, readFileSync, writeFileSync, unlinkSync, statSync, mkdirSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { execSync } from "node:child_process";
 
 export type BridgeRunTurn = (input: string, emit: TurnEmit, signal: AbortSignal) => Promise<void>;
+
+export interface WatchdogEntry {
+  slug: string;
+  loop_name: string;
+  pid: number;
+  expected_cmd: string;          // "claude" — used to guard against pid recycling
+  repo: string;
+  log_path: string;
+  progress_json_glob: string;   // <home>/.claude/agentic-loop/*<repo-fragment>*/*/progress.json — fully expanded, no ~
+  progress_json_path: string | null;
+  session_id: string | null;
+  spawn_time: number;           // ms since epoch
+  last_check: number | null;    // ms since epoch; null on first poll
+  wake_floor: number | null;    // ms since epoch; set after a sleep gap
+  pinged_at: number | null;     // ms since epoch; null until first stall ping
+  done: boolean;
+}
+
+export interface FsFunctions {
+  readdir: (dir: string) => string[];           // returns filenames
+  readFile: (path: string) => string;
+  writeFile: (path: string, content: string) => void;
+  unlink: (path: string) => void;
+  stat: (path: string) => { mtimeMs: number };
+  mkdirSync: (path: string, opts: { recursive: boolean }) => void;
+  existsSync: (path: string) => boolean;
+  glob: (pattern: string) => string[];          // returns matching paths
+}
 
 export interface CreateBridgeOptions {
   config: ApiConfig;
@@ -24,6 +55,9 @@ export interface CreateBridgeOptions {
   typingIntervalMs?: number;
   // Injectable for tests — avoids hitting the real filesystem/network.
   downloadFileFn?: (config: ApiConfig, fileId: string, destPath: string) => Promise<void>;
+  watchdogDir?: string;                              // defaults to ~/.rachel/loops (expanded, not ~)
+  fsFn?: FsFunctions;                               // defaults to real node:fs wrappers
+  isPidAliveFn?: (pid: number, expectedCmd?: string) => boolean;  // defaults to kill -0 check; injectable for tests
 }
 
 interface TelegramUpdate {
@@ -52,11 +86,304 @@ export interface Bridge {
   stop(): Promise<void>;
 }
 
+// STALL_THRESHOLD_MS: 60 awake-minutes of mtime silence → stall ping.
+// Twin constant: skills/dashboard/app/src/lib/collect/sessions.ts STALLED_THRESHOLD_MS.
+const STALL_THRESHOLD_MS = 60 * 60 * 1000;
+
+export function defaultFsFn(): FsFunctions {
+  return {
+    readdir: (dir) => readdirSync(dir) as string[],
+    readFile: (path) => readFileSync(path, "utf8"),
+    writeFile: (path, content) => writeFileSync(path, content, "utf8"),
+    unlink: (path) => unlinkSync(path),
+    stat: (path) => statSync(path),
+    mkdirSync: (path, opts) => mkdirSync(path, opts),
+    existsSync: (path) => existsSync(path),
+    // glob: two-level readdir walk for the one pattern used in this feature.
+    // Pattern (fully expanded, no ~): <base>/*<fragment>*/*/progress.json
+    // Walk: list slug-level dirs containing <fragment>, then session-id dirs under each.
+    glob: (pattern) => {
+      // Split on first "/*" to get the fixed base dir and the rest of the pattern.
+      const starIdx = pattern.indexOf("/*");
+      if (starIdx === -1) return [];
+      const base = pattern.slice(0, starIdx);
+      const rest = pattern.slice(starIdx + 2); // strip leading "/*"
+      const parts = rest.split("/");
+      if (parts.length !== 3) return []; // expect: <fragment>* / * / <filename>
+      const [fragmentStar, , filename] = parts as [string, string, string];
+      const fragment = fragmentStar.replace(/\*/g, "");
+      if (!existsSync(base)) return [];
+      const results: string[] = [];
+      try {
+        for (const slug of readdirSync(base)) {
+          if (!slug.includes(fragment)) continue;
+          const slugDir = join(base, slug);
+          try {
+            for (const sessionId of readdirSync(slugDir)) {
+              const candidate = join(slugDir, sessionId, filename!);
+              if (existsSync(candidate)) results.push(candidate);
+            }
+          } catch { /* not a directory or unreadable */ }
+        }
+      } catch { /* base unreadable */ }
+      return results;
+    },
+  };
+}
+
+export function isPidAlive(pid: number, expectedCmd?: string): boolean {
+  try {
+    execSync(`kill -0 ${pid}`, { stdio: "ignore" });
+    if (expectedCmd) {
+      const cmd = execSync(`ps -p ${pid} -o command=`, { encoding: "utf8" }).trim();
+      return cmd.includes(expectedCmd);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function parseSessionId(logPath: string, fs: FsFunctions): string | null {
+  try {
+    const content = fs.readFile(logPath).slice(0, 4096);
+    for (const line of content.split("\n")) {
+      if (!line.includes('"subtype":"init"') && !line.includes('"subtype": "init"')) continue;
+      try {
+        const obj = JSON.parse(line) as Record<string, unknown>;
+        if (typeof obj["session_id"] === "string") return obj["session_id"];
+      } catch { /* not valid JSON — skip */ }
+    }
+  } catch { /* log not yet written */ }
+  return null;
+}
+
+function resolveProgressPath(entry: WatchdogEntry, fs: FsFunctions): string | null {
+  const candidates = fs.glob(entry.progress_json_glob);
+  if (entry.session_id) {
+    const match = candidates.find((p) => p.includes(`/${entry.session_id}/`));
+    return match ?? null;
+  }
+  // Fallback: most recently modified candidate with mtime > spawn_time
+  let best: string | null = null;
+  let bestMtime = entry.spawn_time;
+  for (const p of candidates) {
+    try {
+      const m = fs.stat(p).mtimeMs;
+      if (m > bestMtime) { best = p; bestMtime = m; }
+    } catch { /* ignore unreadable */ }
+  }
+  return best;
+}
+
+function readLoopStopCounts(progressPath: string, fs: FsFunctions): Record<string, number> {
+  try {
+    const obj = JSON.parse(fs.readFile(progressPath)) as Record<string, unknown>;
+    const counts = obj["loop_stop_counts"];
+    if (counts && typeof counts === "object" && !Array.isArray(counts)) {
+      return counts as Record<string, number>;
+    }
+  } catch { /* progress.json absent or malformed */ }
+  return {};
+}
+
+async function checkWatchdogs(opts: {
+  watchdogDir: string;
+  fifo: string[];
+  pollPeriodMs: number;
+  fs: FsFunctions;
+  isPidAlive: (pid: number, expectedCmd?: string) => boolean;  // injectable for tests (stress-test fix 1)
+  drainFifo: () => void;                                       // called after any fifo.push() (stress-test fix 3)
+}): Promise<void> {
+  const { watchdogDir, fifo, pollPeriodMs, fs, isPidAlive: pidAliveCheck, drainFifo: triggerDrain } = opts;
+
+  if (!fs.existsSync(watchdogDir)) return;
+
+  let files: string[];
+  try {
+    files = fs.readdir(watchdogDir).filter((f) => f.endsWith(".watchdog.json"));
+  } catch { return; }
+
+  const now = Date.now();
+
+  for (const filename of files) {
+    const watchdogPath = join(watchdogDir, filename);
+    let entry: WatchdogEntry;
+    try {
+      entry = JSON.parse(fs.readFile(watchdogPath)) as WatchdogEntry;
+    } catch { continue; }
+
+    if (entry.done) {
+      // Already consumed — remove stale file defensively.
+      try { fs.unlink(watchdogPath); } catch { /* best-effort */ }
+      continue;
+    }
+
+    const pidAlive = pidAliveCheck(entry.pid, entry.expected_cmd);
+
+    if (!pidAlive) {
+      // EVENT PATH: pid-gone → read stop counts + log tail, inject synthetic turn.
+      const progressPath = entry.progress_json_path ?? resolveProgressPath(entry, fs);
+      const counts = progressPath ? readLoopStopCounts(progressPath, fs) : {};
+      const status = progressPath ? (() => {
+        try { return (JSON.parse(fs.readFile(progressPath)) as Record<string, unknown>)["status"] ?? "unknown"; } catch { return "unknown"; }
+      })() : "unknown";
+
+      const nonZeroCategories = Object.entries(counts)
+        .filter(([, v]) => v > 0)
+        .map(([k, v]) => `${k}:${v}`)
+        .join(", ") || "none";
+
+      fifo.push(
+        `[watchdog] Loop "${entry.loop_name}" (slug: ${entry.slug}) has exited. ` +
+        `progress.json status=${String(status)}, loop_stop_counts={${nonZeroCategories}}. ` +
+        `Log: ${entry.log_path}. ` +
+        `Read the log tail and progress.json, then relay a summary ping to Gary via Telegram.`
+      );
+      triggerDrain(); // stress-test fix 3: drain immediately, not on next poll cycle
+
+      entry.done = true;
+      try { fs.writeFile(watchdogPath, JSON.stringify(entry, null, 2)); } catch { /* best-effort */ }
+      try { fs.unlink(watchdogPath); } catch { /* best-effort */ }
+      continue;
+    }
+
+    // ALIVE PATH — sleep-aware clock update first.
+    if (entry.last_check !== null && now - entry.last_check > 5 * pollPeriodMs) {
+      entry.wake_floor = now; // machine slept; restart the silence window
+    }
+    entry.last_check = now;
+
+    // Session-id binding: read from log on first non-empty cycle.
+    if (entry.session_id === null) {
+      const sid = parseSessionId(entry.log_path, fs);
+      if (sid !== null) entry.session_id = sid;
+    }
+
+    // Resolve progress.json path deterministically once session_id is known.
+    if (entry.progress_json_path === null && entry.session_id !== null) {
+      const resolved = resolveProgressPath(entry, fs);
+      if (resolved !== null) entry.progress_json_path = resolved;
+    }
+
+    // Liveness: max(progress.json mtime, spawn_time, wake_floor).
+    let liveMtime = entry.spawn_time;
+    if (entry.progress_json_path) {
+      try { liveMtime = Math.max(liveMtime, fs.stat(entry.progress_json_path).mtimeMs); } catch { /* absent */ }
+    }
+    if (entry.wake_floor !== null) liveMtime = Math.max(liveMtime, entry.wake_floor);
+
+    const stalled = liveMtime + STALL_THRESHOLD_MS < now;
+
+    if (stalled && entry.pinged_at === null) {
+      // STALL PATH: first stall ping.
+      const lastUnit = (() => {
+        if (!entry.progress_json_path) return "none (loop never registered progress.json)";
+        try {
+          const obj = JSON.parse(fs.readFile(entry.progress_json_path)) as Record<string, unknown>;
+          const units = obj["work_units"];
+          if (units && typeof units === "object") {
+            const entries = Array.isArray(units)
+              ? units
+              : Object.values(units);
+            const last = entries.filter((u): u is Record<string, unknown> => typeof u === "object" && u !== null).pop();
+            return String(last?.["title"] ?? last?.["id"] ?? "unknown");
+          }
+        } catch { /* ignore */ }
+        return "unknown";
+      })();
+      fifo.push(
+        `[watchdog] Loop "${entry.loop_name}" (slug: ${entry.slug}, pid: ${entry.pid}) has gone quiet for 60+ min. ` +
+        `Last known unit: ${lastUnit}. Log: ${entry.log_path}. ` +
+        `Ping Gary via Telegram that the loop appears stalled.`
+      );
+      triggerDrain(); // stress-test fix 3: drain immediately, not on next poll cycle
+      entry.pinged_at = now;
+    }
+
+    // Clear stall debounce if progress.json mtime advanced past the ping.
+    if (
+      entry.pinged_at !== null &&
+      entry.progress_json_path !== null
+    ) {
+      try {
+        const currentMtime = fs.stat(entry.progress_json_path).mtimeMs;
+        if (currentMtime > entry.pinged_at) entry.pinged_at = null;
+      } catch { /* ignore */ }
+    }
+
+    // Persist watchdog state after every alive-path cycle.
+    try { fs.writeFile(watchdogPath, JSON.stringify(entry, null, 2)); } catch { /* best-effort */ }
+  }
+}
+
+export interface CheckLaunchAllowedOpts {
+  watchdogDir: string;
+  fs: FsFunctions;
+  isPidAlive: (pid: number, expectedCmd?: string) => boolean;
+  staleThresholdMs?: number;   // defaults to STALL_THRESHOLD_MS (60 min)
+}
+
+export interface LaunchAllowedResult {
+  allowed: boolean;
+  reason?: string;   // set when allowed=false; Rachel relays this verbatim
+}
+
+export function checkLaunchAllowed(repo: string, opts: CheckLaunchAllowedOpts): LaunchAllowedResult {
+  const { watchdogDir, fs, isPidAlive: pidAliveCheck } = opts;
+  const staleThresholdMs = opts.staleThresholdMs ?? STALL_THRESHOLD_MS;
+  const repoBasename = repo.split("/").filter(Boolean).pop() ?? repo;
+  const now = Date.now();
+
+  // Check 1: live Rachel-tracked watchdog for this repo.
+  if (fs.existsSync(watchdogDir)) {
+    try {
+      for (const filename of fs.readdir(watchdogDir).filter((f) => f.endsWith(".watchdog.json"))) {
+        let entry: WatchdogEntry;
+        try { entry = JSON.parse(fs.readFile(join(watchdogDir, filename))) as WatchdogEntry; }
+        catch { continue; }
+        if (entry.done) continue;
+        if (!entry.repo.includes(repoBasename)) continue;
+        if (pidAliveCheck(entry.pid, entry.expected_cmd)) {
+          return { allowed: false, reason: `Loop "${entry.loop_name}" is already running on that repo (pid ${entry.pid}).` };
+        }
+      }
+    } catch { /* watchdogDir unreadable — treat as empty */ }
+  }
+
+  // Check 2: any progress.json under ~/.claude/agentic-loop/ for this repo
+  // with status != "complete" and mtime ≤ staleThresholdMs ago.
+  const agenticBase = join(homedir(), ".claude", "agentic-loop");
+  const candidates = fs.glob(`${agenticBase}/*${repoBasename}*/*/progress.json`);
+  for (const path of candidates) {
+    try {
+      const obj = JSON.parse(fs.readFile(path)) as Record<string, unknown>;
+      const status = String(obj["status"] ?? "unknown");
+      if (status === "complete") continue;
+      const mtime = fs.stat(path).mtimeMs;
+      const ageMs = now - mtime;
+      if (ageMs <= staleThresholdMs) {
+        const agoMin = Math.round(ageMs / 60_000);
+        return { allowed: false, reason: `A loop on that repo is active (progress.json status=${status}, last activity ${agoMin} min ago).` };
+      }
+    } catch { /* skip unreadable */ }
+  }
+
+  return { allowed: true };
+}
+
 export function createBridge(options: CreateBridgeOptions): Bridge {
   const { config, runTurn, getSessionId, resetSession } = options;
   const downloadFileFn = options.downloadFileFn ?? downloadFile;
   const pollIntervalMs = options.pollIntervalMs ?? 2000;
   const typingIntervalMs = options.typingIntervalMs ?? DEFAULT_TYPING_INTERVAL_MS;
+
+  // Tilde expansion: watchdogDir must be an absolute path — Node's fs never expands ~.
+  const watchdogDir = options.watchdogDir ?? join(homedir(), ".rachel", "loops");
+  const resolvedFs = options.fsFn ?? defaultFsFn();
+  const resolvedIsPidAlive = options.isPidAliveFn ?? isPidAlive;
+
+  try { resolvedFs.mkdirSync(watchdogDir, { recursive: true }); } catch { /* already exists */ }
 
   const fifo: string[] = [];
   let offset: number | undefined;
@@ -249,6 +576,16 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     const result = (await tg(config, `getUpdates?${params.toString()}`, {})) as TelegramUpdate[];
     backoffMs = 1000;
     await processUpdates(result ?? []);
+    await checkWatchdogs({
+      watchdogDir,
+      fifo,
+      pollPeriodMs: pollIntervalMs,
+      fs: resolvedFs,
+      isPidAlive: resolvedIsPidAlive,
+      drainFifo: () => void drainFifo().catch((err) => {
+        console.error(`[telegram-bridge] watchdog drain error: ${err instanceof Error ? err.message : String(err)}`);
+      }),
+    });
   }
 
   return {
