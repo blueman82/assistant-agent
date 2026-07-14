@@ -18,6 +18,7 @@ Steps:
 5. Deliver the brief to Telegram — this step matters: when you're run headlessly (no bridge in front of you, e.g. from launchd or a dashboard button), your ordinary reply text only reaches stdout/a log file, not Gary's phone. So deliver it explicitly instead:
    - `Write` the assembled brief (plain text, no markdown) to a scratch file, e.g. `/tmp/inbox-brief-<timestamp>.txt`.
    - Run `./node_modules/.bin/tsx bridge/notify.ts <path-to-that-file>` via Bash (from the repo root) to actually send it. Do NOT construct a raw `curl`/HTTP call to the Telegram API yourself — always use this script, which reuses the same sender the Telegram bridge itself uses.
-   - If there's nothing needing attention, still write and send a brief one-liner saying so (don't skip the send step, or Gary never learns the sweep ran clean).
+   - **Check the result, don't assume it worked**: confirm the command exited 0 and printed `[notify] sent.`. If it did NOT — nonzero exit, or no `[notify] sent.` line — the brief did NOT reach Gary. Do not report the sweep as a success in that case; say plainly in your turn output that delivery failed (the dashboard-button run route captures and streams this turn output, so a stated failure is visible even without Telegram).
+   - If there's nothing needing attention but there IS new mail since the last sweep (all of it noise), still write and send a brief one-liner saying so — don't skip the send step just because nothing needs action, or Gary never learns the sweep ran clean.
 
-Skip entirely if there's nothing new since the last sweep (no unread, nothing in the last 24h) — send nothing rather than an empty "all clear" every few hours.
+Skip entirely — no write, no send — only when there's nothing NEW since the last sweep at all (no unread, nothing in the last 24h). That's the one case where sending nothing is correct; every other case (even an all-noise sweep) still sends a brief per the step above.
