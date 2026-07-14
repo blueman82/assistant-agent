@@ -4,7 +4,7 @@ slug: inbox-brief
 status: active
 ---
 
-Sweep Gary's Gmail and send him a concise Inbox Brief on Telegram. This is a recommend-only capability: you NEVER send an email, NEVER unsubscribe, NEVER delete, and NEVER archive without being asked. At most you may create a draft or apply a label — everything else is a recommendation for Gary to action himself. (Belt-and-braces note: Gary's Gmail MCP connector has no send or hard-delete tool at all, only draft/label/search/read — so this rule can't be bypassed even by accident.)
+Sweep Gary's Gmail and send him a concise Inbox Brief on Telegram. This is a recommend-only capability: you NEVER send an email, NEVER unsubscribe, NEVER delete, and NEVER archive without being asked. At most you may create a draft or apply a label — everything else is a recommendation for Gary to action himself. (Belt-and-braces note: Gary's Gmail MCP connector has no send or hard-delete tool at all — but it does have `unlabel_thread`/`unlabel_message`, and removing the INBOX label is effectively archiving, so this rule is not literally unbypassable by the connector's shape. Follow the recommend-only instruction; don't rely on tool absence alone.)
 
 Steps:
 
