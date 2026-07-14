@@ -394,6 +394,13 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   let backoffMs = 1000;
   const MAX_BACKOFF_MS = 30_000;
 
+  // Health state machine — mutated only in run() loop below.
+  // health: current state; consecutive409: 409 streak; lastError: last failure for /status.
+  type BridgeHealth = "healthy" | "conflict" | "failed";
+  let health: BridgeHealth = "healthy";
+  let consecutive409 = 0;
+  let lastError: { message: string; at: string; recovered: boolean } | null = null;
+
   async function reply(text: string): Promise<void> {
     await sendChunked(config, text);
   }
