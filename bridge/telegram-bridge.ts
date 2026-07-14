@@ -632,11 +632,11 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
             console.log(`[telegram-bridge] recovered from ${prev} state.`);
             sendChunked(config, msg).catch(() => {});
           }
-          // Yield to the macrotask queue between successful polls so that
-          // bridge.stop() → stopped=true is observable before the next iteration.
-          // Without this, a stub transport that resolves immediately (microtask)
-          // causes the loop to spin forever, starving the timer queue.
-          if (!stopped) await new Promise((r) => setTimeout(r, pollIntervalMs));
+          // Yield to the macrotask queue so that bridge.stop() → stopped=true
+          // is observable before the next iteration. A zero-delay setTimeout is
+          // sufficient — the getUpdates long poll already governs real cadence
+          // (30s server-side timeout), so we don't want to add extra latency here.
+          await new Promise((r) => setTimeout(r, 0));
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           const isConflict = message.includes("409") || message.toLowerCase().includes("conflict");
