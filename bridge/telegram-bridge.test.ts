@@ -659,6 +659,44 @@ test("first 409 sends a Telegram alert via sendMessage and backs off before retr
   assert.ok(getUpdatesCount >= 2, "bridge should have retried getUpdates after the 409 backoff");
 });
 
+test("run() sends a one-time 'started' alert on boot", async () => {
+  // A non-409 death (OOM, uncaught exception, reboot, launchctl bootout) can't
+  // alert itself — the FATAL 409 exit is the only exit that does. The next boot
+  // announcing itself is the only signal a crash-restart loop leaves. Prove the
+  // startup alert fires exactly once, and only startup (no poll error/conflict).
+  const sendMessages: string[] = [];
+  const transport: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) {
+      return { ok: true, json: async () => ({ ok: true, result: [] }) } as Response;
+    }
+    if (url.includes("/sendMessage")) {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+      sendMessages.push(String(body.text ?? ""));
+    }
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {},
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  const runPromise = bridge.run();
+  // Let a tick pass so the fire-and-forget startup alert lands, then stop.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await bridge.stop();
+  await runPromise;
+  // Flush the fire-and-forget sendChunked microtask.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const startedAlerts = sendMessages.filter((m) => m.toLowerCase().includes("started"));
+  assert.equal(startedAlerts.length, 1, `expected exactly one 'started' alert on boot — got: ${JSON.stringify(sendMessages)}`);
+});
+
 test("recovery from 409 sends a recovery Telegram alert", async () => {
   let getUpdatesCount = 0;
   const sendMessages: string[] = [];
