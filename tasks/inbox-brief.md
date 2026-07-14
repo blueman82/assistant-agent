@@ -15,6 +15,9 @@ Steps:
    - **noise** — newsletters, automated notifications, promos.
 3. For each thread, recommend one action: reply / archive / unsubscribe / ignore. Don't perform any of these — just name the recommendation.
 4. Assemble a CONCISE brief, not a wall of text. Group by classification, needs-action first. A few words per item (sender, subject gist, recommended action) — this is read on a phone in Telegram, not a report.
-5. Deliver the brief as your normal reply text (plain text, no markdown — same rule as everything else you send to Telegram). If there's nothing needing attention, say so briefly rather than padding the brief out.
+5. Deliver the brief to Telegram — this step matters: when you're run headlessly (no bridge in front of you, e.g. from launchd or a dashboard button), your ordinary reply text only reaches stdout/a log file, not Gary's phone. So deliver it explicitly instead:
+   - `Write` the assembled brief (plain text, no markdown) to a scratch file, e.g. `/tmp/inbox-brief-<timestamp>.txt`.
+   - Run `./node_modules/.bin/tsx bridge/notify.ts <path-to-that-file>` via Bash (from the repo root) to actually send it. Do NOT construct a raw `curl`/HTTP call to the Telegram API yourself — always use this script, which reuses the same sender the Telegram bridge itself uses.
+   - If there's nothing needing attention, still write and send a brief one-liner saying so (don't skip the send step, or Gary never learns the sweep ran clean).
 
 Skip entirely if there's nothing new since the last sweep (no unread, nothing in the last 24h) — send nothing rather than an empty "all clear" every few hours.
