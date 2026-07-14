@@ -746,6 +746,7 @@ test("409 persisting to threshold sends FATAL alert before exiting", async () =>
 });
 
 test("/status reports last_error (recovered) after a 409 that self-healed", async () => {
+  // Sequence: 409 on poll 1, success on poll 2 (recovery), /status message on poll 3.
   let getUpdatesCount = 0;
   const replies: string[] = [];
   const transport: typeof fetch = async (input) => {
@@ -754,6 +755,20 @@ test("/status reports last_error (recovered) after a 409 that self-healed", asyn
       getUpdatesCount++;
       if (getUpdatesCount === 1) {
         return { ok: false, json: async () => ({ ok: false, description: "Conflict: 409" }) } as Response;
+      }
+      if (getUpdatesCount === 2) {
+        // Recovery poll — success, no messages.
+        return { ok: true, json: async () => ({ ok: true, result: [] }) } as Response;
+      }
+      // Poll 3+: deliver a /status message then idle.
+      if (getUpdatesCount === 3) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            result: [{ update_id: 9001, message: { message_id: 1, chat: { id: 12345 }, text: "/status" } }],
+          }),
+        } as Response;
       }
       return { ok: true, json: async () => ({ ok: true, result: [] }) } as Response;
     }
@@ -775,69 +790,28 @@ test("/status reports last_error (recovered) after a 409 that self-healed", asyn
   });
 
   const runPromise = bridge.run();
-  // Let the 409 fire and the recovery poll succeed.
-  await new Promise((resolve) => setTimeout(resolve, 150));
-  // Flush async recovery alert microtask.
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  // Simulate Gary sending /status from chat 12345.
-  await bridge.drainOnce();
-
-  // Inject a /status message by queuing it through a fresh getUpdates result.
-  // Use the transport to return a /status message on the next poll.
-  // Since drainOnce already ran the next poll, send a direct /status by
-  // queuing to the FIFO via a fake inbound message on the next drainOnce.
-  let statusQueued = false;
-  const origTransport = transport;
-  const patchedTransport: typeof fetch = async (input) => {
-    const url = String(input);
-    if (url.includes("/getUpdates") && !statusQueued) {
-      statusQueued = true;
-      return {
-        ok: true,
-        json: async () => ({
-          ok: true,
-          result: [{ update_id: 9001, message: { message_id: 1, chat: { id: 12345 }, text: "/status" } }],
-        }),
-      } as Response;
-    }
-    return origTransport(input);
-  };
-
-  // Patch the config transport — not directly possible since config is captured.
-  // Instead, use drainOnce with a fresh bridge that shares lastError state.
-  // Actually: the simplest approach is to inspect the replies array for a status reply
-  // after stop(). Let's stop the bridge and check if any reply contains "last error:".
+  // Allow: 409 (5ms backoff) + recovery poll + microtask flush + /status poll + reply.
+  await new Promise((resolve) => setTimeout(resolve, 200));
   await bridge.stop();
   await runPromise;
 
-  // The /status reply won't have fired without a message. Assert on lastError
-  // indirectly: the recovery sendMessage should have fired.
-  const recoveryAlert = replies.find((m) => m.toLowerCase().includes("recovered"));
-  assert.ok(recoveryAlert !== undefined, `expected a recovery alert before checking /status — got: ${JSON.stringify(replies)}`);
-
-  // Now create a fresh bridge that already had a 409 + recovery, send /status.
-  // This is the simplest correct approach: the /status enrichment is also covered
-  // by the ongoing test (3e-ongoing), so we only need to verify the "recovered" suffix
-  // appears in the status line when lastError.recovered === true.
-  // The recovery alert being sent confirms recovered:true was set.
-  // Structural verification: check the /status code path in source contains ", recovered".
-  const src = (await import("node:fs")).readFileSync(
-    new URL("./telegram-bridge.ts", import.meta.url),
-    "utf8",
-  );
-  assert.ok(src.includes(", recovered"), "status handler must contain \", recovered\" suffix for recovered errors");
+  const statusReply = replies.find((m) => m.includes("last error:"));
+  assert.ok(statusReply !== undefined, `expected /status reply to contain "last error:" — got: ${JSON.stringify(replies)}`);
+  assert.ok(statusReply.includes(", recovered"), `expected "recovered" suffix in status reply — got: ${statusReply}`);
 });
 
 test("/status reports last_error (ongoing) while bridge is still in conflict state", async () => {
-  // Bridge always 409s. We stop it early (before threshold exit) and check /status.
-  const replies: string[] = [];
+  // Sequence: 409 on poll 1, /status message on poll 2 (still in conflict state).
   let getUpdatesCount = 0;
-
+  const replies: string[] = [];
   const transport: typeof fetch = async (input) => {
     const url = String(input);
     if (url.includes("/getUpdates")) {
       getUpdatesCount++;
-      // First call: return a /status message so we can catch it in the same poll.
+      if (getUpdatesCount === 1) {
+        return { ok: false, json: async () => ({ ok: false, description: "Conflict: 409" }) } as Response;
+      }
+      // Poll 2: deliver /status message (bridge is still in conflict health state).
       if (getUpdatesCount === 2) {
         return {
           ok: true,
@@ -847,7 +821,7 @@ test("/status reports last_error (ongoing) while bridge is still in conflict sta
           }),
         } as Response;
       }
-      return { ok: false, json: async () => ({ ok: false, description: "Conflict: 409" }) } as Response;
+      return { ok: true, json: async () => ({ ok: true, result: [] }) } as Response;
     }
     if (url.includes("/sendMessage")) {
       const req = input as Request;
@@ -867,8 +841,8 @@ test("/status reports last_error (ongoing) while bridge is still in conflict sta
   });
 
   const runPromise = bridge.run();
-  // Let the first 409 fire, then the second poll returns /status.
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  // Allow: 409 (5ms backoff) + /status poll + reply.
+  await new Promise((resolve) => setTimeout(resolve, 150));
   await bridge.stop();
   await runPromise;
 
