@@ -746,7 +746,7 @@ test("/status reports last_error (recovered) after a 409 that self-healed", asyn
   // Sequence: 409 on poll 1, success on poll 2 (recovery), /status message on poll 3.
   let getUpdatesCount = 0;
   const replies: string[] = [];
-  const transport: typeof fetch = async (input) => {
+  const transport: typeof fetch = async (input, init) => {
     const url = String(input);
     if (url.includes("/getUpdates")) {
       getUpdatesCount++;
@@ -770,8 +770,7 @@ test("/status reports last_error (recovered) after a 409 that self-healed", asyn
       return { ok: true, json: async () => ({ ok: true, result: [] }) } as Response;
     }
     if (url.includes("/sendMessage")) {
-      const req = input as Request;
-      const body = typeof req.json === "function" ? (await req.json() as { text?: string }) : {};
+      const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
       replies.push(String(body.text ?? ""));
     }
     return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
