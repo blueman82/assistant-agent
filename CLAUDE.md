@@ -26,6 +26,8 @@ There is no build step (run directly via `tsx`) and no linter. `.claude/test_com
 
 To run the Telegram bridge persistently (survives reboots/crashes), copy `bridge/launchd.plist` to `~/Library/LaunchAgents/com.rachel.telegram-bridge.plist`, replace `__REPO_PATH__` with the absolute path to this checkout, then `launchctl load ~/Library/LaunchAgents/com.rachel.telegram-bridge.plist`. Logs land at `.rachel/telegram-bridge.log`, redacted of the bot token before they're ever written.
 
+To run the Inbox Brief sweep (`tasks/inbox-brief.md`) on a schedule, copy `tasks/inbox-brief-launchd.plist` to `~/Library/LaunchAgents/com.rachel.inbox-brief.plist`, replace `__REPO_PATH__`, then `launchctl load` it. It fires `bin/rachel "Read tasks/inbox-brief.md and follow it." < /dev/null` four times a day; each run is a headless one-shot that exits on its own (closed stdin → EOF → clean exit), not a long-lived process, so no `KeepAlive` is needed.
+
 ## Architecture
 
 The codebase is intentionally tiny and splits cleanly into **plumbing** and **brain**:
