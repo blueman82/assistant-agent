@@ -800,8 +800,16 @@ test("/status reports last_error (recovered) after a 409 that self-healed", asyn
   assert.ok(statusReply.includes(", recovered"), `expected "recovered" suffix in status reply — got: ${statusReply}`);
 });
 
-test("/status reports last_error (ongoing) while bridge is still in conflict state", async () => {
-  // Sequence: 409 on poll 1, /status message on poll 2 (still in conflict state).
+test("/status includes 'ongoing' suffix when lastError is set and not yet recovered", async () => {
+  // The /status handler path for ongoing errors is: lastError !== null && recovered === false.
+  // Testing this end-to-end would require stopping the bridge mid-backoff (a concurrency
+  // hazard). Instead we verify the handler via drainOnce() with a pre-seeded lastError
+  // by using a transport that first delivers a 409 (setting lastError + conflict state),
+  // then immediately delivers a /status message before recovery.
+  //
+  // Strategy: poll 1 = 409 (triggers conflict + sets lastError); then stop run() and
+  // use drainOnce() to inject the /status message while the bridge is stopped (stopped=true
+  // means run() exits but drainOnce() still works as a direct one-shot).
   let getUpdatesCount = 0;
   const replies: string[] = [];
   const transport: typeof fetch = async (input) => {
@@ -809,10 +817,11 @@ test("/status reports last_error (ongoing) while bridge is still in conflict sta
     if (url.includes("/getUpdates")) {
       getUpdatesCount++;
       if (getUpdatesCount === 1) {
+        // 409 — sets lastError + health=conflict.
         return { ok: false, json: async () => ({ ok: false, description: "Conflict: 409" }) } as Response;
       }
-      // Poll 2: deliver /status message (bridge is still in conflict health state).
       if (getUpdatesCount === 2) {
+        // drainOnce() call — deliver /status message.
         return {
           ok: true,
           json: async () => ({
@@ -840,11 +849,11 @@ test("/status reports last_error (ongoing) while bridge is still in conflict sta
     conflictBackoffMs: 5,
   });
 
-  const runPromise = bridge.run();
-  // Allow: 409 (5ms backoff) + /status poll + reply.
-  await new Promise((resolve) => setTimeout(resolve, 150));
-  await bridge.stop();
-  await runPromise;
+  // Fire one 409 via drainOnce — this sets lastError without entering the run() backoff loop.
+  try { await bridge.drainOnce(); } catch { /* 409 throws — expected */ }
+
+  // Now deliver /status via a second drainOnce — lastError is set but not recovered.
+  await bridge.drainOnce();
 
   const statusReply = replies.find((m) => m.includes("last error:"));
   assert.ok(statusReply !== undefined, `expected /status reply to contain "last error:" — got: ${JSON.stringify(replies)}`);
