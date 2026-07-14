@@ -41,6 +41,13 @@
   <key>KeepAlive</key>
   <true/>
 
+  <!-- Belt-and-suspenders: even if the bridge exits on a 409, launchd won't
+       restart it faster than 60s — giving Telegram time to release its
+       getUpdates lock (~30-60s). The bridge's own backoff handles the race,
+       but this prevents a future regression from re-creating the crash loop. -->
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+
   <key>StandardOutPath</key>
   <string>__REPO_PATH__/.rachel/telegram-bridge.log</string>
 
