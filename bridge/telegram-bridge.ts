@@ -426,11 +426,15 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     }
     if (text === "/status") {
       const sessionId = getSessionId();
+      const lastErrLine = lastError !== null
+        ? `\nlast error: ${lastError.message} (${lastError.at}${lastError.recovered ? ", recovered" : ", ongoing"})`
+        : "";
       await reply(
         `uptime: ${Math.floor(process.uptime())}s\n` +
           `session: ${sessionId ?? "(none)"}\n` +
           `model: ${process.env["RACHEL_MODEL"] ?? "claude-sonnet-4-6"}\n` +
-          `turn in flight: ${currentAbort ? "yes" : "no"}`,
+          `turn in flight: ${currentAbort ? "yes" : "no"}` +
+          lastErrLine,
       );
       return;
     }
