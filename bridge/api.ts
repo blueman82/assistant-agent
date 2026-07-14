@@ -8,6 +8,12 @@ export interface ApiConfig {
   token: string;
   chatId: string;
   transport?: Transport;
+  // Client-side abort timeout for each request. A getUpdates long-poll sets
+  // timeout=30 server-side, so this MUST be comfortably longer than 30s or
+  // every poll aborts. Default 45s — long enough for the long-poll, short
+  // enough to turn a wedged fetch (network drop without RST, sleep/wake) into
+  // an observable throw the bridge's health machine can act on.
+  requestTimeoutMs?: number;
 }
 
 const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
