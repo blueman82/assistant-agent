@@ -208,10 +208,10 @@ export async function runTurn(
             const input = block.input as Record<string, unknown>;
             const summary =
               block.name === "Bash"
-                ? String(input["command"] ?? "").slice(0, 100)
+                ? String(input["command"] ?? "")
                 : block.name === "Read" || block.name === "Write" || block.name === "Edit"
                   ? String(input["file_path"] ?? "")
-                  : JSON.stringify(block.input).slice(0, 100);
+                  : JSON.stringify(block.input);
             emit(`  [${block.name}] ${summary}`, "tool");
           }
         }
