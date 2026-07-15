@@ -1450,6 +1450,239 @@ test("a photo whose getFile call returns ok:false sends a failure reply and does
 });
 
 // ---------------------------------------------------------------------------
+// Chokepoint routing — startup notice, watchdog pings, and health-transition
+// alerts go through proactive/push.ts's push() (family store + deferred.json
+// under pushBaseDir); only the FATAL 5x409 exit alert stays a direct awaited
+// sendChunked.
+// ---------------------------------------------------------------------------
+
+test("the startup notice is deferred to the push store during quiet hours instead of being sent", async () => {
+  const sendMessages: string[] = [];
+  const transport: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) {
+      return { ok: true, json: async () => ({ ok: true, result: [] }) } as Response;
+    }
+    if (url.includes("/sendMessage")) {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+      sendMessages.push(String(body.text ?? ""));
+    }
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  const pushSeams = basePushOpts();
+  const bridge = createBridge({
+    ...pushSeams,
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {},
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    nowFn: QUIET_TIME,
+  });
+
+  const runPromise = bridge.run();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await bridge.stop();
+  await runPromise;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.ok(!sendMessages.some((m) => m.toLowerCase().includes("started")), `no immediate startup send in quiet hours: ${JSON.stringify(sendMessages)}`);
+  const deferred = readDeferred(pushSeams.pushBaseDir);
+  const startupEntry = deferred.entries.find((e) => e.family === "bridge-startup");
+  assert.ok(startupEntry, `startup notice queued in deferred.json (a 3am crash-restart lands in the morning digest): ${JSON.stringify(deferred)}`);
+  assert.equal(startupEntry.event_id, "bridge:startup");
+  assert.equal(startupEntry.reason, "quiet");
+});
+
+test("startup-alert re-entry: run() driven twice on one bridge sends exactly one 'started' alert (chokepoint dedup)", async () => {
+  const sendMessages: string[] = [];
+  const transport: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) {
+      return { ok: true, json: async () => ({ ok: true, result: [] }) } as Response;
+    }
+    if (url.includes("/sendMessage")) {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+      sendMessages.push(String(body.text ?? ""));
+    }
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {},
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  // First run(): note stop() latches `stopped`, so the second run() exits its
+  // loop immediately — but its startup push still fires, which is the
+  // re-entry being pinned here.
+  const firstRun = bridge.run();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await bridge.stop();
+  await firstRun;
+  const secondRun = bridge.run();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await secondRun;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const startedAlerts = sendMessages.filter((m) => m.toLowerCase().includes("started"));
+  assert.equal(startedAlerts.length, 1, `re-entering run() must not re-announce startup — got: ${JSON.stringify(startedAlerts)}`);
+});
+
+test("a watchdog stall ping is deferred to the push store during quiet hours — no transport send, no synthetic turn", async () => {
+  const now = Date.now();
+  const watchdogDir = "/fake/watchdog";
+  const watchdogPath = watchdogDir + "/quiet-loop.watchdog.json";
+  const progressPath = "/fake/quiet-progress.json";
+
+  const entry = makeWatchdogEntry({
+    slug: "quiet-loop",
+    loop_name: "Quiet Loop",
+    pid: 22222,
+    progress_json_path: progressPath,
+    spawn_time: now - 70 * 60 * 1000,
+    last_check: null,
+    pinged_at: null,
+    done: false,
+  });
+
+  const fsFn = makeStubFs({
+    watchdogDir,
+    files: new Map([
+      [watchdogPath, JSON.stringify(entry)],
+      [progressPath, JSON.stringify({ status: "in_progress" })],
+    ]),
+    mtimes: new Map([[progressPath, now - 61 * 60 * 1000]]),
+  });
+
+  const { transport, calls } = makeStubTransport([{ ok: true, result: [] }]);
+  const pushSeams = basePushOpts();
+  let dispatched = false;
+
+  const bridge = createBridge({
+    ...pushSeams,
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => { dispatched = true; },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    watchdogDir,
+    fsFn,
+    isPidAliveFn: () => true,
+    nowFn: QUIET_TIME,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  const sendCalls = calls.filter((c) => c.url.includes("/sendMessage"));
+  assert.equal(sendCalls.length, 0, `nothing goes out over the transport in quiet hours: ${JSON.stringify(sendCalls)}`);
+  assert.equal(dispatched, false, "no synthetic turn is injected");
+  const deferred = readDeferred(pushSeams.pushBaseDir);
+  const stallEntry = deferred.entries.find((e) => e.family === "loop-watchdog");
+  assert.ok(stallEntry, `stall ping queued in deferred.json: ${JSON.stringify(deferred)}`);
+  assert.equal(stallEntry.event_id, "loop-stall:quiet-loop");
+  assert.equal(stallEntry.reason, "quiet");
+});
+
+test("the conflict-entry health alert defers during quiet hours while the FATAL 5x409 exit alert is still sent directly", async () => {
+  const sendMessages: string[] = [];
+  const transport: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) {
+      return { ok: false, json: async () => ({ ok: false, description: "Conflict: terminated by other getUpdates request" }) } as Response;
+    }
+    if (url.includes("/sendMessage")) {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+      sendMessages.push(String(body.text ?? ""));
+    }
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  const pushSeams = basePushOpts();
+  const bridge = createBridge({
+    ...pushSeams,
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {},
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    conflictBackoffMs: 5,
+    nowFn: QUIET_TIME,
+  });
+
+  const originalExit = process.exit;
+  const exitOrder: string[] = [];
+  process.exit = ((_code?: number) => {
+    exitOrder.push("exit");
+    throw new Error("process.exit stub halting run()");
+  }) as typeof process.exit;
+
+  try {
+    await assert.rejects(() => bridge.run(), /process\.exit stub/);
+  } finally {
+    process.exit = originalExit;
+  }
+
+  const fatalAlerts = sendMessages.filter((m) => m.toUpperCase().includes("FATAL"));
+  assert.equal(fatalAlerts.length, 1, `the FATAL exit alert bypasses quiet hours via direct send: ${JSON.stringify(sendMessages)}`);
+  assert.ok(
+    !sendMessages.some((m) => m.toLowerCase().includes("conflict detected")),
+    `the conflict-entry alert must NOT go out during quiet hours: ${JSON.stringify(sendMessages)}`,
+  );
+  const deferred = readDeferred(pushSeams.pushBaseDir);
+  const healthEntry = deferred.entries.find((e) => e.family === "bridge-health");
+  assert.ok(healthEntry, `conflict-entry alert queued in deferred.json: ${JSON.stringify(deferred)}`);
+  assert.equal(healthEntry.event_id, "bridge:health");
+});
+
+test("a push() failure falls back to a direct send so the startup alert is never lost to the chokepoint plumbing", async () => {
+  const sendMessages: string[] = [];
+  const transport: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) {
+      return { ok: true, json: async () => ({ ok: true, result: [] }) } as Response;
+    }
+    if (url.includes("/sendMessage")) {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+      sendMessages.push(String(body.text ?? ""));
+    }
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  const pushSeams = basePushOpts();
+  // A corrupt family store makes push() throw loudly for this family — the
+  // bridge must catch and fall back to a direct send.
+  const { mkdirSync: realMkdirSync, writeFileSync: realWriteFileSync } = await import("node:fs");
+  realMkdirSync(pushSeams.pushBaseDir, { recursive: true });
+  realWriteFileSync(join(pushSeams.pushBaseDir, "bridge-startup.json"), "not json {");
+
+  const bridge = createBridge({
+    ...pushSeams,
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {},
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  const runPromise = bridge.run();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await bridge.stop();
+  await runPromise;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const startedAlerts = sendMessages.filter((m) => m.toLowerCase().includes("started"));
+  assert.equal(startedAlerts.length, 1, `startup alert delivered via the direct-send fallback: ${JSON.stringify(sendMessages)}`);
+});
+
+// ---------------------------------------------------------------------------
 // Heartbeat tests — the bridge writes ~/.rachel/bridge-heartbeat.json (path
 // injectable via heartbeatPath) atomically on every poll iteration.
 // ---------------------------------------------------------------------------
