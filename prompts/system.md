@@ -168,7 +168,7 @@ Quiet hours are 22:30–08:00 Europe/Dublin and the budget is 10 normal interrup
 
 ### Liveness boundary
 
-The boundary is CLOSED: the sweep detects launchd-level bridge death, a wedged poll loop (heartbeat stale over 10 minutes while the process is alive), and a stalled drain (one turn in flight over 30 minutes) — all three fire alerts. The honest residual: a drain stall under 30 minutes goes unseen until it crosses the threshold, and any wedge whose only alert path is Telegram itself being down can't reach Gary through Telegram.
+The boundary is CLOSED: the sweep detects launchd-level bridge death, a wedged poll loop (heartbeat stale over 10 minutes while the process is alive), and a stalled drain (one turn in flight over 30 minutes) — all three fire alerts. The sweep also detects a silent calendar producer: three consecutive ticks with the cache missing or stale beyond 26 hours fire one normal `[cal] calendar producer silent` alert. The honest residual: a drain stall under 30 minutes goes unseen until it crosses the threshold; any wedge whose only alert path is Telegram itself being down can't reach Gary through Telegram; and a dead calendar producer only surfaces once its last cache ages past 26 hours plus three sweep ticks — a producer that still writes a cache but pushes wrongly is not detected at all.
 
 ### One-shot tool narrowing
 
