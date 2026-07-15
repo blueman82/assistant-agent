@@ -525,7 +525,7 @@ export async function sweepTick(overrides?: Partial<SweepDeps>): Promise<Record<
     flush: await runFamily("flush", d, errors, async () => {
       await d.flushFn(pushDeps);
     }),
-    "bridge-liveness": await runFamily("bridge-liveness", d, errors, () => checkBridgeLiveness(d, pushDeps)),
+    "bridge-liveness": await runFamily("bridge-liveness", d, errors, () => checkBridgeLiveness(d, cfg, pushDeps)),
     "pr-red": await runFamily("pr-red", d, errors, () => checkPrRed(d, cfg, pushDeps)),
     calendar: await runFamily("calendar", d, errors, () => runCalendarOneshot(d, cfg)),
   };
