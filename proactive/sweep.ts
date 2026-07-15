@@ -187,9 +187,73 @@ async function checkBridgeLiveness(d: SweepDeps, pushDeps: Partial<PushDeps>): P
     await d.pushFn("bridge-liveness", "bridge:liveness", "down", "urgent", `[urgent · bridge] Bridge down. Last log ${age}.${infra}`, pushDeps);
     return;
   }
+
+  // Process is alive per launchd — check the heartbeat for a wedged poll
+  // loop and a stalled drain. A missing heartbeat file with a running
+  // process is treated as UNKNOWN, never as a wedge: it means a pre-U2b
+  // bridge that has not been restarted onto heartbeat-writing code yet
+  // (deploy ordering safety — the sweep can pick up merged code a full
+  // restart cycle before the long-lived bridge process does).
+  const now = d.now().getTime();
+  const heartbeatPath = join(d.homeDir, ".rachel", "bridge-heartbeat.json");
+  const raw = d.readFileFn(heartbeatPath);
+  let heartbeat: BridgeHeartbeat | undefined;
+  if (raw === undefined) {
+    d.log("[sweep] bridge-liveness: no heartbeat file (pre-U2b bridge not yet restarted?) — wedge check skipped");
+  } else {
+    try {
+      heartbeat = JSON.parse(raw) as BridgeHeartbeat;
+    } catch {
+      // Corrupt is unknown, not wedged — a half-written or damaged file must
+      // not fire an urgent alarm on a healthy bridge.
+      d.log(`[sweep] bridge-liveness: corrupt heartbeat at ${heartbeatPath} — wedge check skipped`);
+    }
+  }
+
+  let wedged = false;
+  if (heartbeat !== undefined) {
+    const lastPollMs = Date.parse(String(heartbeat.last_poll_at));
+    if (Number.isNaN(lastPollMs)) {
+      d.log(`[sweep] bridge-liveness: unparseable last_poll_at in heartbeat — wedge check skipped`);
+    } else if (now - lastPollMs > WEDGE_THRESHOLD_MS) {
+      wedged = true;
+      const staleMin = Math.floor((now - lastPollMs) / 60_000);
+      await d.pushFn(
+        "bridge-liveness",
+        "bridge:liveness",
+        "down",
+        "urgent",
+        `[urgent · bridge] Bridge wedged — launchd reports running but last poll ${staleMin}m ago.`,
+        pushDeps,
+      );
+    }
+
+    // Drain-stall is its own event (bridge:drain-stall), checked
+    // independently of the wedge — both can be true at once and neither's
+    // dedup may suppress the other. State is the turn_in_flight_since
+    // timestamp itself: a new in-flight turn (or a clear-then-restall)
+    // changes the state and re-arms the ping.
+    if (typeof heartbeat.turn_in_flight_since === "string") {
+      const sinceMs = Date.parse(heartbeat.turn_in_flight_since);
+      if (!Number.isNaN(sinceMs) && now - sinceMs > DRAIN_STALL_THRESHOLD_MS) {
+        const stallMin = Math.floor((now - sinceMs) / 60_000);
+        const depth = typeof heartbeat.queue_depth === "number" ? heartbeat.queue_depth : 0;
+        await d.pushFn(
+          "bridge-liveness",
+          "bridge:drain-stall",
+          heartbeat.turn_in_flight_since,
+          "normal",
+          `[bridge] turn running ${stallMin}m, queue depth ${depth}`,
+          pushDeps,
+        );
+      }
+    }
+  }
+
   // A first-ever observation of a healthy bridge pushes nothing — recovery
-  // is only announced after a recorded "down".
-  if (d.getStateFn("bridge-liveness", "bridge:liveness", pushDeps) === "down") {
+  // is only announced after a recorded "down". A wedged bridge is down-class,
+  // so it never announces recovery in the same tick.
+  if (!wedged && d.getStateFn("bridge-liveness", "bridge:liveness", pushDeps) === "down") {
     await d.pushFn("bridge-liveness", "bridge:liveness", "up", "normal", "[bridge] Bridge recovered.", pushDeps);
   }
 }
