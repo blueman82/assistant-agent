@@ -245,8 +245,52 @@ export function getEventState(family: string, eventId: string, deps?: Partial<Pu
   return readFamilyFile(d.baseDir, family).events[eventId]?.state;
 }
 
-export async function flushDeferred(_deps?: Partial<PushDeps>): Promise<"sent" | "empty" | "quiet"> {
-  throw new Error("not implemented");
+// Flushes the deferred queue as ONE digest message. quiet- and digest-reason
+// entries are eligible on every tick outside the quiet window; budget-reason
+// entries ride only the SCHEDULED digest hours (calendar_oneshot_hours plus
+// the quiet-window-open hour) so budget overflow lands hours apart, not on a
+// 30-minute smoother.
+//
+// Delivery is AT-LEAST-ONCE by design: the write-back happens only after the
+// send resolves, so a crash in between re-sends the batch next tick. That is
+// the accepted defer-never-drop semantic, not a bug. Digest flushes never
+// touch budget.json.
+export async function flushDeferred(deps?: Partial<PushDeps>): Promise<"sent" | "empty" | "quiet"> {
+  const d = resolveDeps(deps);
+  const now = d.now();
+  const cfg = loadConfig(d.baseDir);
+  if (inQuietWindow(now, cfg)) {
+    return "quiet";
+  }
+  const currentHour = Math.floor(zonedMinutesOfDay(now, cfg.timezone) / 60);
+  const budgetEligibleHours = new Set([...cfg.calendar_oneshot_hours, Math.floor(parseHM(cfg.quiet_hours.end) / 60)]);
+  const eligible = readDeferred(d.baseDir).entries.filter(
+    (e) => e.reason !== "budget" || budgetEligibleHours.has(currentHour),
+  );
+  if (eligible.length === 0) {
+    return "empty";
+  }
+
+  const quietCount = eligible.filter((e) => e.reason === "quiet").length;
+  const budgetCount = eligible.filter((e) => e.reason === "budget").length;
+  const breakdown = [
+    ...(quietCount > 0 ? [`${quietCount} overnight`] : []),
+    ...(budgetCount > 0 ? [`${budgetCount} over budget`] : []),
+  ];
+  const header =
+    `[digest] ${eligible.length} ${eligible.length === 1 ? "item" : "items"}` +
+    (breakdown.length > 0 ? ` (${breakdown.join(", ")})` : "") +
+    ":";
+  await d.sendFn([header, ...eligible.map((e) => e.text)].join("\n"));
+
+  // Subtract-flushed-snapshot write-back: re-read at truncate time and keep
+  // every entry NOT in the flushed snapshot (matched on queued_at+event_id),
+  // so an entry a concurrent push appended mid-send survives — never a blind
+  // truncate to empty.
+  const flushedKeys = new Set(eligible.map((e) => `${e.queued_at}|${e.event_id}`));
+  const remaining = readDeferred(d.baseDir).entries.filter((e) => !flushedKeys.has(`${e.queued_at}|${e.event_id}`));
+  writeJsonAtomic(join(d.baseDir, "deferred.json"), { schema_version: 1, entries: remaining } satisfies DeferredFile);
+  return "sent";
 }
 
 // config.json is written by the (Loop-2) installer, never by push.ts.
