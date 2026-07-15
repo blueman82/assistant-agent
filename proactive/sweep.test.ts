@@ -1203,8 +1203,8 @@ test("a mis-sorted producer entry is defensively re-sorted: same event-id and sa
 function advanceClock(h: ReturnType<typeof makeHarness>, startMs: number): () => void {
   let tick = 0;
   return () => {
-    h.deps.now = () => new Date(startMs + tick * 30 * 60_000);
-    tick++;
+    const t = tick++; // capture by value — the closure must not see later increments
+    h.deps.now = () => new Date(startMs + t * 30 * 60_000);
   };
 }
 
