@@ -975,6 +975,138 @@ test("failure streaks persist in the sweep state file and survive a Dublin date 
   assert.equal(escalations(sent).length, 1, "the streak survives the date rollover — 3rd consecutive failure still escalates");
 });
 
+// --- Calendar <2h escalation: deterministic cache consumer ---
+
+const CACHE_PATH = (h: ReturnType<typeof makeHarness>) => join(h.homeDir, ".rachel", "calendar-cache.json");
+
+// Fixture pair: startA 13:30 Dublin (+01:00 in July) = 90 minutes after the
+// DAYTIME clock (12:00 Dublin). Hash pins hand-computed via
+// `printf '%s' "<startA>|<endA>|<startB>|<endB>" | shasum -a 256 | cut -c1-16`.
+const CONFLICT_90M = {
+  idA: "aaa",
+  idB: "bbb",
+  startA: "2026-07-15T13:30:00+01:00",
+  endA: "2026-07-15T14:30:00+01:00",
+  startB: "2026-07-15T14:00:00+01:00",
+  endB: "2026-07-15T15:00:00+01:00",
+  title_hint: "Design review / 1:1 with Rory",
+};
+const HASH_90M = "142488339621fc63";
+const CONFLICT_RESCHEDULED = { ...CONFLICT_90M, startA: "2026-07-15T13:45:00+01:00" };
+const HASH_RESCHEDULED = "e2e9525c79c8fc5f";
+
+function seedCache(
+  h: ReturnType<typeof makeHarness>,
+  conflicts: object[],
+  fetchedAt: string = DAYTIME().toISOString(),
+): void {
+  h.files.set(CACHE_PATH(h), JSON.stringify({ schema_version: 1, fetched_at: fetchedAt, conflicts }));
+}
+
+test("a cached conflict starting 90m out pushes one urgent :2h escalation with the pinned hash16 state", async () => {
+  const h = makeHarness();
+  seedCache(h, [CONFLICT_90M]);
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 1);
+  const p = h.pushes[0]!;
+  assert.equal(p.family, "calendar");
+  assert.equal(p.eventId, "cal:aaa+bbb:2h");
+  assert.equal(p.state, HASH_90M, "state is the first 16 hex chars of sha256 over startA|endA|startB|endB");
+  assert.equal(p.severity, "urgent");
+  assert.equal(p.text, "[urgent · cal] Conflict: Design review / 1:1 with Rory — 13:30 overlaps 14:00, starts in 90m");
+});
+
+test("a cached conflict starting 3h out pushes nothing", async () => {
+  const h = makeHarness();
+  seedCache(h, [
+    {
+      ...CONFLICT_90M,
+      startA: "2026-07-15T15:00:00+01:00",
+      endA: "2026-07-15T16:00:00+01:00",
+      startB: "2026-07-15T15:30:00+01:00",
+      endB: "2026-07-15T16:30:00+01:00",
+    },
+  ]);
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 0);
+});
+
+test("a conflict whose earlier event already started pushes nothing (the window is (now, now+2h])", async () => {
+  const h = makeHarness();
+  seedCache(h, [
+    {
+      ...CONFLICT_90M,
+      startA: "2026-07-15T12:30:00+01:00", // 30m in the past
+      endA: "2026-07-15T14:30:00+01:00",
+    },
+  ]);
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 0);
+});
+
+test("a missing calendar cache is a logged skip, never an alarm or a family error", async () => {
+  const h = makeHarness();
+  const results = await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 0);
+  assert.equal(results["calendar-escalation"], "ok");
+  assert.ok(
+    h.logs.some((line) => line.includes("calendar-escalation") && line.includes("no cache")),
+    `skip logged: ${JSON.stringify(h.logs)}`,
+  );
+});
+
+test("a corrupt calendar cache is a logged skip, never an alarm", async () => {
+  const h = makeHarness();
+  h.files.set(CACHE_PATH(h), "not json {");
+  const results = await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 0);
+  assert.equal(results["calendar-escalation"], "ok");
+  assert.ok(
+    h.logs.some((line) => line.includes("calendar-escalation") && line.includes("corrupt")),
+    `corrupt skip logged: ${JSON.stringify(h.logs)}`,
+  );
+});
+
+test("a cache fetched 27h ago is stale (>26h) and skipped without alarm", async () => {
+  const h = makeHarness();
+  seedCache(h, [CONFLICT_90M], new Date(DAYTIME().getTime() - 27 * 60 * 60 * 1000).toISOString());
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 0);
+  assert.ok(
+    h.logs.some((line) => line.includes("calendar-escalation") && line.includes("stale")),
+    `stale skip logged: ${JSON.stringify(h.logs)}`,
+  );
+});
+
+test("a cache fetched 25h ago is NOT stale (26h boundary) and still escalates", async () => {
+  const h = makeHarness();
+  seedCache(h, [CONFLICT_90M], new Date(DAYTIME().getTime() - 25 * 60 * 60 * 1000).toISOString());
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 1);
+});
+
+test("integration: the :2h escalation dedups through the real chokepoint and a reschedule re-arms it", async () => {
+  const { push, getEventState } = await import("./push.ts");
+  const h = makeHarness();
+  const sent: string[] = [];
+  h.deps.sendFn = async (text) => {
+    sent.push(text);
+  };
+  h.deps.pushFn = push;
+  h.deps.getStateFn = getEventState;
+  seedCache(h, [CONFLICT_90M]);
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  assert.equal(sent.filter((t) => t.startsWith("[urgent · cal]")).length, 1, "identical schedule dedups");
+  assert.equal(getEventState("calendar", "cal:aaa+bbb:2h", { baseDir: h.baseDir }), HASH_90M);
+  // Reschedule: startA moves 15 minutes — the hash changes, so the SAME
+  // event-id re-arms (red-team pin: dedup is per schedule-state, not per pair).
+  seedCache(h, [CONFLICT_RESCHEDULED]);
+  await sweepTick(h.deps);
+  assert.equal(sent.filter((t) => t.startsWith("[urgent · cal]")).length, 2, "a reschedule re-arms the escalation");
+  assert.equal(getEventState("calendar", "cal:aaa+bbb:2h", { baseDir: h.baseDir }), HASH_RESCHEDULED);
+});
+
 test("grep guard for proactive/sweep.test.ts: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
   const source = await (await import("node:fs/promises")).readFile(new URL("./sweep.test.ts", import.meta.url), "utf8");
   const realFetchCall = /fetch\(\s*["'`]https:\/\/api\.telegram\.org/;
