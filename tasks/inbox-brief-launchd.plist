@@ -23,6 +23,12 @@
   EnvironmentVariables/PATH is required because launchd jobs run with no
   user PATH, so tsx's `#!/usr/bin/env node` shebang can't resolve node
   (same requirement as bridge/launchd.plist).
+
+  RACHEL_ALLOWED_TOOLS narrows the headless agent to the minimum set this
+  task needs — Read, Write, Bash, and the Gmail MCP tools (a one-shot that
+  reads hostile email must not carry Chrome, WebFetch, or mcp-exec). The env
+  var can only REMOVE tools from rachel.ts's default list, never add
+  (injection hardening in proactive/allowedTools.ts).
 -->
 <plist version="1.0">
 <dict>
@@ -30,6 +36,8 @@
   <dict>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>RACHEL_ALLOWED_TOOLS</key>
+    <string>Read,Write,Bash,mcp__claude_ai_Gmail__*</string>
   </dict>
 
   <key>Label</key>
