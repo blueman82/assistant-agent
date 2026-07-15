@@ -386,6 +386,14 @@ interface SweepState {
   // First tick (ms epoch) that saw launchctl-alive with NO heartbeat file —
   // the missing-heartbeat grace tracking. Survives the date rollover.
   heartbeat_missing_since?: number;
+  // Calendar producer-silence tracking: consecutive ticks whose cache was
+  // missing or stale-beyond-26h, plus the first tick (ms epoch) of the
+  // current silence episode. Deliberately NOT in failure_streaks — the
+  // self-alert escalation loop iterates every failure_streaks key and would
+  // fire a spurious urgent direct send for this normal-severity condition.
+  // Both survive the date rollover (consecutive ticks, not per-day).
+  calendar_producer_streak?: number;
+  calendar_producer_silent_since?: number;
   // Whether the current streak's escalation has been DELIVERED (a failed
   // send stays false and is retried next tick). Cleared on family success.
   escalation_sent?: Record<string, boolean>;
