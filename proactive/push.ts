@@ -30,10 +30,19 @@ export const DEFAULT_CONFIG: ProactiveConfig = {
   calendar_oneshot_hours: [8, 11, 14, 17],
 };
 
-export function zonedMinutesOfDay(_d: Date, _tz: string): number {
-  throw new Error("not implemented");
+// All time comparisons and date boundaries run in the configured timezone
+// (Europe/Dublin) via Intl — never UTC arithmetic, never a tz library.
+function zonedParts(d: Date, tz: string, options: Intl.DateTimeFormatOptions): Map<string, string> {
+  const parts = new Intl.DateTimeFormat("en-GB", { timeZone: tz, ...options }).formatToParts(d);
+  return new Map(parts.map((p) => [p.type, p.value]));
 }
 
-export function zonedDateString(_d: Date, _tz: string): string {
-  throw new Error("not implemented");
+export function zonedMinutesOfDay(d: Date, tz: string): number {
+  const parts = zonedParts(d, tz, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  return Number(parts.get("hour")) * 60 + Number(parts.get("minute"));
+}
+
+export function zonedDateString(d: Date, tz: string): string {
+  const parts = zonedParts(d, tz, { year: "numeric", month: "2-digit", day: "2-digit" });
+  return `${parts.get("year")}-${parts.get("month")}-${parts.get("day")}`;
 }
