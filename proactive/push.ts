@@ -293,8 +293,50 @@ export async function flushDeferred(deps?: Partial<PushDeps>): Promise<"sent" | 
   return "sent";
 }
 
-export async function cliMain(_argv: string[], _deps?: Partial<PushDeps>): Promise<number> {
-  throw new Error("not implemented");
+// CLI contract: EXACTLY five arguments after node+script. A sixth argument —
+// whatever it is — is rejected: there is no destination argv, and never will
+// be (pinned security invariant). The message text comes from a FILE, never
+// argv — argv text hits shell quoting limits on multi-line messages, and a
+// swept email body containing a send-looking string would otherwise land in
+// the Bash tool_use command and trip gate/bashPatterns.ts (same rationale as
+// bridge/notify.ts).
+const USAGE = "[push] usage: push.ts <family> <event-id> <state> <severity> <message-file> (exactly five arguments)";
+
+export async function cliMain(argv: string[], deps?: Partial<PushDeps>): Promise<number> {
+  if (argv.length !== 7) {
+    console.error(USAGE);
+    return 2;
+  }
+  const [, , family, eventId, state, severity, messageFile] = argv as [string, string, string, string, string, string, string];
+  if (!FAMILY_RE.test(family)) {
+    console.error(`[push] invalid family: ${family}`);
+    return 2;
+  }
+  if (!SEVERITIES.includes(severity)) {
+    console.error(`[push] invalid severity: ${severity} (must be urgent | normal | digest)`);
+    return 2;
+  }
+  let text: string;
+  try {
+    text = readFileSync(messageFile, "utf8");
+  } catch (err) {
+    console.error(`[push] cannot read message file: ${err instanceof Error ? err.message : String(err)}`);
+    return 2;
+  }
+  try {
+    const result = await push(family, eventId, state, severity as Severity, text, deps);
+    console.log(`[push] ${result}.`);
+    return 0;
+  } catch (err) {
+    console.error(`[push] ${err instanceof Error ? err.message : String(err)}`);
+    return 1;
+  }
+}
+
+// Only run as a CLI when executed directly (tsx proactive/push.ts ...), not
+// when imported by the sweep or a test — same guard as notify.ts/rachel.ts.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  process.exit(await cliMain(process.argv));
 }
 
 // config.json is written by the (Loop-2) installer, never by push.ts.
