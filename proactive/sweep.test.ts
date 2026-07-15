@@ -370,3 +370,9 @@ test("gh exit 1 on pr list logs a pr-red error and the tick completes", async ()
   assert.equal(h.pushes.length, 0);
   assert.ok(h.logs.some((line) => line.startsWith("[sweep] pr-red error:")), `pr-red error logged: ${JSON.stringify(h.logs)}`);
 });
+
+test("grep guard: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
+  const source = await (await import("node:fs/promises")).readFile(new URL("./sweep.test.ts", import.meta.url), "utf8");
+  const realFetchCall = /fetch\(\s*["'`]https:\/\/api\.telegram\.org/;
+  assert.equal(realFetchCall.test(source), false);
+});
