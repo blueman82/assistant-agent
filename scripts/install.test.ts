@@ -348,6 +348,148 @@ test("fails with npm install guidance when node_modules is missing", () => {
   assert.deepStrictEqual(installedPlists(sb), [], "preflight failure must precede any install");
 });
 
+// --- Review-round tests (PR #31 two-reviewer gate) -------------------------
+
+// CRITICAL 1a: the proactive config write must be checked — an unwritable
+// directory (mkdir -p exits 0 on an existing chmod-555 dir) must produce a
+// loud nonzero failure, never a "wrote" claim over a missing/truncated file.
+test("fails loud when the proactive config directory is unwritable", () => {
+  const sb = makeSandbox();
+  writeTelegramJson(sb);
+  writeFreshHeartbeat(sb);
+  const cfgDir = join(sb.home, ".rachel", "proactive");
+  mkdirSync(cfgDir, { recursive: true });
+  chmodSync(cfgDir, 0o555);
+  try {
+    const { status, output } = runInstaller(sb);
+    assert.notStrictEqual(status, 0, "unwritable config dir must fail the run");
+    assert.match(output, /config\.json/, "the failure must name the config file");
+    assert.ok(!existsSync(join(cfgDir, "config.json")), "no config file must exist");
+  } finally {
+    chmodSync(cfgDir, 0o755);
+  }
+});
+
+// CRITICAL 1b: a pre-existing corrupt config.json is protected by the
+// never-overwrite guard, so verification must catch it — push.ts would
+// otherwise silently fall back to defaults on every tick.
+test("verification fails on a pre-existing corrupt proactive config", () => {
+  const sb = makeSandbox();
+  writeTelegramJson(sb);
+  writeFreshHeartbeat(sb);
+  const cfgPath = join(sb.home, ".rachel", "proactive", "config.json");
+  mkdirSync(dirname(cfgPath), { recursive: true });
+  writeFileSync(cfgPath, '{"daily_budget":'); // truncated JSON
+  const { status, output } = runInstaller(sb);
+  assert.notStrictEqual(status, 0, "corrupt config must fail verification");
+  assert.match(output, /FAIL/);
+  assert.match(output, /config\.json/, "the failing check must name the config file");
+  assert.strictEqual(readFileSync(cfgPath, "utf8"), '{"daily_budget":', "corrupt file must still not be overwritten");
+});
+
+// CRITICAL 2: heartbeat freshness must be measured from the bridge's
+// bootout instant, not script start — otherwise the OUTGOING bridge's last
+// write satisfies the check while the new bridge is wedged in 409 backoff.
+// The shim delays the bridge bootout by 6s (beyond the 5s clock slack) so a
+// heartbeat that was fresh at script start is provably pre-bootout.
+test("verification rejects a heartbeat last written before the bridge bootout", () => {
+  const sb = makeSandbox();
+  writeTelegramJson(sb);
+  writeFreshHeartbeat(sb); // fresh relative to script start, never refreshed again
+  const { status, output } = runInstaller(sb, [], {
+    LAUNCHCTL_BOOTOUT_DELAY: "6",
+    LAUNCHCTL_BOOTOUT_DELAY_LABEL: "com.rachel.telegram-bridge",
+    INSTALL_HEARTBEAT_WAIT_SECS: "2",
+  });
+  assert.notStrictEqual(status, 0, "a pre-bootout heartbeat must not pass verification");
+  assert.match(output, /FAIL/);
+  assert.match(output, /heartbeat/i, "the failing check must be named");
+});
+
+// IMPORTANT 1: a bootstrap failure mid-loop must not abort the remaining
+// services — all plists are already on disk at that point, so the loop must
+// complete, the summary must name the casualty, and the exit be nonzero.
+test("a bootstrap failure on one service does not abort the remaining services", () => {
+  const sb = makeSandbox();
+  writeTelegramJson(sb);
+  writeFreshHeartbeat(sb);
+  const { status, output } = runInstaller(sb, [], { LAUNCHCTL_BOOTSTRAP_FAIL: "com.rachel.inbox-brief" });
+  assert.notStrictEqual(status, 0, "a failed bootstrap must fail the run");
+  assert.match(output, /FAIL/);
+  assert.match(output, /com\.rachel\.inbox-brief/, "the summary must name the failed service");
+  assert.deepStrictEqual(
+    stateLabels(sb),
+    LABELS.filter((l) => l !== "com.rachel.inbox-brief"),
+    "the remaining services must still be bootstrapped",
+  );
+});
+
+// IMPORTANT 2a: loadTelegramConfig's truthy check accepts a numeric chatId —
+// the preflight must not be stricter than the runtime contract.
+test("accepts a numeric chatId in telegram.json", () => {
+  const sb = makeSandbox();
+  writeFileSync(
+    join(sb.home, ".rachel", "telegram.json"),
+    JSON.stringify({ token: "000000:TEST-DUMMY-NOT-A-TOKEN", chatId: 1 }),
+  );
+  writeFreshHeartbeat(sb);
+  const { status, output } = runInstaller(sb);
+  assert.strictEqual(status, 0, output);
+});
+
+// IMPORTANT 2b: malformed JSON is "absent" to loadTelegramConfig, so the
+// preflight must fail loud instead of letting the bridge crash-loop later.
+test("fails loud at preflight on malformed telegram.json", () => {
+  const sb = makeSandbox();
+  writeFileSync(
+    join(sb.home, ".rachel", "telegram.json"),
+    '{"token": "000000:TEST-DUMMY-NOT-A-TOKEN", "chatId": "1",}', // trailing comma
+  );
+  const { status, output } = runInstaller(sb);
+  assert.notStrictEqual(status, 0, "malformed telegram.json must fail preflight");
+  assert.match(output, /telegram\.json/);
+  assert.match(output, /RACHEL_TELEGRAM/);
+  assert.deepStrictEqual(installedPlists(sb), [], "preflight failure must precede any install");
+});
+
+// IMPORTANT 3: a repo path containing XML-hostile characters must be caught
+// at stamping time (plutil -lint on the stamped output), not surface later
+// as an opaque bootstrap error — and the invalid plist must never land in
+// LaunchAgents (atomic temp+rename with lint before the rename).
+test("fails loud when the stamped plist would be invalid XML (hostile repo path)", () => {
+  const sb = makeSandbox();
+  const fakeInstaller = makeFakeRepo(join(sb.root, "fake & repo"), { nodeModules: true });
+  writeTelegramJson(sb);
+  const { status, output } = runInstaller(sb, [], {}, fakeInstaller);
+  assert.notStrictEqual(status, 0, "invalid stamped XML must fail the run");
+  assert.match(output, /lint/i, "the failure must come from the stamping lint check");
+  assert.deepStrictEqual(installedPlists(sb), [], "no invalid plist may land in LaunchAgents");
+});
+
+// S3: extra arguments are a user error, not something to silently ignore.
+test("rejects extra arguments with a usage error", () => {
+  const sb = makeSandbox();
+  writeTelegramJson(sb);
+  const { status, output } = runInstaller(sb, ["--dry-run", "extra"]);
+  assert.strictEqual(status, 2, output);
+  assert.match(output, /usage/i);
+});
+
+// Dry-run restructure: preflight problems must not pre-empt the plan —
+// --dry-run prints the full plan, THEN reports the problems, exiting nonzero.
+test("dry-run prints the full plan then names preflight problems", () => {
+  const sb = makeSandbox();
+  // No telegram config at all.
+  const { status, output } = runInstaller(sb, ["--dry-run"]);
+  assert.notStrictEqual(status, 0, "dry-run must still signal that a real run would fail");
+  for (const label of LABELS) {
+    assert.match(output, new RegExp(label), `plan must still name ${label}`);
+  }
+  assert.match(output, /telegram\.json/);
+  assert.match(output, /RACHEL_TELEGRAM/);
+  assert.deepStrictEqual(installedPlists(sb), [], "still zero side effects");
+});
+
 test("honours INSTALL_HOME, INSTALL_LAUNCH_AGENTS_DIR and INSTALL_LAUNCHCTL seams", () => {
   const sb = makeSandbox();
   // Config + heartbeat live under an ALTERNATE home; plists go to an
