@@ -526,7 +526,10 @@ async function checkCalendarEscalation(d: SweepDeps, cfg: ProactiveConfig, pushD
   }
 }
 
-const ONESHOT_TOOLS = "Read,Write,Bash,mcp__claude_ai_Google_Calendar__*";
+// Exported for the cross-check test pinning this as a subset of rachel.ts's
+// DEFAULT_ALLOWED_TOOLS — a narrowing entry outside the default list would
+// be silently dropped by resolveAllowedTools.
+export const ONESHOT_TOOLS = "Read,Write,Bash,mcp__claude_ai_Google_Calendar__*";
 
 // Calendar one-shot spawn cadence: each due configured hour (h <= current
 // Dublin hour, not yet recorded today) collapses into ONE spawn — launchd
