@@ -152,9 +152,20 @@ async function checkBridgeLiveness(d: SweepDeps, pushDeps: Partial<PushDeps>): P
   const result = await d.execFn("launchctl", ["print", `gui/${uid}/com.rachel.telegram-bridge`]);
   const down = result.exitCode !== 0 || !result.stdout.includes("state = running");
   if (down) {
-    const mtime = d.statMtimeFn(join(d.repoDir, ".rachel", "telegram-bridge.log"));
+    // The mtime is decoration on the one alert that matters — a stat failure
+    // (EACCES, EIO) must never kill the urgent ping, so it degrades to
+    // "unknown" instead of throwing into the family catch.
+    let mtime: Date | undefined;
+    try {
+      mtime = d.statMtimeFn(join(d.repoDir, ".rachel", "telegram-bridge.log"));
+    } catch {
+      mtime = undefined;
+    }
     const age = mtime === undefined ? "unknown" : `${Math.max(0, Math.floor((d.now().getTime() - mtime.getTime()) / 60_000))}m ago`;
-    await d.pushFn("bridge-liveness", "bridge:liveness", "down", "urgent", `[urgent · bridge] Bridge down. Last log ${age}.`, pushDeps);
+    // When the launchctl call itself failed, name its stderr in the ping so
+    // Gary can tell infra failure from real bridge death from the text alone.
+    const infra = result.exitCode !== 0 && result.stderr.trim() !== "" ? ` launchctl: ${result.stderr.trim()}` : "";
+    await d.pushFn("bridge-liveness", "bridge:liveness", "down", "urgent", `[urgent · bridge] Bridge down. Last log ${age}.${infra}`, pushDeps);
     return;
   }
   // A first-ever observation of a healthy bridge pushes nothing — recovery
