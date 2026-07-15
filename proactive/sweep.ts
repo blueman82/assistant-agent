@@ -6,6 +6,7 @@
 // then PR-red, then calendar. Each family runs in its own try/catch so one
 // broken family never blocks the others and the tick still exits 0.
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
