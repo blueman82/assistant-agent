@@ -57,7 +57,9 @@ export function parseNotifyArgv(argv: string[]): string | null {
 if (import.meta.url === `file://${process.argv[1]}`) {
   const filePath = parseNotifyArgv(process.argv);
   if (!filePath) {
-    console.error("[notify] usage: notify.ts <path-to-message-file> (exactly one argument)");
+    // The count is diagnostic; argument CONTENT is never echoed (it could be
+    // a message body or a destination-shaped injection attempt).
+    console.error(`[notify] usage: notify.ts <path-to-message-file> (exactly one argument; received ${process.argv.length - 2})`);
     process.exit(2);
   }
   try {
