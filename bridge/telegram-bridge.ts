@@ -483,7 +483,10 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   // A push() failure must never crash the bridge, and an alert must never be
   // lost to the chokepoint plumbing: on any push() throw we fall back to a
   // direct sendChunked (giving up quiet-hours/dedup semantics for that one
-  // alert — the safe direction). Never rejects.
+  // alert — the safe direction). Never rejects. push() itself treats a
+  // sent-but-unrecorded event as "sent" (post-send bookkeeping failures do
+  // not throw), so this fallback only fires for PRE-send failures and can
+  // never double-deliver an alert push() already sent.
   async function pushAlert(family: string, eventId: string, state: string, severity: Severity, text: string): Promise<void> {
     try {
       await push(family, eventId, state, severity, text, bridgePushDeps);
