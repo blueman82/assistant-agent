@@ -274,6 +274,98 @@ test("push: invalid severity throws", async () => {
   );
 });
 
+function writeDeferredEntries(baseDir: string, entries: DeferredEntry[]): void {
+  writeFileSync(join(baseDir, "deferred.json"), JSON.stringify({ schema_version: 1, entries }));
+}
+
+// 2 quiet + 1 budget + 1 digest, in queue order.
+function fourEntryQueue(): DeferredEntry[] {
+  return [
+    { family: "pr-red", event_id: "pr:a/b#1", state: "s1:failure", text: "[pr] a/b #1 checks failing", queued_at: 1000, reason: "quiet" },
+    { family: "mail", event_id: "mail:t1", state: "action-required:m1", text: "[mail] Nico: reply needed", queued_at: 2000, reason: "quiet" },
+    { family: "pr-red", event_id: "pr:c/d#2", state: "s2:failure", text: "[pr] c/d #2 checks failing", queued_at: 3000, reason: "budget" },
+    { family: "mail", event_id: "mail:t2", state: "fyi:m2", text: "[mail] receipt from Amazon", queued_at: 4000, reason: "digest" },
+  ];
+}
+
+// Dublin 08:10 in summer (07:10 UTC) — outside quiet, budget-eligible hour 8.
+const MORNING_0810 = () => new Date("2026-07-15T07:10:00Z");
+// Dublin 09:30 in summer — outside quiet, NOT a budget-eligible hour.
+const MIDMORNING_0930 = () => new Date("2026-07-15T08:30:00Z");
+
+test("flushDeferred: empty queue returns empty and never sends", async () => {
+  const baseDir = makeBaseDir();
+  const { sent, sendFn } = makeSendStub();
+  assert.equal(await flushDeferred({ now: MORNING_0810, baseDir, sendFn }), "empty");
+  assert.equal(sent.length, 0);
+});
+
+test("flushDeferred: inside the quiet window returns quiet and leaves the queue intact", async () => {
+  const baseDir = makeBaseDir();
+  writeDeferredEntries(baseDir, fourEntryQueue());
+  const { sent, sendFn } = makeSendStub();
+  assert.equal(await flushDeferred({ now: NIGHT, baseDir, sendFn }), "quiet");
+  assert.equal(sent.length, 0);
+  assert.equal(readDeferredEntries(baseDir).length, 4);
+});
+
+test("flushDeferred: at a budget-eligible hour flushes all four entries as one message with the exact header", async () => {
+  const baseDir = makeBaseDir();
+  writeDeferredEntries(baseDir, fourEntryQueue());
+  const { sent, sendFn } = makeSendStub();
+  assert.equal(await flushDeferred({ now: MORNING_0810, baseDir, sendFn }), "sent");
+  assert.equal(sent.length, 1);
+  assert.ok(sent[0]!.startsWith("[digest] 4 items (2 overnight, 1 over budget):"));
+  for (const entry of fourEntryQueue()) {
+    assert.ok(sent[0]!.includes(entry.text), `message missing entry text: ${entry.text}`);
+  }
+  assert.equal(readDeferredEntries(baseDir).length, 0);
+});
+
+test("flushDeferred: at a non-budget-eligible hour flushes three and the budget entry alone survives", async () => {
+  const baseDir = makeBaseDir();
+  writeDeferredEntries(baseDir, fourEntryQueue());
+  const { sent, sendFn } = makeSendStub();
+  assert.equal(await flushDeferred({ now: MIDMORNING_0930, baseDir, sendFn }), "sent");
+  assert.equal(sent.length, 1);
+  assert.ok(sent[0]!.startsWith("[digest] 3 items (2 overnight):"));
+  assert.equal(sent[0]!.includes("[pr] c/d #2 checks failing"), false);
+  const remaining = readDeferredEntries(baseDir);
+  assert.equal(remaining.length, 1);
+  assert.equal(remaining[0]!.reason, "budget");
+});
+
+test("flushDeferred: an entry appended concurrently during the send survives the write-back", async () => {
+  const baseDir = makeBaseDir();
+  writeDeferredEntries(baseDir, fourEntryQueue());
+  const fresh: DeferredEntry = { family: "mail", event_id: "mail:t9", state: "fyi:m9", text: "fresh", queued_at: 9000, reason: "digest" };
+  const sendFn = async (): Promise<void> => {
+    writeDeferredEntries(baseDir, [...readDeferredEntries(baseDir) as DeferredEntry[], fresh]);
+  };
+  assert.equal(await flushDeferred({ now: MORNING_0810, baseDir, sendFn }), "sent");
+  const remaining = readDeferredEntries(baseDir);
+  assert.equal(remaining.length, 1);
+  assert.equal(remaining[0]!.event_id, "mail:t9");
+});
+
+test("flushDeferred: a sendFn throw leaves the queue intact (defer never drops)", async () => {
+  const baseDir = makeBaseDir();
+  writeDeferredEntries(baseDir, fourEntryQueue());
+  const failingSend = async (): Promise<void> => {
+    throw new Error("network down");
+  };
+  await assert.rejects(() => flushDeferred({ now: MORNING_0810, baseDir, sendFn: failingSend }), /network down/);
+  assert.equal(readDeferredEntries(baseDir).length, 4);
+});
+
+test("flushDeferred: a single quiet entry reads [digest] 1 item (1 overnight):", async () => {
+  const baseDir = makeBaseDir();
+  writeDeferredEntries(baseDir, [fourEntryQueue()[0]!]);
+  const { sent, sendFn } = makeSendStub();
+  assert.equal(await flushDeferred({ now: MORNING_0810, baseDir, sendFn }), "sent");
+  assert.ok(sent[0]!.startsWith("[digest] 1 item (1 overnight):"));
+});
+
 test("getEventState: returns the stored state for a pinged event", async () => {
   const baseDir = makeBaseDir();
   const { sendFn } = makeSendStub();
