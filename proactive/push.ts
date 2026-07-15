@@ -293,6 +293,10 @@ export async function flushDeferred(deps?: Partial<PushDeps>): Promise<"sent" | 
   return "sent";
 }
 
+export async function cliMain(_argv: string[], _deps?: Partial<PushDeps>): Promise<number> {
+  throw new Error("not implemented");
+}
+
 // config.json is written by the (Loop-2) installer, never by push.ts.
 // Absent or malformed => sane defaults; a partial file shallow-merges over
 // the defaults.
