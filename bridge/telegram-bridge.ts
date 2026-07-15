@@ -244,13 +244,16 @@ async function checkWatchdogs(opts: {
         .map(([k, v]) => `${k}:${v}`)
         .join(", ") || "none";
 
-      fifo.push(
+      // Routed through the push() chokepoint (quiet-hours aware). State
+      // carries spawn_time so a relaunched loop with the same slug re-arms
+      // instead of deduping against a previous run's exit.
+      await pushPing(
+        `loop-exit:${entry.slug}`,
+        `exited:${entry.spawn_time}`,
         `[watchdog] Loop "${entry.loop_name}" (slug: ${entry.slug}) has exited. ` +
         `progress.json status=${String(status)}, loop_stop_counts={${nonZeroCategories}}. ` +
-        `Log: ${entry.log_path}. ` +
-        `Read the log tail and progress.json, then relay a summary ping to Gary via Telegram.`
+        `Log: ${entry.log_path}.`
       );
-      triggerDrain(); // stress-test fix 3: drain immediately, not on next poll cycle
 
       entry.done = true;
       try { fs.writeFile(watchdogPath, JSON.stringify(entry, null, 2)); } catch { /* best-effort */ }
