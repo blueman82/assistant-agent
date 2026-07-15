@@ -367,7 +367,7 @@ export async function cliMain(argv: string[], deps?: Partial<PushDeps>): Promise
     console.error(`[push] invalid family: ${family}`);
     return 2;
   }
-  if (!SEVERITIES.includes(severity)) {
+  if (!isSeverity(severity)) {
     console.error(`[push] invalid severity: ${severity} (must be urgent | normal | digest)`);
     return 2;
   }
@@ -379,11 +379,13 @@ export async function cliMain(argv: string[], deps?: Partial<PushDeps>): Promise
     return 2;
   }
   try {
-    const result = await push(family, eventId, state, severity as Severity, text, deps);
+    const result = await push(family, eventId, state, severity, text, deps);
     console.log(`[push] ${result}.`);
     return 0;
   } catch (err) {
-    console.error(`[push] ${err instanceof Error ? err.message : String(err)}`);
+    // Full stack for non-usage failures — these land in launchd logs where
+    // the stack is the only debugging signal.
+    console.error(`[push] ${err instanceof Error ? err.stack ?? String(err) : String(err)}`);
     return 1;
   }
 }
