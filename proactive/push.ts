@@ -462,3 +462,14 @@ export function inQuietWindow(d: Date, cfg: ProactiveConfig): boolean {
   const endM = parseHM(cfg.quiet_hours.end);
   return startM < endM ? m >= startM && m < endM : m >= startM || m < endM;
 }
+
+// Only run as a CLI when executed directly (tsx proactive/push.ts ...), not
+// when imported by the sweep or a test — same guard as notify.ts/rachel.ts.
+// MUST stay the last statement in this module (same layout as notify.ts and
+// sweep.ts): the top-level await runs during module evaluation, so any
+// `const` declared below it would be in its temporal dead zone for every
+// CLI code path — that exact bug (HM_RE) crashed all one-shots once
+// config.json existed.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  process.exit(await cliMain(process.argv));
+}
