@@ -182,6 +182,8 @@ test("real run stamps all four templates into LaunchAgents with the repo path an
     const content = readFileSync(join(sb.launchAgents, f), "utf8");
     assert.ok(!content.includes("__REPO_PATH__"), `${f} still contains __REPO_PATH__`);
     assert.ok(content.includes(REPO_ROOT), `${f} must contain the discovered repo path ${REPO_ROOT}`);
+    // Stamped output must still be a syntactically valid plist.
+    execFileSync("/usr/bin/plutil", ["-lint", join(sb.launchAgents, f)]);
     const m = content.match(/<key>Label<\/key>\s*<string>([^<]+)<\/string>/);
     assert.ok(m, `${f} must declare a Label`);
     labels.push(m[1]!);
