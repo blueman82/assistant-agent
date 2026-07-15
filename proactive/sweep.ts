@@ -141,12 +141,31 @@ async function runFamily(family: string, d: SweepDeps, fn: () => Promise<void>):
   }
 }
 
-// Bridge-liveness: launchctl state is the ONLY trigger. The detection
-// boundary is launchd-level death — a wedged-alive bridge (long-poll loop
-// healthy, replies dead) is NOT detected here; that gap is named in the
-// design docs, not papered over. Log mtime is message detail only: a healthy
-// idle bridge writes almost nothing, so mtime staleness would false-positive
-// constantly if used as a trigger.
+// Wedged-alive threshold: >10 minutes without a heartbeat write. The bridge
+// deliberately stops polling (and stops writing heartbeats) during its 409
+// conflict backoff — up to 5 x 65s ≈ 5.4 minutes of legitimate, self-healing
+// silence — so 10 minutes comfortably clears that whole window before
+// declaring a wedge.
+const WEDGE_THRESHOLD_MS = 10 * 60_000;
+
+// Drain-stall threshold: a single turn in flight for >30 minutes means the
+// FIFO is starved behind it — worth a normal (not urgent) ping.
+const DRAIN_STALL_THRESHOLD_MS = 30 * 60_000;
+
+interface BridgeHeartbeat {
+  schema_version: number;
+  last_poll_at: string;
+  queue_depth: number;
+  turn_in_flight_since: string | null;
+}
+
+// Bridge-liveness detection is layered: launchd-level death (launchctl says
+// not running) is urgent bridge-down; a wedged-alive bridge (process running
+// but the poll loop silent — heartbeat last_poll_at stale) is ALSO urgent
+// bridge-down; a stalled drain (poll loop fine, one turn in flight >30min)
+// is a separate, normal-severity bridge:drain-stall event. Log mtime is
+// message detail only: a healthy idle bridge writes almost nothing, so log
+// staleness would false-positive constantly if used as a trigger.
 async function checkBridgeLiveness(d: SweepDeps, pushDeps: Partial<PushDeps>): Promise<void> {
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   const result = await d.execFn("launchctl", ["print", `gui/${uid}/com.rachel.telegram-bridge`]);
