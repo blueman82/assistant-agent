@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { tg, sendChunked, sendTyping, setMyCommands, stripMarkdown } from "./api.ts";
+import { tg, sendChunked, sendTyping, setMyCommands, stripMarkdown, DEFAULT_REQUEST_TIMEOUT_MS } from "./api.ts";
 
 function makeStubTransport(handler: (url: string, body: unknown) => unknown) {
   const calls: { url: string; body: unknown }[] = [];
