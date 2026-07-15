@@ -580,7 +580,13 @@ test("a failing sweep-state write prevents the one-shot spawn (no orphaned child
 test("sweepTick reports per-family results and a healthy tick is all ok", async () => {
   const h = makeHarness();
   const results = await sweepTick(h.deps);
-  assert.deepEqual(results, { flush: "ok", "bridge-liveness": "ok", "pr-red": "ok", calendar: "ok" });
+  assert.deepEqual(results, {
+    flush: "ok",
+    "bridge-liveness": "ok",
+    "pr-red": "ok",
+    "calendar-escalation": "ok",
+    calendar: "ok",
+  });
 });
 
 test("a failing family is reported as failed so the CLI can exit non-zero", async () => {
