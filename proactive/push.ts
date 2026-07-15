@@ -176,13 +176,36 @@ interface BudgetFile {
 }
 
 function readDeferred(baseDir: string): DeferredFile {
-  return readJson<DeferredFile>(join(baseDir, "deferred.json")) ?? { schema_version: 1, entries: [] };
+  const path = join(baseDir, "deferred.json");
+  const parsed = readJson<DeferredFile>(path);
+  if (parsed === undefined) {
+    return { schema_version: 1, entries: [] };
+  }
+  // Fail loud on an unrecognised shape — treating it as empty would let the
+  // flush write-back destroy every queued entry (defer never drops).
+  if (parsed.schema_version !== 1 || !Array.isArray(parsed.entries)) {
+    throw new Error(`corrupt deferred queue ${path}: unrecognised shape (want schema_version 1 with an entries array)`);
+  }
+  return parsed;
 }
 
 // Returns the count for today's DUBLIN date; a stored different date means
-// the counter has rolled over to 0.
+// the counter has rolled over to 0. Unlike the family/deferred stores, a
+// corrupt budget.json is loud-but-tolerated (treated as 0 sent): failing
+// loud here would block every normal ping, and resetting the counter only
+// leaks in the safe direction — pings still deliver, capped from now on.
 function interruptsSentToday(baseDir: string, today: string): number {
-  const budget = readJson<BudgetFile>(join(baseDir, "budget.json"));
+  const path = join(baseDir, "budget.json");
+  let budget: BudgetFile | undefined;
+  try {
+    budget = readJson<BudgetFile>(path);
+    if (budget !== undefined && (budget.schema_version !== 1 || typeof budget.interrupts_sent !== "number")) {
+      throw new Error(`corrupt budget file ${path}: unrecognised shape`);
+    }
+  } catch (err) {
+    console.error(`[push] ${err instanceof Error ? err.message : String(err)} — treating as 0 interrupts sent today (leaky-safe)`);
+    return 0;
+  }
   return budget?.date === today ? budget.interrupts_sent : 0;
 }
 
