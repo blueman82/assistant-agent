@@ -276,6 +276,93 @@ test("empty pr_watch_repos makes the pr-red family a silent no-op (zero gh calls
   assert.equal(h.execCalls.filter((c) => c.cmd === "gh").length, 0);
 });
 
+// --- Calendar one-shot spawn cadence + timeout ---
+
+const STATE_PATH = (h: ReturnType<typeof makeHarness>) => join(h.homeDir, ".rachel", "proactive-sweep-state.json");
+
+function rachelSpawns(h: ReturnType<typeof makeHarness>): ExecCall[] {
+  return h.execCalls.filter((c) => c.cmd.endsWith("/bin/rachel"));
+}
+
+test("due one-shot hours spawn exactly one bin/rachel run with the narrowed tool env", async () => {
+  // Clock is 12:00 Dublin: hours 8 and 11 are due, 14/17 are not.
+  const h = makeHarness({ calendar_oneshot_hours: [8, 11, 14, 17], pr_watch_repos: [] });
+  await sweepTick(h.deps);
+  const spawns = rachelSpawns(h);
+  assert.equal(spawns.length, 1);
+  const spawn = spawns[0]!;
+  assert.equal(spawn.cmd, "/repo/bin/rachel");
+  assert.deepEqual(spawn.args, ["Read tasks/proactive-calendar.md and follow it."]);
+  assert.equal(spawn.opts?.env?.["RACHEL_ALLOWED_TOOLS"], "Read,Write,Bash,mcp__claude_ai_Google_Calendar__*");
+  assert.equal(spawn.opts?.stdinNull, true);
+  assert.equal(spawn.opts?.timeoutMs, h.deps.oneshotTimeoutMs);
+});
+
+test("a spawn records ALL due hours in the sweep state file (wake-time catch-up collapses)", async () => {
+  const h = makeHarness({ calendar_oneshot_hours: [8, 11, 14, 17], pr_watch_repos: [] });
+  await sweepTick(h.deps);
+  const state = JSON.parse(h.files.get(STATE_PATH(h)) ?? "{}") as { schema_version: number; date: string; oneshot_hours_run: number[] };
+  assert.equal(state.schema_version, 1);
+  assert.equal(state.date, "2026-07-15");
+  assert.deepEqual(state.oneshot_hours_run, [8, 11]);
+});
+
+test("a second tick in the same hour spawns nothing (hours already recorded)", async () => {
+  const h = makeHarness({ calendar_oneshot_hours: [8, 11, 14, 17], pr_watch_repos: [] });
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  assert.equal(rachelSpawns(h).length, 1, "only the first tick spawned");
+});
+
+test("no configured hour is due yet: zero spawns", async () => {
+  // Clock is 12:00 Dublin; only 14 and 17 are configured.
+  const h = makeHarness({ calendar_oneshot_hours: [14, 17], pr_watch_repos: [] });
+  await sweepTick(h.deps);
+  assert.equal(rachelSpawns(h).length, 0);
+});
+
+test("a Dublin date rollover resets the hours-run list", async () => {
+  const h = makeHarness({ calendar_oneshot_hours: [8, 11, 14, 17], pr_watch_repos: [] });
+  h.files.set(
+    STATE_PATH(h),
+    JSON.stringify({ schema_version: 1, date: "2026-07-14", oneshot_hours_run: [8, 11, 14, 17] }),
+  );
+  await sweepTick(h.deps);
+  assert.equal(rachelSpawns(h).length, 1, "yesterday's record does not suppress today's spawn");
+  const state = JSON.parse(h.files.get(STATE_PATH(h))!) as { date: string; oneshot_hours_run: number[] };
+  assert.equal(state.date, "2026-07-15");
+  assert.deepEqual(state.oneshot_hours_run, [8, 11]);
+});
+
+test("a never-resolving one-shot exec cannot wedge the tick (timeout logged, tick completes)", async () => {
+  const h = makeHarness({ calendar_oneshot_hours: [8, 11, 14, 17], pr_watch_repos: [] });
+  h.deps.oneshotTimeoutMs = 50;
+  const baseExec = h.deps.execFn;
+  h.deps.execFn = (cmd, args, opts) => {
+    if (cmd.endsWith("/bin/rachel")) {
+      h.execCalls.push({ cmd, args, opts });
+      return new Promise(() => {
+        // never settles — a wedged LLM one-shot
+      });
+    }
+    return baseExec(cmd, args, opts);
+  };
+  await sweepTick(h.deps);
+  assert.ok(
+    h.logs.some((line) => line === "[sweep] calendar one-shot timeout"),
+    `timeout logged: ${JSON.stringify(h.logs)}`,
+  );
+});
+
+test("a completed one-shot logs its exit code", async () => {
+  const h = makeHarness({ calendar_oneshot_hours: [8, 11, 14, 17], pr_watch_repos: [] });
+  await sweepTick(h.deps);
+  assert.ok(
+    h.logs.some((line) => line.includes("calendar one-shot") && line.includes("0")),
+    `exit code logged: ${JSON.stringify(h.logs)}`,
+  );
+});
+
 test("gh exit 1 on pr list logs a pr-red error and the tick completes", async () => {
   const h = makeHarness({ calendar_oneshot_hours: [], pr_watch_repos: ["owner/repo"] });
   h.deps.execFn = ghExecFn(h, { "owner/repo": { stdout: "", exitCode: 1 } }, {});
