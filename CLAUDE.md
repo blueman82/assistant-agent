@@ -44,7 +44,7 @@ To understand the agent you must read both files together — `rachel.ts` tells 
 ### Agent configuration (in `rachel.ts`)
 
 The agent is defined inline via the SDK's `agents.rachel` option, with:
-- `permissionMode: "auto"` and a fixed `allowedTools` list (Read/Write/Edit/Glob/Grep/Bash, Web search/fetch, ToolSearch, Skill, `mcp-exec`, `mcp__claude-in-chrome__*`, `mcp__claude_ai_Gmail__*`, and `mcp__claude_ai_Google_Calendar__*`).
+- `permissionMode: "auto"` and an `allowedTools` list resolved per turn from the exported `DEFAULT_ALLOWED_TOOLS` constant (Read/Write/Edit/Glob/Grep/Bash, Web search/fetch, ToolSearch, Skill, `mcp-exec`, `mcp__claude-in-chrome__*`, `mcp__claude_ai_Gmail__*`, and `mcp__claude_ai_Google_Calendar__*`) via `proactive/allowedTools.ts`'s `resolveAllowedTools` — the `RACHEL_ALLOWED_TOOLS` env var narrows headless one-shots to a subset of that list (remove-only; unset means the full list, so the seam is inert for the interactive agent).
 - An empty `skills` list (the Adobe-specific `jira`/`slack` skills were removed when Rachel became personal-only).
 - `extraArgs: { chrome: null }` to enable the Chrome extension MCP.
 - No spawned MCP servers (`mcpServers = {}`) — Chrome tools come from the browser extension, not a spawned server.
