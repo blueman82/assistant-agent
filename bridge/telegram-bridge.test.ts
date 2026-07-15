@@ -1388,6 +1388,174 @@ test("a photo whose getFile call returns ok:false sends a failure reply and does
   assert.match(String((sendCall!.body as Record<string, unknown>)["text"]), /Failed to download image/);
 });
 
+// ---------------------------------------------------------------------------
+// Heartbeat tests — the bridge writes ~/.rachel/bridge-heartbeat.json (path
+// injectable via heartbeatPath) atomically on every poll iteration.
+// ---------------------------------------------------------------------------
+
+test("each poll iteration atomically writes the heartbeat with the exact four-key shape and an advancing last_poll_at", async () => {
+  const { transport } = makeStubTransport([{ ok: true, result: [] }]);
+  const watchdogDir = "/fake/watchdog";
+  const heartbeatPath = "/fake/hb/bridge-heartbeat.json";
+  const fsFn = makeStubFs({ watchdogDir });
+
+  let nowMs = new Date("2026-07-15T11:00:00Z").getTime();
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {},
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    watchdogDir,
+    fsFn,
+    isPidAliveFn: () => false,
+    heartbeatPath,
+    nowFn: () => new Date(nowMs),
+    pushBaseDir: mkdtempSync(join(tmpdir(), "rachel-bridge-push-")),
+  });
+
+  await bridge.drainOnce();
+  const first = JSON.parse(fsFn.readFile(heartbeatPath)) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(first).sort(), ["last_poll_at", "queue_depth", "schema_version", "turn_in_flight_since"]);
+  assert.equal(first["schema_version"], 1);
+  assert.equal(first["queue_depth"], 0);
+  assert.equal(first["turn_in_flight_since"], null);
+  assert.ok(!Number.isNaN(Date.parse(String(first["last_poll_at"]))), "last_poll_at is a parseable timestamp");
+
+  nowMs += 5000;
+  await bridge.drainOnce();
+  const second = JSON.parse(fsFn.readFile(heartbeatPath)) as Record<string, unknown>;
+  assert.ok(
+    Date.parse(String(second["last_poll_at"])) > Date.parse(String(first["last_poll_at"])),
+    "last_poll_at strictly advances between iterations",
+  );
+
+  // Atomicity: every heartbeat write is temp-file-then-rename in the same
+  // directory (push.ts idiom) — never a direct write to the final path.
+  assert.ok(
+    fsFn.written.every((w) => w.path !== heartbeatPath),
+    "no direct write to the final heartbeat path",
+  );
+  const tmpWrites = fsFn.written.filter((w) => w.path.startsWith(`${heartbeatPath}.tmp-`));
+  assert.equal(tmpWrites.length, 2, "one temp write per poll iteration");
+  assert.ok(
+    fsFn.renames.some((r) => r.from.startsWith(`${heartbeatPath}.tmp-`) && r.to === heartbeatPath),
+    `temp file renamed onto the heartbeat path, got renames: ${JSON.stringify(fsFn.renames)}`,
+  );
+  await bridge.stop();
+});
+
+test("the heartbeat carries turn_in_flight_since while a turn is draining and null once it completes, with queue_depth counting waiting turns", async () => {
+  const { transport } = makeStubTransport([
+    {
+      ok: true,
+      result: [
+        { update_id: 1, message: { message_id: 1, chat: { id: 12345 }, text: "slow task", from: { id: 12345 } } },
+        { update_id: 2, message: { message_id: 2, chat: { id: 12345 }, text: "queued behind it", from: { id: 12345 } } },
+      ],
+    },
+    { ok: true, result: [] },
+  ]);
+  const watchdogDir = "/fake/watchdog";
+  const heartbeatPath = "/fake/hb/bridge-heartbeat.json";
+  const fsFn = makeStubFs({ watchdogDir });
+
+  let releaseTurn: (() => void) | undefined;
+  let turnCount = 0;
+  const runTurnStub: BridgeRunTurn = (_input, emit) =>
+    new Promise<void>((resolve) => {
+      turnCount++;
+      if (turnCount === 1) {
+        releaseTurn = () => {
+          emit("done", "text");
+          resolve();
+        };
+      } else {
+        emit("ok", "text");
+        resolve();
+      }
+    });
+
+  const bridge = createBridge({
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    watchdogDir,
+    fsFn,
+    isPidAliveFn: () => false,
+    heartbeatPath,
+    pushBaseDir: mkdtempSync(join(tmpdir(), "rachel-bridge-push-")),
+  });
+
+  await bridge.drainOnce();
+  // The first turn is now blocked in-flight; the second message waits in the FIFO.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await bridge.drainOnce();
+  const during = JSON.parse(fsFn.readFile(heartbeatPath)) as Record<string, unknown>;
+  assert.ok(during["turn_in_flight_since"] !== null, "turn_in_flight_since set while a turn is draining");
+  assert.ok(!Number.isNaN(Date.parse(String(during["turn_in_flight_since"]))), "turn_in_flight_since is a parseable timestamp");
+  assert.equal(during["queue_depth"], 1, "the queued second message is counted");
+
+  releaseTurn!();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await bridge.drainOnce();
+  const after = JSON.parse(fsFn.readFile(heartbeatPath)) as Record<string, unknown>;
+  assert.equal(after["turn_in_flight_since"], null, "cleared once the drain completes");
+  assert.equal(after["queue_depth"], 0);
+  await bridge.stop();
+});
+
+test("a failing heartbeat write never breaks polling and logs once per failure state, not per tick", async () => {
+  const { transport, getGetUpdatesCallCount } = makeStubTransport([{ ok: true, result: [] }]);
+  const watchdogDir = "/fake/watchdog";
+  const heartbeatPath = "/fake/hb/bridge-heartbeat.json";
+  const fsFn = makeStubFs({ watchdogDir });
+  let failWrites = true;
+  const originalWrite = fsFn.writeFile.bind(fsFn);
+  fsFn.writeFile = (path: string, content: string) => {
+    if (failWrites && path.includes("bridge-heartbeat")) throw new Error("EACCES: heartbeat dir unwritable");
+    originalWrite(path, content);
+  };
+
+  const errorLines: string[] = [];
+  const originalConsoleError = console.error;
+  console.error = (...args: unknown[]) => {
+    errorLines.push(args.map(String).join(" "));
+  };
+
+  try {
+    const bridge = createBridge({
+      config: { token: "t", chatId: "12345", transport },
+      runTurn: async () => {},
+      getSessionId: () => undefined,
+      resetSession: () => {},
+      pollIntervalMs: 5,
+      watchdogDir,
+      fsFn,
+      isPidAliveFn: () => false,
+      heartbeatPath,
+      pushBaseDir: mkdtempSync(join(tmpdir(), "rachel-bridge-push-")),
+    });
+
+    await bridge.drainOnce();
+    await bridge.drainOnce();
+    const heartbeatErrors = () => errorLines.filter((l) => l.includes("heartbeat"));
+    assert.equal(heartbeatErrors().length, 1, `one log for the whole failing state, not one per tick: ${JSON.stringify(errorLines)}`);
+
+    failWrites = false;
+    await bridge.drainOnce();
+    failWrites = true;
+    await bridge.drainOnce();
+    assert.equal(heartbeatErrors().length, 2, "a recovery then a fresh failure logs again");
+    assert.equal(getGetUpdatesCallCount(), 4, "polling never stopped");
+    await bridge.stop();
+  } finally {
+    console.error = originalConsoleError;
+  }
+});
+
 test("grep guard: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
   const source = await (await import("node:fs/promises")).readFile(new URL("./telegram-bridge.test.ts", import.meta.url), "utf8");
   const realFetchCall = /fetch\(\s*["'`]https:\/\/api\.telegram\.org/;
