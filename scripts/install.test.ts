@@ -516,6 +516,74 @@ test("dry-run prints the full plan then names preflight problems", () => {
   assert.deepStrictEqual(installedPlists(sb), [], "still zero side effects");
 });
 
+// --- Live-E9 race tests (launchd bootout is asynchronous) -------------------
+// Live evidence from the first real deploy: bootout returned while the old
+// bridge (mid-30s long-poll) was still draining, and the immediate bootstrap
+// failed with exit 5 "Input/output error" — the identical bootstrap
+// succeeded manually seconds later once `print` reported not-found.
+
+// Marks every service as already loaded so bootout returns 0 (a re-install
+// over a running deployment — the scenario where teardown lingers).
+function preloadState(sb: Sandbox): void {
+  writeFileSync(sb.statePath, LABELS.join("\n") + "\n");
+}
+
+test("waits out a lingering bootout teardown before bootstrapping", () => {
+  const sb = makeSandbox();
+  writeTelegramJson(sb);
+  writeFreshHeartbeat(sb);
+  preloadState(sb);
+  // Each booted-out label stays visible to `print` for 2 further calls —
+  // an immediate bootstrap would exit 5; waiting it out must succeed.
+  const { status, output } = runInstaller(sb, [], { LAUNCHCTL_LINGER: "2" });
+  assert.strictEqual(status, 0, output);
+  assert.ok(!/^FAIL/m.test(output), `no check may fail: ${output}`);
+  assert.deepStrictEqual(stateLabels(sb), LABELS, "all four services must be bootstrapped after the wait");
+});
+
+test("fails naming the label when a teardown outlasts the bounded wait", () => {
+  const sb = makeSandbox();
+  writeTelegramJson(sb);
+  writeFreshHeartbeat(sb);
+  preloadState(sb);
+  const { status, output } = runInstaller(sb, [], {
+    LAUNCHCTL_LINGER: "9999",
+    INSTALL_TEARDOWN_WAIT_SECS: "1",
+  });
+  assert.notStrictEqual(status, 0, "an un-torn-down service must fail the run");
+  assert.match(output, /still draining/i, "the failure must name the teardown wait as the cause");
+  assert.match(output, /com\.rachel\.telegram-bridge/, "the failure must name the still-draining label");
+});
+
+test("retries once when bootstrap fails with exit 5 after a clean teardown", () => {
+  const sb = makeSandbox();
+  writeTelegramJson(sb);
+  writeFreshHeartbeat(sb);
+  const { status, output } = runInstaller(sb, [], { LAUNCHCTL_BOOTSTRAP_EIO_ONCE: "com.rachel.inbox-brief" });
+  assert.strictEqual(status, 0, output);
+  assert.deepStrictEqual(stateLabels(sb), LABELS, "the retried service must end up bootstrapped");
+});
+
+// The heartbeat epoch must be captured AFTER the bridge's teardown-wait
+// completes, not merely after bootout returns: live-observed, the dying
+// bridge's final heartbeat write landed inside the 5s slack measured from
+// bootout-return and passed the check over a dead bridge. With a 13-poll
+// linger (~6.5s at 0.5s steps) the pre-run heartbeat is strictly older than
+// (teardown-complete - 5s), so it must be rejected.
+test("verification rejects a heartbeat last written before the bridge teardown completed", () => {
+  const sb = makeSandbox();
+  writeTelegramJson(sb);
+  writeFreshHeartbeat(sb); // written now; never refreshed after the teardown
+  preloadState(sb);
+  const { status, output } = runInstaller(sb, [], {
+    LAUNCHCTL_LINGER: "13",
+    LAUNCHCTL_LINGER_LABEL: "com.rachel.telegram-bridge",
+    INSTALL_HEARTBEAT_WAIT_SECS: "2",
+  });
+  assert.notStrictEqual(status, 0, "a pre-teardown heartbeat must not pass verification");
+  assert.match(output, /FAIL\s+heartbeat/i, "the heartbeat check itself must fail");
+});
+
 test("honours INSTALL_HOME, INSTALL_LAUNCH_AGENTS_DIR and INSTALL_LAUNCHCTL seams", () => {
   const sb = makeSandbox();
   // Config + heartbeat live under an ALTERNATE home; plists go to an
