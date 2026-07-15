@@ -45,7 +45,10 @@ const LABELS = [
   "com.rachel.proactive-calendar",
 ].sort();
 
-// launchctl shim — same semantics as the eval harness's PATH-front shim.
+// launchctl shim — same semantics as the eval harness's PATH-front shim,
+// plus two fault-injection seams the reviews asked for: a per-label bootout
+// delay (to separate the bootout instant from script start) and a per-label
+// bootstrap failure.
 const SHIM = `#!/bin/bash
 log="\${LAUNCHCTL_LOG:?}"; state="\${LAUNCHCTL_STATE:?}"
 echo "$@" >> "$log"
@@ -56,6 +59,7 @@ case "$cmd" in
     shift
     for p in "$@"; do
       l="$(lbl_from "$p")"
+      if [ -n "\${LAUNCHCTL_BOOTSTRAP_FAIL:-}" ] && [ "\${LAUNCHCTL_BOOTSTRAP_FAIL}" = "$l" ]; then echo "Bootstrap failed: 5" >&2; exit 5; fi
       if [ -n "\${LAUNCHCTL_SUPPRESS:-}" ] && [ "\${LAUNCHCTL_SUPPRESS}" = "$l" ]; then continue; fi
       if grep -qx "$l" "$state" 2>/dev/null; then echo "Bootstrap failed: 5" >&2; exit 5; fi
       echo "$l" >> "$state"
@@ -63,6 +67,7 @@ case "$cmd" in
     exit 0;;
   bootout)
     if [ $# -ge 2 ]; then l="$(lbl_from "$2")"; else l="\${1##*/}"; fi
+    if [ -n "\${LAUNCHCTL_BOOTOUT_DELAY:-}" ] && [ "$l" = "\${LAUNCHCTL_BOOTOUT_DELAY_LABEL:-}" ]; then sleep "\${LAUNCHCTL_BOOTOUT_DELAY}"; fi
     if grep -qx "$l" "$state" 2>/dev/null; then
       grep -vx "$l" "$state" > "$state.tmp" || true
       mv "$state.tmp" "$state"; exit 0
