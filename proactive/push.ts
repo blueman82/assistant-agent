@@ -280,15 +280,27 @@ export async function push(
   // 6. Send. A sendFn throw records NOTHING — the event stays un-pinged so
   //    the next sweep retries — and propagates to the caller.
   await d.sendFn(text);
-  recordEvent();
-  if (severity === "normal") {
-    // Read-modify-write is not transactional; a one-shot racing a sweep can
-    // under-count by ±1. Accepted: a leaky cap in the safe direction.
-    writeJsonAtomic(join(d.baseDir, "budget.json"), {
-      schema_version: 1,
-      date: today,
-      interrupts_sent: interruptsSentToday(d.baseDir, today) + 1,
-    } satisfies BudgetFile);
+  // Post-send bookkeeping must never turn a DELIVERED alert into a caller-
+  // visible failure: the message is already in Gary's chat, so a store or
+  // budget write error here logs loud (with the path) and still returns
+  // "sent" — a rethrow would make callers fall back or retry and double-
+  // deliver. Cost of swallowing: the event stays unrecorded, so the next
+  // observation may re-ping once; that beats a guaranteed duplicate now.
+  try {
+    recordEvent();
+    if (severity === "normal") {
+      // Read-modify-write is not transactional; a one-shot racing a sweep can
+      // under-count by ±1. Accepted: a leaky cap in the safe direction.
+      writeJsonAtomic(join(d.baseDir, "budget.json"), {
+        schema_version: 1,
+        date: today,
+        interrupts_sent: interruptsSentToday(d.baseDir, today) + 1,
+      } satisfies BudgetFile);
+    }
+  } catch (err) {
+    console.error(
+      `[push] post-send bookkeeping failed for ${family}/${eventId} under ${d.baseDir}: ${err instanceof Error ? err.message : String(err)} — treating as sent (never re-deliver a delivered alert)`,
+    );
   }
   return "sent";
 }
