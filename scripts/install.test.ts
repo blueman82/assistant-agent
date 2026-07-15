@@ -315,12 +315,12 @@ test("verification names a service that failed to load and exits nonzero", () =>
   assert.match(output, /com\.rachel\.proactive-sweep/, "the summary must name the failing service");
 });
 
-test("fails with npm install guidance when node_modules is missing", () => {
-  const sb = makeSandbox();
-  // Build a fake repo around a copy of the script: same layout, no
-  // node_modules — also proves the repo path is resolved from the script's
-  // own location, not from cwd or a hardcoded path.
-  const fakeRepo = join(sb.root, "fake-repo");
+// Builds a copy of the repo layout (script + templates) at `fakeRepo` so
+// tests can vary the environment around the script — missing node_modules,
+// hostile characters in the checkout path — without touching this repo.
+// Proves as a side effect that the repo path is resolved from the script's
+// own location, not from cwd or a hardcoded path.
+function makeFakeRepo(fakeRepo: string, opts: { nodeModules: boolean }): string {
   for (const dir of ["scripts", "bridge", "tasks"]) mkdirSync(join(fakeRepo, dir), { recursive: true });
   const fakeInstaller = join(fakeRepo, "scripts", "install.sh");
   copyFileSync(INSTALLER, fakeInstaller);
@@ -329,6 +329,18 @@ test("fails with npm install guidance when node_modules is missing", () => {
   for (const f of ["inbox-brief-launchd.plist", "proactive-sweep-launchd.plist", "proactive-calendar-launchd.plist"]) {
     copyFileSync(join(REPO_ROOT, "tasks", f), join(fakeRepo, "tasks", f));
   }
+  if (opts.nodeModules) {
+    const bin = join(fakeRepo, "node_modules", ".bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "tsx"), "#!/bin/bash\nexit 0\n");
+    chmodSync(join(bin, "tsx"), 0o755);
+  }
+  return fakeInstaller;
+}
+
+test("fails with npm install guidance when node_modules is missing", () => {
+  const sb = makeSandbox();
+  const fakeInstaller = makeFakeRepo(join(sb.root, "fake-repo"), { nodeModules: false });
   writeTelegramJson(sb); // config present, so the failure is attributable to node_modules
   const { status, output } = runInstaller(sb, [], {}, fakeInstaller);
   assert.notStrictEqual(status, 0, "missing node_modules must fail the run");
