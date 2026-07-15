@@ -309,12 +309,19 @@ async function checkWatchdogs(opts: {
         } catch { /* ignore */ }
         return "unknown";
       })();
-      fifo.push(
+      // Routed through the push() chokepoint. The pinged_at debounce above
+      // is KEPT as its own layer rather than superseded by chokepoint dedup:
+      // the two are not behaviour-equivalent (verified against the watchdog
+      // tests — e.g. a sleep/wake bumps wake_floor into a fresh stall onset,
+      // which would read as a new chokepoint state and re-ping a
+      // still-stalled loop that pinged_at correctly keeps quiet, and the
+      // mtime-advance-clears-debounce re-arm below has no store analogue).
+      await pushPing(
+        `loop-stall:${entry.slug}`,
+        `stalled:${new Date(liveMtime).toISOString()}`,
         `[watchdog] Loop "${entry.loop_name}" (slug: ${entry.slug}, pid: ${entry.pid}) has gone quiet for 60+ min. ` +
-        `Last known unit: ${lastUnit}. Log: ${entry.log_path}. ` +
-        `Ping Gary via Telegram that the loop appears stalled.`
+        `Last known unit: ${lastUnit}. Log: ${entry.log_path}.`
       );
-      triggerDrain(); // stress-test fix 3: drain immediately, not on next poll cycle
       entry.pinged_at = now;
     }
 
