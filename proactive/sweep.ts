@@ -479,11 +479,60 @@ function zonedHHMM(ms: number, tz: string): string {
   return new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(ms));
 }
 
+// Producer-silence detection: a dead one-shot producer (launchd job gone,
+// Calendar MCP broken, bin/rachel failing) otherwise degrades to an
+// eternally-skipped stale/missing cache with every tick "ok" — positive
+// silence. Consecutive silent ticks are counted in the sweep state; from the
+// 3rd, one normal alert goes through the chokepoint. State is the episode's
+// first-observed timestamp: constant while the silence persists (dedup holds)
+// and fresh when a recovered producer later dies again (re-arms).
+const PRODUCER_SILENCE_THRESHOLD = 3;
+
+async function noteProducerSilence(d: SweepDeps, cfg: ProactiveConfig, pushDeps: Partial<PushDeps>): Promise<void> {
+  const statePath = sweepStatePath(d);
+  const today = zonedDateString(d.now(), cfg.timezone);
+  const state = readSweepState(d, statePath, today);
+  const nowMs = d.now().getTime();
+  const since = state.calendar_producer_silent_since ?? nowMs;
+  const streak = (Number(state.calendar_producer_streak) || 0) + 1;
+  d.writeFileFn(
+    statePath,
+    JSON.stringify(
+      { ...state, date: today, calendar_producer_streak: streak, calendar_producer_silent_since: since } satisfies SweepState,
+      null,
+      2,
+    ),
+  );
+  if (streak >= PRODUCER_SILENCE_THRESHOLD) {
+    const hours = Math.floor((nowMs - since) / 3_600_000);
+    await d.pushFn(
+      "calendar",
+      "cal:producer-silent",
+      new Date(since).toISOString(),
+      "normal",
+      `[cal] calendar producer silent — cache stale/missing for ${hours}h`,
+      pushDeps,
+    );
+  }
+}
+
+function clearProducerSilence(d: SweepDeps, cfg: ProactiveConfig): void {
+  const statePath = sweepStatePath(d);
+  const today = zonedDateString(d.now(), cfg.timezone);
+  const state = readSweepState(d, statePath, today);
+  if (state.calendar_producer_streak === undefined && state.calendar_producer_silent_since === undefined) {
+    return;
+  }
+  const { calendar_producer_streak: _streak, calendar_producer_silent_since: _since, ...rest } = state;
+  d.writeFileFn(statePath, JSON.stringify(rest satisfies SweepState, null, 2));
+}
+
 async function checkCalendarEscalation(d: SweepDeps, cfg: ProactiveConfig, pushDeps: Partial<PushDeps>): Promise<void> {
   const cachePath = join(d.homeDir, ".rachel", "calendar-cache.json");
   const raw = d.readFileFn(cachePath);
   if (raw === undefined) {
     d.log("[sweep] calendar-escalation: no cache — skipped");
+    await noteProducerSilence(d, cfg, pushDeps);
     return;
   }
   let cache: CalendarCache;
@@ -499,10 +548,17 @@ async function checkCalendarEscalation(d: SweepDeps, cfg: ProactiveConfig, pushD
   }
   const nowMs = d.now().getTime();
   const fetchedMs = Date.parse(String(cache.fetched_at));
-  if (Number.isNaN(fetchedMs) || nowMs - fetchedMs > CACHE_STALE_MS) {
-    d.log(`[sweep] calendar-escalation: stale cache (fetched_at ${String(cache.fetched_at)}) — skipped`);
+  if (Number.isNaN(fetchedMs)) {
+    d.log(`[sweep] calendar-escalation: unparseable fetched_at (${String(cache.fetched_at)}) — skipped`);
+    await noteProducerSilence(d, cfg, pushDeps);
     return;
   }
+  if (nowMs - fetchedMs > CACHE_STALE_MS) {
+    d.log(`[sweep] calendar-escalation: stale cache (fetched_at ${String(cache.fetched_at)}) — skipped`);
+    await noteProducerSilence(d, cfg, pushDeps);
+    return;
+  }
+  clearProducerSilence(d, cfg);
   for (const entry of cache.conflicts) {
     // Defensive re-sort: the producer contract says idA < idB, but the
     // sweep's own event-id/hash must be run-to-run stable even against a
