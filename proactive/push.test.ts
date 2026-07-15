@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { zonedMinutesOfDay, zonedDateString } from "./push.ts";
+import { zonedMinutesOfDay, zonedDateString, inQuietWindow, DEFAULT_CONFIG } from "./push.ts";
+import type { ProactiveConfig } from "./push.ts";
 
 const DUBLIN = "Europe/Dublin";
 
