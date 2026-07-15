@@ -17,8 +17,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // The agent's full tool surface. Narrowable per invocation via the
 // RACHEL_ALLOWED_TOOLS env seam (resolveAllowedTools) — headless one-shots
 // run with a minimum subset; the env var can only remove entries from this
-// list, never add to it.
-const DEFAULT_ALLOWED_TOOLS = [
+// list, never add to it. Exported for the cross-check test that pins every
+// one-shot narrowing set as a subset of this list.
+export const DEFAULT_ALLOWED_TOOLS = [
   "Read", "Write", "Edit", "Glob", "Grep", "Bash",
   "WebSearch", "WebFetch",
   "ToolSearch", "Skill",
