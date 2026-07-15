@@ -95,11 +95,24 @@ export interface FamilyFile {
 
 const EVICTION_MS = 14 * 24 * 60 * 60 * 1000;
 
+// Absent-is-empty is a documented contract, so ONLY ENOENT maps to
+// undefined. Anything else — corrupt JSON, EACCES, EIO — throws loud with
+// the file path: a corrupt deferred.json silently read as empty would let
+// the next write-back permanently destroy every queued entry.
 function readJson<T>(path: string): T | undefined {
+  let raw: string;
   try {
-    return JSON.parse(readFileSync(path, "utf8")) as T;
-  } catch {
-    return undefined;
+    raw = readFileSync(path, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    throw new Error(`cannot read ${path}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  try {
+    return JSON.parse(raw) as T;
+  } catch (err) {
+    throw new Error(`corrupt JSON in ${path}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
