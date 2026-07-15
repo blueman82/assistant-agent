@@ -2,8 +2,8 @@
 // Proactive push chokepoint. Owns the state store at ~/.rachel/proactive/
 // and is the ONLY code that reads/writes it. Library for the deterministic
 // sweep, CLI for LLM one-shots.
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 export type Severity = "urgent" | "normal" | "digest";
 export type PushResult = "sent" | "deferred" | "dedup";
