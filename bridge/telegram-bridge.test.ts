@@ -355,7 +355,7 @@ test("a turn emitting only tool and meta lines (no text) falls back to '(no outp
   assert.equal((sendCall!.body as Record<string, unknown>)["text"], "(no output)");
 });
 
-test("a throwing runTurn still produces a reply containing '[Rachel] error:'", async () => {
+test("a throwing runTurn still produces a reply containing '[Rachel] error:' and clears the heartbeat's turn_in_flight_since", async () => {
   const { transport, calls } = makeStubTransport([
     messageUpdate(1, "trigger a failure"),
     { ok: true, result: [] },
@@ -365,8 +365,9 @@ test("a throwing runTurn still produces a reply containing '[Rachel] error:'", a
     throw new Error("boom - synthetic failure for this test");
   };
 
+  const pushSeams = basePushOpts();
   const bridge = createBridge({
-    ...basePushOpts(),
+    ...pushSeams,
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -376,11 +377,17 @@ test("a throwing runTurn still produces a reply containing '[Rachel] error:'", a
 
   await bridge.drainOnce();
   await new Promise((resolve) => setTimeout(resolve, 50));
+  // A second poll iteration writes the post-throw heartbeat — the finally in
+  // drainFifo must have cleared turn_in_flight_since despite the throw.
+  await bridge.drainOnce();
   await bridge.stop();
 
   const sendCall = calls.find((c) => c.url.includes("/sendMessage"));
   assert.ok(sendCall, "expected a sendMessage reply");
   assert.match(String((sendCall!.body as Record<string, unknown>)["text"]), /\[Rachel\] error:/);
+
+  const heartbeat = JSON.parse(readFileSync(pushSeams.heartbeatPath, "utf8")) as Record<string, unknown>;
+  assert.equal(heartbeat["turn_in_flight_since"], null, "a thrown turn must not leave turn_in_flight_since stuck (phantom drain-stall)");
 });
 
 test("a runTurn that emits partial text then throws produces a reply containing both the emitted text and '[Rachel] error:'", async () => {
