@@ -500,7 +500,7 @@ async function checkCalendarEscalation(d: SweepDeps, cfg: ProactiveConfig, pushD
     const c: CalendarCacheConflict =
       String(entry.idA) <= String(entry.idB)
         ? entry
-        : { ...entry, idA: entry.idB, idB: entry.idA, startA: entry.startB, endA: entry.endB, startB: entry.startA, endB: entry.startB === undefined ? entry.endA : entry.endA };
+        : { ...entry, idA: entry.idB, idB: entry.idA, startA: entry.startB, endA: entry.endB, startB: entry.startA, endB: entry.endA };
     const startAMs = Date.parse(String(c.startA));
     const startBMs = Date.parse(String(c.startB));
     if (Number.isNaN(startAMs) || Number.isNaN(startBMs)) {
