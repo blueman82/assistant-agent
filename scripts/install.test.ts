@@ -46,13 +46,28 @@ const LABELS = [
 ].sort();
 
 // launchctl shim — same semantics as the eval harness's PATH-front shim,
-// plus two fault-injection seams the reviews asked for: a per-label bootout
-// delay (to separate the bootout instant from script start) and a per-label
-// bootstrap failure.
+// plus fault-injection seams: a per-label bootout delay (to separate the
+// bootout instant from script start), a per-label bootstrap failure, and a
+// LINGER model of launchd's ASYNCHRONOUS bootout (live-found on the E9 run:
+// bootout returns while the old job is still draining, `print` keeps
+// finding the service, and an immediate bootstrap gets exit 5
+// "Input/output error"). With LAUNCHCTL_LINGER=<n> set, a booted-out label
+// stays visible to `print` for n further calls (each print poll decrements
+// the counter, approximating teardown time) and `bootstrap` returns 5 while
+// it lingers. LAUNCHCTL_LINGER_LABEL restricts lingering to one label.
+// LAUNCHCTL_BOOTSTRAP_EIO_ONCE=<label> makes the FIRST bootstrap of that
+// label fail with exit 5 even after teardown completed (the retry seam).
 const SHIM = `#!/bin/bash
 log="\${LAUNCHCTL_LOG:?}"; state="\${LAUNCHCTL_STATE:?}"
+linger="$state.linger"
 echo "$@" >> "$log"
 lbl_from() { if [ -f "$1" ]; then /usr/bin/plutil -extract Label raw -o - "$1"; else basename "$1"; fi; }
+linger_count() { grep "^$1 " "$linger" 2>/dev/null | awk '{print $2}'; }
+linger_set() {
+  grep -v "^$1 " "$linger" 2>/dev/null > "$linger.tmp" || true
+  if [ "$2" -gt 0 ]; then echo "$1 $2" >> "$linger.tmp"; fi
+  mv "$linger.tmp" "$linger"
+}
 cmd="\${1:-}"; shift || true
 case "$cmd" in
   bootstrap)
@@ -60,6 +75,11 @@ case "$cmd" in
     for p in "$@"; do
       l="$(lbl_from "$p")"
       if [ -n "\${LAUNCHCTL_BOOTSTRAP_FAIL:-}" ] && [ "\${LAUNCHCTL_BOOTSTRAP_FAIL}" = "$l" ]; then echo "Bootstrap failed: 5" >&2; exit 5; fi
+      c="$(linger_count "$l")"
+      if [ -n "$c" ] && [ "$c" -gt 0 ]; then echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; fi
+      if [ -n "\${LAUNCHCTL_BOOTSTRAP_EIO_ONCE:-}" ] && [ "\${LAUNCHCTL_BOOTSTRAP_EIO_ONCE}" = "$l" ] && [ ! -f "$state.eio-done" ]; then
+        touch "$state.eio-done"; echo "Bootstrap failed: 5: Input/output error" >&2; exit 5
+      fi
       if [ -n "\${LAUNCHCTL_SUPPRESS:-}" ] && [ "\${LAUNCHCTL_SUPPRESS}" = "$l" ]; then continue; fi
       if grep -qx "$l" "$state" 2>/dev/null; then echo "Bootstrap failed: 5" >&2; exit 5; fi
       echo "$l" >> "$state"
@@ -70,12 +90,18 @@ case "$cmd" in
     if [ -n "\${LAUNCHCTL_BOOTOUT_DELAY:-}" ] && [ "$l" = "\${LAUNCHCTL_BOOTOUT_DELAY_LABEL:-}" ]; then sleep "\${LAUNCHCTL_BOOTOUT_DELAY}"; fi
     if grep -qx "$l" "$state" 2>/dev/null; then
       grep -vx "$l" "$state" > "$state.tmp" || true
-      mv "$state.tmp" "$state"; exit 0
+      mv "$state.tmp" "$state"
+      if [ -n "\${LAUNCHCTL_LINGER:-}" ] && { [ -z "\${LAUNCHCTL_LINGER_LABEL:-}" ] || [ "\${LAUNCHCTL_LINGER_LABEL}" = "$l" ]; }; then
+        linger_set "$l" "\${LAUNCHCTL_LINGER}"
+      fi
+      exit 0
     fi
     echo "Boot-out failed: 3: No such process" >&2; exit 3;;
   print)
     l="\${1##*/}"
     if grep -qx "$l" "$state" 2>/dev/null; then echo "state = running"; exit 0; fi
+    c="$(linger_count "$l")"
+    if [ -n "$c" ] && [ "$c" -gt 0 ]; then linger_set "$l" $((c - 1)); echo "state = running (draining)"; exit 0; fi
     exit 113;;
   list)
     if [ $# -ge 1 ]; then grep -qx "$1" "$state" 2>/dev/null && exit 0 || exit 113; fi
