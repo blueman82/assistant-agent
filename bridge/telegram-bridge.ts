@@ -733,9 +733,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
               ? "Rachel bridge recovered from Telegram conflict — back online."
               : "Rachel bridge recovered from poll error — back online.";
             console.log(`[telegram-bridge] recovered from ${prev} state.`);
-            sendChunked(config, msg).catch((alertErr) => {
-              console.error(`[telegram-bridge] failed to send recovery alert: ${alertErr instanceof Error ? alertErr.message : String(alertErr)}`);
-            });
+            void pushAlert("bridge-health", "bridge:health", "healthy", "normal", msg);
           }
           // Yield to the macrotask queue so that bridge.stop() → stopped=true
           // is observable before the next iteration. A zero-delay setTimeout is
