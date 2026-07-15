@@ -63,6 +63,8 @@ This is the most important behavioural contract:
 - No API key — uses the local Claude Code OAuth session.
 - Model: `claude-sonnet-4-6` (override with `RACHEL_MODEL`).
 - Max turns per request: `200` (override with `RACHEL_MAX_TURNS`).
+- Tool narrowing for headless one-shots: `RACHEL_ALLOWED_TOOLS` (comma-separated; remove-only subset of `DEFAULT_ALLOWED_TOOLS`, unset = full list).
+- Proactive tuning: `~/.rachel/proactive/config.json` — timezone, quiet hours (default 22:30–08:00 Europe/Dublin), daily interrupt budget (default 10), PR watch repos, calendar one-shot hours. An absent file means the defaults, not an error.
 - TypeScript: ESM, `strict` mode, target ES2022.
 
 ## CLI commands (at the `You:` prompt)
