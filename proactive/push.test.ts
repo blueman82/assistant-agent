@@ -133,3 +133,150 @@ test("family file round-trip: writeFamilyFile evicts entries with last_seen olde
   assert.ok(onDisk.events["pr:new/repo#2"]);
   assert.deepEqual(Object.keys(readFamilyFile(baseDir, "pr-red").events), ["pr:new/repo#2"]);
 });
+
+test("push: first push of a new event sends", async () => {
+  const baseDir = makeBaseDir();
+  const { sent, sendFn } = makeSendStub();
+  const result = await push("pr-red", "pr:a/b#1", "abc:failure", "normal", "[pr] a/b #1 failing", { now: DAYTIME, baseDir, sendFn });
+  assert.equal(result, "sent");
+  assert.deepEqual(sent, ["[pr] a/b #1 failing"]);
+});
+
+test("push: identical re-push dedups without sending and advances last_seen", async () => {
+  const baseDir = makeBaseDir();
+  const { sent, sendFn } = makeSendStub();
+  await push("pr-red", "pr:a/b#1", "abc:failure", "normal", "x", { now: DAYTIME, baseDir, sendFn });
+  const later = () => new Date("2026-07-15T12:00:00Z");
+  const result = await push("pr-red", "pr:a/b#1", "abc:failure", "normal", "x", { now: later, baseDir, sendFn });
+  assert.equal(result, "dedup");
+  assert.equal(sent.length, 1);
+  assert.equal(readFamilyFile(baseDir, "pr-red").events["pr:a/b#1"]!.last_seen, later().getTime());
+});
+
+test("push: changed state re-arms and sends again", async () => {
+  const baseDir = makeBaseDir();
+  const { sent, sendFn } = makeSendStub();
+  await push("pr-red", "pr:a/b#1", "abc:failure", "normal", "x", { now: DAYTIME, baseDir, sendFn });
+  const result = await push("pr-red", "pr:a/b#1", "def:failure", "normal", "y", { now: DAYTIME, baseDir, sendFn });
+  assert.equal(result, "sent");
+  assert.deepEqual(sent, ["x", "y"]);
+});
+
+test("push: urgent sends inside the quiet window", async () => {
+  const baseDir = makeBaseDir();
+  const { sent, sendFn } = makeSendStub();
+  const result = await push("bridge-liveness", "bridge:liveness", "down", "urgent", "[urgent · bridge] down", { now: NIGHT, baseDir, sendFn });
+  assert.equal(result, "sent");
+  assert.equal(sent.length, 1);
+});
+
+test("push: normal inside the quiet window defers with reason quiet and does not send", async () => {
+  const baseDir = makeBaseDir();
+  const { sent, sendFn } = makeSendStub();
+  const result = await push("pr-red", "pr:a/b#1", "abc:failure", "normal", "x", { now: NIGHT, baseDir, sendFn });
+  assert.equal(result, "deferred");
+  assert.equal(sent.length, 0);
+  const entries = readDeferredEntries(baseDir);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]!.reason, "quiet");
+});
+
+test("push: digest outside the quiet window defers with reason digest", async () => {
+  const baseDir = makeBaseDir();
+  const { sent, sendFn } = makeSendStub();
+  const result = await push("mail", "mail:t1", "fyi:m1", "digest", "x", { now: DAYTIME, baseDir, sendFn });
+  assert.equal(result, "deferred");
+  assert.equal(sent.length, 0);
+  assert.equal(readDeferredEntries(baseDir)[0]!.reason, "digest");
+});
+
+test("push: the 11th normal of the day defers with reason budget", async () => {
+  const baseDir = makeBaseDir();
+  const { sent, sendFn } = makeSendStub();
+  for (let i = 0; i < 10; i++) {
+    assert.equal(await push("pr-red", `pr:a/b#${i}`, "s:failure", "normal", `n${i}`, { now: DAYTIME, baseDir, sendFn }), "sent");
+  }
+  const result = await push("pr-red", "pr:a/b#10", "s:failure", "normal", "n10", { now: DAYTIME, baseDir, sendFn });
+  assert.equal(result, "deferred");
+  assert.equal(sent.length, 10);
+  const entries = readDeferredEntries(baseDir);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]!.reason, "budget");
+});
+
+test("push: urgent still sends when the budget is exhausted", async () => {
+  const baseDir = makeBaseDir();
+  const { sent, sendFn } = makeSendStub();
+  for (let i = 0; i < 10; i++) {
+    await push("pr-red", `pr:a/b#${i}`, "s:failure", "normal", `n${i}`, { now: DAYTIME, baseDir, sendFn });
+  }
+  const result = await push("bridge-liveness", "bridge:liveness", "down", "urgent", "u", { now: DAYTIME, baseDir, sendFn });
+  assert.equal(result, "sent");
+  assert.equal(sent.length, 11);
+});
+
+test("push: budget counter resets when now crosses a Dublin date boundary", async () => {
+  const baseDir = makeBaseDir();
+  // 23:30 UTC on the 14th is already 00:30 on the 15th in Dublin (summer).
+  // Override quiet hours so this time of day is not quiet — this test is
+  // about the budget date rollover, not quiet deferral.
+  writeFileSync(join(baseDir, "config.json"), JSON.stringify({ quiet_hours: { start: "03:00", end: "04:00" } }));
+  writeFileSync(join(baseDir, "budget.json"), JSON.stringify({ schema_version: 1, date: "2026-07-14", interrupts_sent: 10 }));
+  const { sent, sendFn } = makeSendStub();
+  const newDay = () => new Date("2026-07-14T23:30:00Z");
+  const result = await push("pr-red", "pr:a/b#1", "s:failure", "normal", "x", { now: newDay, baseDir, sendFn });
+  assert.equal(result, "sent");
+  assert.equal(sent.length, 1);
+  const budget = JSON.parse(readFileSync(join(baseDir, "budget.json"), "utf8")) as { date: string; interrupts_sent: number };
+  assert.equal(budget.date, "2026-07-15");
+  assert.equal(budget.interrupts_sent, 1);
+});
+
+test("push: a deferred event dedups on a second identical push instead of re-queueing", async () => {
+  const baseDir = makeBaseDir();
+  const { sendFn } = makeSendStub();
+  await push("mail", "mail:t1", "fyi:m1", "digest", "x", { now: DAYTIME, baseDir, sendFn });
+  const result = await push("mail", "mail:t1", "fyi:m1", "digest", "x", { now: DAYTIME, baseDir, sendFn });
+  assert.equal(result, "dedup");
+  assert.equal(readDeferredEntries(baseDir).length, 1);
+});
+
+test("push: a sendFn throw records nothing, so the next identical push sends", async () => {
+  const baseDir = makeBaseDir();
+  const failingSend = async (): Promise<void> => {
+    throw new Error("network down");
+  };
+  await assert.rejects(
+    () => push("pr-red", "pr:a/b#1", "abc:failure", "normal", "x", { now: DAYTIME, baseDir, sendFn: failingSend }),
+    /network down/,
+  );
+  assert.equal(getEventState("pr-red", "pr:a/b#1", { baseDir }), undefined);
+  const { sent, sendFn } = makeSendStub();
+  const result = await push("pr-red", "pr:a/b#1", "abc:failure", "normal", "x", { now: DAYTIME, baseDir, sendFn });
+  assert.equal(result, "sent");
+  assert.equal(sent.length, 1);
+});
+
+test("push: invalid family throws", async () => {
+  const { sendFn } = makeSendStub();
+  await assert.rejects(
+    () => push("Bad Family!", "id", "s", "normal", "x", { now: DAYTIME, baseDir: makeBaseDir(), sendFn }),
+    /family/,
+  );
+});
+
+test("push: invalid severity throws", async () => {
+  const { sendFn } = makeSendStub();
+  await assert.rejects(
+    () => push("pr-red", "id", "s", "loud" as never, "x", { now: DAYTIME, baseDir: makeBaseDir(), sendFn }),
+    /severity/,
+  );
+});
+
+test("getEventState: returns the stored state for a pinged event", async () => {
+  const baseDir = makeBaseDir();
+  const { sendFn } = makeSendStub();
+  await push("bridge-liveness", "bridge:liveness", "down", "urgent", "x", { now: DAYTIME, baseDir, sendFn });
+  assert.equal(getEventState("bridge-liveness", "bridge:liveness", { baseDir }), "down");
+  assert.equal(getEventState("bridge-liveness", "bridge:other", { baseDir }), undefined);
+});
