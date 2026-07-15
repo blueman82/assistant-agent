@@ -54,6 +54,26 @@ function parseHM(hm: string): number {
   return Number(h) * 60 + Number(m);
 }
 
+export interface EventRecord {
+  state: string;
+  first_seen: number;
+  pinged_at: number;
+  last_seen: number;
+}
+
+export interface FamilyFile {
+  schema_version: 1;
+  events: Record<string, EventRecord>;
+}
+
+export function readFamilyFile(_baseDir: string, _family: string): FamilyFile {
+  throw new Error("not implemented");
+}
+
+export function writeFamilyFile(_baseDir: string, _family: string, _data: FamilyFile, _now: Date): void {
+  throw new Error("not implemented");
+}
+
 // config.json is written by the (Loop-2) installer, never by push.ts.
 // Absent or malformed => sane defaults; a partial file shallow-merges over
 // the defaults.
