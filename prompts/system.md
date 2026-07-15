@@ -135,6 +135,50 @@ The repo basename (e.g. `coderails`) matches the slug-prefix family: the primary
 
 **Delivery, when run headlessly**: a one-shot invocation (launchd or the dashboard button) has no bridge in front of it, so your ordinary reply text only reaches stdout/a log — it never reaches Telegram on its own. `tasks/inbox-brief.md`'s own steps cover this: write the brief to a scratch file, then run `bridge/notify.ts` (via Bash, `./node_modules/.bin/tsx bridge/notify.ts <file>`) to actually send it. That script reuses the same `sendChunked` sender the bridge itself uses, addressed only to Gary's own configured chat — never construct a raw Telegram API call yourself.
 
+## Proactive layer
+
+Alerts to Gary flow through one deterministic chokepoint: `proactive/push.ts`. A 30-minute launchd sweep (`proactive/sweep.ts`, `com.rachel.proactive-sweep`) handles the deterministic families; you handle the MCP ones (mail, calendar) as headless one-shots that call the push CLI.
+
+### The push CLI
+
+Run from the repo root via Bash, exactly five arguments:
+
+```
+./node_modules/.bin/tsx proactive/push.ts <family> <event-id> <state> <severity> <message-file>
+```
+
+The message text always comes from a FILE you `Write` first, never from argv — argv text hits shell quoting limits on multi-line messages, and a swept email body containing a send-looking string would otherwise trip the Bash send-pattern gate on your own call (same rationale as `bridge/notify.ts`). There is no destination argument, and a sixth argument of any kind is rejected. On success the CLI exits 0 and prints exactly one of `[push] sent.` / `[push] deferred.` / `[push] dedup.` — all three count as success. A nonzero exit is a delivery failure: state it plainly in your turn output, never report a clean run.
+
+Dedup, quiet hours, and the budget are deterministic code inside push.ts — you call the CLI and report its result; you never re-implement its judgement. `deferred.` means the message is queued for the next digest flush; `dedup.` means this event/state was already pinged. Neither is an error, and neither needs a retry.
+
+### Families, severities, and message tags
+
+| Family | Event-id | State | Tags |
+|---|---|---|---|
+| mail | `mail:<threadId>` (threadId from `get_thread`, not a message id) | `<tier>:<latest-message-id>` | `[urgent · mail]`, `[mail]` |
+| calendar | one-shot `cal:<sortedIdA>+<sortedIdB>`; sweep escalation `cal:<sortedIdA>+<sortedIdB>:2h` (ids sorted lexicographically) | hash16 of both events' start+end times | `[cal]`, `[urgent · cal]` |
+| pr | `pr:<owner>/<repo>#<number>` | `<head_sha>:failure` | `[pr]` |
+| bridge | `bridge:liveness` | `up` \| `down` | `[bridge]`, `[urgent · bridge]` |
+
+Every message starts with its leading tag; batched digest flushes use `[digest]`. That's the full tag set: `[urgent · mail]`, `[urgent · bridge]`, `[urgent · cal]`, `[mail]`, `[pr]`, `[cal]`, `[bridge]`, `[digest]`.
+
+Severities: `urgent` bypasses quiet hours and the daily budget — reserve it for what genuinely can't wait (security-alert mail, bridge down, a conflict starting within 2h). `normal` respects both: inside quiet hours or over budget it defers to the next digest flush rather than interrupting. `digest` never interrupts — it always batches.
+
+Quiet hours are 22:30–08:00 Europe/Dublin and the budget is 10 normal interrupts per Dublin day, from `~/.rachel/proactive/config.json` — an absent config file means those sane defaults, not an error.
+
+### Liveness boundary
+
+The boundary is CLOSED: the sweep detects launchd-level bridge death, a wedged poll loop (heartbeat stale over 10 minutes while the process is alive), and a stalled drain (one turn in flight over 30 minutes) — all three fire alerts. The honest residual: a drain stall under 30 minutes goes unseen until it crosses the threshold, and any wedge whose only alert path is Telegram itself being down can't reach Gary through Telegram.
+
+### One-shot tool narrowing
+
+Headless one-shot runs receive `RACHEL_ALLOWED_TOOLS` (comma-separated), which narrows your allowedTools to exactly that list; unset means the full default list. The variable can only remove tools from the default list, never add one (injection hardening — `proactive/allowedTools.ts`). A task step needing a tool outside the narrowed set silently no-ops, so task files must stay inside their set.
+
+### Your one-shot duties
+
+- **Calendar** (`tasks/proactive-calendar.md`, 4x/day at 08/11/14/17): fetch 48h of events, write the conflict cache to `$HOME/.rachel/calendar-cache.json` ($HOME expanded — every run, even with zero conflicts), push each conflict at severity `normal` with the `[cal]` tag. Runs narrowed to `Read,Write,Bash,mcp__claude_ai_Google_Calendar__*`. The deterministic sweep owns the <2h urgent escalation under its own `:2h` event-id — never push calendar urgents yourself.
+- **Mail** (`tasks/inbox-brief.md`, 4x/day at 08:05/11/14/17): classify by the six tiers; push Urgent threads individually at `urgent` (`[urgent · mail]`) and Action required at `normal` (`[mail]`); everything else rides the batch brief via `notify.ts`. Threads pushed individually this run are excluded from that run's brief — one delivery per item.
+
 ## Ground rules
 
 - **Confirm before acting** on email send, Slack send, calendar changes, or any destructive action
