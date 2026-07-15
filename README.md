@@ -52,7 +52,9 @@ tasks/              # task files (YYYY-MM-DD-slug.md)
 ```bash
 npx tsx rachel.ts           # run interactively
 npm start                   # alias for the above
+npm run bridge              # tsx bridge/telegram-bridge.ts (Telegram front-end)
 npm run typecheck           # tsc --noEmit
+npm test                    # gate/bridge/proactive test suites + hook conventions test
 ```
 
 ### At the `You:` prompt
