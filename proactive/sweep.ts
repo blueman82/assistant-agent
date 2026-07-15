@@ -131,13 +131,20 @@ function pushDepsOf(d: SweepDeps): Partial<PushDeps> {
 
 export type FamilyResult = "ok" | "failed";
 
-async function runFamily(family: string, d: SweepDeps, fn: () => Promise<void>): Promise<FamilyResult> {
+async function runFamily(
+  family: string,
+  d: SweepDeps,
+  errors: Record<string, string>,
+  fn: () => Promise<void>,
+): Promise<FamilyResult> {
   try {
     await fn();
     return "ok";
   } catch (err) {
     // Full stack — same convention as push.ts: launchd logs are the only
-    // debugging signal.
+    // debugging signal. The first line is kept separately for the
+    // escalation message.
+    errors[family] = String(err instanceof Error ? err.message : err).split("\n")[0] ?? "unknown error";
     d.log(`[sweep] ${family} error: ${err instanceof Error ? (err.stack ?? String(err)) : String(err)}`);
     return "failed";
   }
