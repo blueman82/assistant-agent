@@ -68,3 +68,4 @@ npm run typecheck           # tsc --noEmit
 |----------|---------|---------|
 | `RACHEL_MODEL` | `claude-sonnet-4-6` | Model to run |
 | `RACHEL_MAX_TURNS` | `200` | Max agent turns per request |
+| `RACHEL_ALLOWED_TOOLS` | unset (full list) | Narrow headless one-shots to a subset of the default tools (remove-only) |
