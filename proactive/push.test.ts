@@ -97,10 +97,12 @@ test("loadConfig: absent config.json yields DEFAULT_CONFIG", () => {
   assert.deepEqual(loadConfig(makeBaseDir()), DEFAULT_CONFIG);
 });
 
-test("loadConfig: malformed config.json yields DEFAULT_CONFIG", () => {
+test("loadConfig: malformed config.json falls back loudly to DEFAULT_CONFIG", async () => {
   const baseDir = makeBaseDir();
   writeFileSync(join(baseDir, "config.json"), "{not json");
-  assert.deepEqual(loadConfig(baseDir), DEFAULT_CONFIG);
+  const { result, errors } = await withConsoleErrorCapture(() => loadConfig(baseDir));
+  assert.deepEqual(result, DEFAULT_CONFIG);
+  assert.ok(errors.length >= 1, "expected a loud config warning");
 });
 
 test("loadConfig: partial config.json merges over defaults", () => {
