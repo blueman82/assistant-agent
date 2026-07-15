@@ -379,7 +379,9 @@ async function runCalendarOneshot(d: SweepDeps, cfg: ProactiveConfig): Promise<v
   // when the one-shot itself hangs or times out.
   d.writeFileFn(
     statePath,
-    JSON.stringify({ schema_version: 1, date: today, oneshot_hours_run: [...state.oneshot_hours_run, ...due] } satisfies SweepState, null, 2),
+    // Spread preserves failure_streaks — this write must never clobber the
+    // escalation counters bookkept at the end of the tick.
+    JSON.stringify({ ...state, date: today, oneshot_hours_run: [...state.oneshot_hours_run, ...due] } satisfies SweepState, null, 2),
   );
   const spawn = d.execFn(join(d.repoDir, "bin", "rachel"), ["Read tasks/proactive-calendar.md and follow it."], {
     env: { RACHEL_ALLOWED_TOOLS: ONESHOT_TOOLS },
