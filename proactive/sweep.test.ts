@@ -447,7 +447,10 @@ test("gh exit 1 on pr list logs a pr-red error and the tick completes", async ()
   h.deps.execFn = ghExecFn(h, { "owner/repo": { stdout: "", exitCode: 1 } }, {});
   await sweepTick(h.deps);
   assert.equal(h.pushes.length, 0);
-  assert.ok(h.logs.some((line) => line.startsWith("[sweep] pr-red error:")), `pr-red error logged: ${JSON.stringify(h.logs)}`);
+  assert.ok(
+    h.logs.some((line) => line.startsWith("[sweep] pr-red error") && line.includes("owner/repo")),
+    `pr-red error logged with the repo named: ${JSON.stringify(h.logs)}`,
+  );
 });
 
 test("grep guard for proactive/sweep.test.ts: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
