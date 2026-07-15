@@ -161,6 +161,14 @@ const WEDGE_THRESHOLD_MS = 10 * 60_000;
 // FIFO is starved behind it — worth a normal (not urgent) ping.
 const DRAIN_STALL_THRESHOLD_MS = 30 * 60_000;
 
+// Deadline on the missing-heartbeat grace. The grace exists ONLY for the
+// deploy-ordering window (the sweep can pick up heartbeat-aware code a
+// restart cycle before the long-lived bridge does); U4 deploys within hours,
+// so 48h of launchctl-alive with no heartbeat file ever appearing means
+// wedge detection is silently dead (unwritable path, wrong HOME, ...) and
+// Gary gets ONE normal-severity ping about it instead of silence forever.
+const HEARTBEAT_MISSING_GRACE_MS = 48 * 60 * 60 * 1000;
+
 interface BridgeHeartbeat {
   schema_version: number;
   last_poll_at: string;
