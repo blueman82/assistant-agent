@@ -382,6 +382,9 @@ interface SweepState {
   // "3 consecutive failures" means consecutive ticks, not consecutive ticks
   // within one calendar day.
   failure_streaks?: Record<string, number>;
+  // First tick (ms epoch) that saw launchctl-alive with NO heartbeat file —
+  // the missing-heartbeat grace tracking. Survives the date rollover.
+  heartbeat_missing_since?: number;
 }
 
 // Sweep-owned state, deliberately OUTSIDE the push store dir — that dir is
