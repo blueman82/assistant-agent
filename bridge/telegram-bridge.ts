@@ -395,6 +395,8 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   const resolvedFs = options.fsFn ?? defaultFsFn();
   const resolvedIsPidAlive = options.isPidAliveFn ?? isPidAlive;
   const resolvedConflictBackoffMs = options.conflictBackoffMs ?? CONFLICT_BACKOFF_MS;
+  const nowFn = options.nowFn ?? (() => new Date());
+  const heartbeatPath = options.heartbeatPath ?? join(homedir(), ".rachel", "bridge-heartbeat.json");
 
   try { resolvedFs.mkdirSync(watchdogDir, { recursive: true }); } catch { /* already exists */ }
 
@@ -405,6 +407,44 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   let draining = false;
   let backoffMs = 1000;
   const MAX_BACKOFF_MS = 30_000;
+
+  // Heartbeat: written once per successful poll iteration. Deliberately NOT
+  // written during 409-conflict backoff — the sweep's wedge detection reads
+  // staleness as "poll loop silent", and the 10-minute threshold there
+  // clears the legitimate 5x65s backoff window.
+  let turnInFlightSince: Date | null = null;   // set while drainFifo has a turn running
+  let lastHeartbeatMs = 0;
+  let heartbeatWriteFailing = false;
+
+  function writeHeartbeat(): void {
+    try {
+      // Strictly monotonic per iteration even under a coarse or frozen
+      // clock, so consecutive heartbeats are always distinguishable.
+      const nowMs = Math.max(nowFn().getTime(), lastHeartbeatMs + 1);
+      lastHeartbeatMs = nowMs;
+      const heartbeat = {
+        schema_version: 1,
+        last_poll_at: new Date(nowMs).toISOString(),
+        queue_depth: fifo.length,
+        turn_in_flight_since: turnInFlightSince === null ? null : turnInFlightSince.toISOString(),
+      };
+      // Temp-file + rename in the same directory — push.ts's atomic-write
+      // idiom. A sweep reading mid-write never sees a torn file.
+      resolvedFs.mkdirSync(dirname(heartbeatPath), { recursive: true });
+      const tmpPath = `${heartbeatPath}.tmp-${process.pid}`;
+      resolvedFs.writeFile(tmpPath, JSON.stringify(heartbeat, null, 2));
+      resolvedFs.rename(tmpPath, heartbeatPath);
+      heartbeatWriteFailing = false;
+    } catch (err) {
+      // A heartbeat failure must NEVER break polling, and must not spam the
+      // log every tick — log once on entering the failing state, re-arm on
+      // recovery.
+      if (!heartbeatWriteFailing) {
+        heartbeatWriteFailing = true;
+        console.error(`[telegram-bridge] heartbeat write failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
 
   // Health state machine — mutated only in run() loop below.
   // health: current state; consecutive409: 409 streak; lastError: last failure for /status.
