@@ -28,7 +28,7 @@ To deploy Rachel's four launchd services (the Telegram bridge plus the three sch
 
 The Inbox Brief sweep (`tasks/inbox-brief.md`) runs as `com.rachel.inbox-brief` from the `tasks/inbox-brief-launchd.plist` template. It fires `bin/rachel "Read tasks/inbox-brief.md and follow it." < /dev/null` four times a day (08:05/11/14/17 — the first run sits at 08:05 to clear the proactive sweep's 08:00 digest flush); each run is a headless one-shot that exits on its own (closed stdin → EOF → clean exit), not a long-lived process, so no `KeepAlive` is needed. The plist sets `RACHEL_ALLOWED_TOOLS` to narrow the one-shot to the minimum toolset the task needs.
 
-The proactive layer adds two more launchd services, same install pattern (copy the plist, replace `__REPO_PATH__`, `launchctl load`): `tasks/proactive-sweep-launchd.plist` → `com.rachel.proactive-sweep` runs `proactive/sweep.ts` as a deterministic tick every 30 minutes during waking hours, and `tasks/proactive-calendar-launchd.plist` → `com.rachel.proactive-calendar` runs the calendar-conflicts one-shot (`tasks/proactive-calendar.md`) 4x/day, narrowed via `RACHEL_ALLOWED_TOOLS` to Read/Write/Bash + the Calendar MCP tools.
+The proactive layer adds two more launchd services (also deployed by the installer): `tasks/proactive-sweep-launchd.plist` → `com.rachel.proactive-sweep` runs `proactive/sweep.ts` as a deterministic tick every 30 minutes during waking hours, and `tasks/proactive-calendar-launchd.plist` → `com.rachel.proactive-calendar` runs the calendar-conflicts one-shot (`tasks/proactive-calendar.md`) 4x/day, narrowed via `RACHEL_ALLOWED_TOOLS` to Read/Write/Bash + the Calendar MCP tools.
 
 ## Architecture
 
