@@ -10,8 +10,26 @@ import { createSendGateHook } from "./gate/sendGate.ts";
 import { createTerminalApprovalSurface } from "./gate/surfaces/terminal.ts";
 import { createTelegramApprovalSurface, loadTelegramConfig } from "./gate/surfaces/telegram.ts";
 import { createQueueApprovalSurface } from "./gate/surfaces/queue.ts";
+import { resolveAllowedTools } from "./proactive/allowedTools.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// The agent's full tool surface. Narrowable per invocation via the
+// RACHEL_ALLOWED_TOOLS env seam (resolveAllowedTools) — headless one-shots
+// run with a minimum subset; the env var can only remove entries from this
+// list, never add to it.
+const DEFAULT_ALLOWED_TOOLS = [
+  "Read", "Write", "Edit", "Glob", "Grep", "Bash",
+  "WebSearch", "WebFetch",
+  "ToolSearch", "Skill",
+  "mcp__mcp-exec__execute_code_with_wrappers",
+  "mcp__mcp-exec__list_available_mcp_servers",
+  "mcp__mcp-exec__get_mcp_tool_schema",
+  "mcp__claude-in-chrome__*",
+  "mcp__claude_ai_Gmail__*",
+  "mcp__claude_ai_Google_Calendar__*",
+  "mcp__claude_ai_Slack__*",
+] as const;
 
 // ---------------------------------------------------------------------------
 // Graceful shutdown — only registered when this file runs as the terminal
