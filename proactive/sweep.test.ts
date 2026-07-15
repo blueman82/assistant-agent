@@ -841,24 +841,72 @@ test("a family success resets the streak and a fresh 3-streak escalates again", 
   assert.equal(escalations(sent).length, 1, "a fresh 3-streak after a reset escalates once");
 });
 
-test("a rejecting escalation send is logged, never re-escalated, and the tick still returns family results", async () => {
+test("a failed escalation send is logged, never re-escalated about, retried on later ticks, and never repeated once one succeeds", async () => {
   const { h } = failingFlushHarness();
   let attempts = 0;
+  let failSend = true;
   h.deps.sendFn = async () => {
     attempts++;
-    throw new Error("telegram is the thing that is down");
+    if (failSend) throw new Error("telegram is the thing that is down");
   };
   await sweepTick(h.deps);
   await sweepTick(h.deps);
   const results = await sweepTick(h.deps);
   assert.equal(results["flush"], "failed", "family results are unaffected by the escalation send outcome");
-  assert.equal(attempts, 1, "exactly one escalation attempt for the streak — the failing send is never itself escalated about");
+  assert.equal(attempts, 1, "one attempt on the 3rd consecutive failure");
   assert.ok(
     h.logs.some((line) => line.includes("escalation send failed")),
     `send failure logged: ${JSON.stringify(h.logs)}`,
   );
   await sweepTick(h.deps);
-  assert.equal(attempts, 1, "no retry on tick 4 of the same streak");
+  assert.equal(attempts, 2, "tick 4 retries ONLY because tick 3's send failed");
+  failSend = false;
+  await sweepTick(h.deps);
+  assert.equal(attempts, 3, "retry keeps going until one send succeeds");
+  await sweepTick(h.deps);
+  assert.equal(attempts, 3, "once a send succeeded, no repeats until the streak resets");
+});
+
+test("string-corrupted failure_streaks values are coerced on read so the threshold still fires", async () => {
+  const { h, sent } = failingFlushHarness();
+  seedSweepState(h, { failure_streaks: { flush: "2" } });
+  await sweepTick(h.deps);
+  assert.deepEqual(escalations(sent), ["[urgent] proactive sweep itself failing: flush: corrupt deferred queue"]);
+});
+
+test("two families failing simultaneously escalate independently, each naming its own family and error", async () => {
+  const h = makeHarness();
+  const sent: string[] = [];
+  h.deps.sendFn = async (text) => {
+    sent.push(text);
+  };
+  h.deps.flushFn = async () => {
+    throw new Error("corrupt deferred queue");
+  };
+  h.deps.execFn = async (cmd) => {
+    if (cmd === "launchctl") throw new Error("launchctl exploded");
+    return { stdout: "", stderr: "", exitCode: 0 };
+  };
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  const esc = escalations(sent);
+  assert.equal(esc.length, 2, `one escalation per failing family: ${JSON.stringify(esc)}`);
+  assert.ok(esc.some((t) => t.includes("flush: corrupt deferred queue")));
+  assert.ok(esc.some((t) => t.includes("bridge-liveness: launchctl exploded")));
+});
+
+test("an escalation bookkeeping failure (state file unreadable) is logged and never rejects the tick", async () => {
+  const h = makeHarness();
+  h.deps.readFileFn = () => {
+    throw new Error("EIO: state file unreadable");
+  };
+  const results = await sweepTick(h.deps);
+  assert.equal(results["bridge-liveness"], "failed", "the heartbeat read failure still surfaces as a family failure");
+  assert.ok(
+    h.logs.some((line) => line.includes("escalation bookkeeping failed")),
+    `bookkeeping failure logged, tick resolved: ${JSON.stringify(h.logs)}`,
+  );
 });
 
 test("failure streaks persist in the sweep state file and survive a Dublin date rollover", async () => {
