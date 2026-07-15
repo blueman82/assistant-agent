@@ -52,6 +52,10 @@ function parseHM(hm: string): number {
   return Number(h) * 60 + Number(m);
 }
 
+export function loadConfig(_baseDir: string): ProactiveConfig {
+  throw new Error("not implemented");
+}
+
 // Inclusive start, exclusive end. A start later than the end means the
 // window wraps midnight (the 22:30-08:00 default).
 export function inQuietWindow(d: Date, cfg: ProactiveConfig): boolean {
