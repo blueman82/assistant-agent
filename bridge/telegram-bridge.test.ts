@@ -190,6 +190,7 @@ test("gate integrity: a gated send-class tool call issued during a bridge-dispat
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: wrappedRunTurn,
     getSessionId: () => undefined,
@@ -272,6 +273,7 @@ test("a text message round-trips through the bridge's FIFO dispatch into runTurn
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -304,6 +306,7 @@ test("a turn emitting text, tool, and meta lines sends only the text lines to Te
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -335,6 +338,7 @@ test("a turn emitting only tool and meta lines (no text) falls back to '(no outp
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -362,6 +366,7 @@ test("a throwing runTurn still produces a reply containing '[Rachel] error:'", a
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -390,6 +395,7 @@ test("a runTurn that emits partial text then throws produces a reply containing 
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -420,6 +426,7 @@ test("/reset clears the session id so the next dispatched turn calls query() wit
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => "stale-session-id",
@@ -455,6 +462,7 @@ test("/stop aborts an in-flight turn via the AbortController passed to runTurn",
     });
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -497,6 +505,7 @@ test("a callback_query is routed to handleCallbackQuery immediately, not queued 
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -538,6 +547,7 @@ test("a callback_query from an unauthorised from.id is still routed to the surfa
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -569,6 +579,7 @@ test("a message from a chat.id other than the configured owner is dropped, not d
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -595,6 +606,7 @@ test("/status replies without dispatching to runTurn", async () => {
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -622,6 +634,7 @@ test("run() exits fatally after CONFLICT_EXIT_THRESHOLD (5) consecutive 409s —
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -670,6 +683,7 @@ test("first 409 sends a Telegram alert via sendMessage and backs off before retr
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -710,6 +724,7 @@ test("run() sends a one-time 'started' alert on boot", async () => {
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -749,6 +764,7 @@ test("recovery from 409 sends a recovery Telegram alert", async () => {
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -786,6 +802,7 @@ test("409 persisting to threshold sends FATAL alert before exiting", async () =>
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -842,6 +859,7 @@ test("/status reports last_error (recovered) after a 409 that self-healed", asyn
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -892,6 +910,7 @@ test("/status includes 'ongoing' suffix in last_error line when error has not ye
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -935,6 +954,7 @@ test("4 consecutive 409s (N-1, boundary) followed by success does NOT exit and s
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -990,6 +1010,7 @@ test("non-409 poll error sends a Telegram alert on first occurrence (healthy →
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -1040,6 +1061,7 @@ test("consecutive409 resets on non-409 error — mixed 409/non-409 streak does n
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -1076,6 +1098,7 @@ test("run() does NOT exit on a non-409/conflict poll error — only the single-p
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -1162,6 +1185,7 @@ test("a photo message is downloaded and passed to runTurn as '[image: /path]' wi
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -1220,6 +1244,7 @@ test("a photo message with no caption passes '[image: /path]' (no newline/captio
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -1265,6 +1290,7 @@ test("a document message with an image MIME type is downloaded and passed to run
   let capturedInput: string | undefined;
   let downloadedPath: string | undefined;
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async (input, emit) => { capturedInput = input; emit("ok", "text"); },
     getSessionId: () => undefined,
@@ -1311,6 +1337,7 @@ test("a document message with a non-image MIME type replies with an unsupported-
 
   let dispatched = false;
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => { dispatched = true; },
     getSessionId: () => undefined,
@@ -1357,6 +1384,7 @@ test("a photo whose downloadFileFn rejects sends a failure reply to the user and
 
   let dispatched = false;
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => { dispatched = true; },
     getSessionId: () => undefined,
@@ -1403,6 +1431,7 @@ test("a photo whose getFile call returns ok:false sends a failure reply and does
 
   let dispatched = false;
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => { dispatched = true; },
     getSessionId: () => undefined,
@@ -1433,6 +1462,7 @@ test("each poll iteration atomically writes the heartbeat with the exact four-ke
 
   let nowMs = new Date("2026-07-15T11:00:00Z").getTime();
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -1509,6 +1539,7 @@ test("the heartbeat carries turn_in_flight_since while a turn is draining and nu
     });
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -1739,6 +1770,7 @@ test("watchdog: pid-gone with complete LOOP-STOP injects a synthetic turn and un
   const { transport } = makeStubTransport([{ ok: true, result: [] }]);
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -1807,6 +1839,7 @@ test("watchdog: pid alive with 61 min progress.json silence injects a stall turn
   const { transport } = makeStubTransport([{ ok: true, result: [] }]);
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -1882,6 +1915,7 @@ test("watchdog: sleep gap sets wake_floor and suppresses false stall ping", asyn
   const { transport } = makeStubTransport([{ ok: true, result: [] }]);
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -1967,6 +2001,7 @@ test("watchdog: session-id binding resolves progress_json_path via session_id, n
   const { transport } = makeStubTransport([{ ok: true, result: [] }]);
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async (_input, emit) => { emit("ok", "text"); },
     getSessionId: () => undefined,
@@ -2034,6 +2069,7 @@ test("watchdog: mtime advance past pinged_at clears the stall debounce (pinged_a
   const { transport } = makeStubTransport([{ ok: true, result: [] }]);
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -2093,6 +2129,7 @@ test("watchdog: done=true watchdog file is unlinked and no turn is injected", as
   const { transport } = makeStubTransport([{ ok: true, result: [] }]);
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
