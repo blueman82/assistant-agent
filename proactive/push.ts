@@ -66,12 +66,40 @@ export interface FamilyFile {
   events: Record<string, EventRecord>;
 }
 
-export function readFamilyFile(_baseDir: string, _family: string): FamilyFile {
-  throw new Error("not implemented");
+const EVICTION_MS = 14 * 24 * 60 * 60 * 1000;
+
+function readJson<T>(path: string): T | undefined {
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as T;
+  } catch {
+    return undefined;
+  }
 }
 
-export function writeFamilyFile(_baseDir: string, _family: string, _data: FamilyFile, _now: Date): void {
-  throw new Error("not implemented");
+// Temp-file + rename in the same directory => atomic on APFS. A reader never
+// sees a half-written store file.
+function writeJsonAtomic(path: string, data: unknown): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmpPath = `${path}.tmp-${process.pid}`;
+  writeFileSync(tmpPath, JSON.stringify(data, null, 2));
+  renameSync(tmpPath, path);
+}
+
+export function readFamilyFile(baseDir: string, family: string): FamilyFile {
+  return readJson<FamilyFile>(join(baseDir, `${family}.json`)) ?? { schema_version: 1, events: {} };
+}
+
+// Every write evicts entries not seen for 14 days — resolved events (a green
+// PR, a passed calendar conflict) age out instead of accumulating forever.
+export function writeFamilyFile(baseDir: string, family: string, data: FamilyFile, now: Date): void {
+  const cutoff = now.getTime() - EVICTION_MS;
+  const events: Record<string, EventRecord> = {};
+  for (const [id, record] of Object.entries(data.events)) {
+    if (record.last_seen >= cutoff) {
+      events[id] = record;
+    }
+  }
+  writeJsonAtomic(join(baseDir, `${family}.json`), { schema_version: 1, events });
 }
 
 // config.json is written by the (Loop-2) installer, never by push.ts.
