@@ -423,6 +423,8 @@ function readSweepState(d: SweepDeps, statePath: string, today: string): SweepSt
           failure_streaks: parsed.failure_streaks ?? {},
           escalation_sent: parsed.escalation_sent ?? {},
           heartbeat_missing_since: parsed.heartbeat_missing_since,
+          calendar_producer_streak: parsed.calendar_producer_streak,
+          calendar_producer_silent_since: parsed.calendar_producer_silent_since,
         };
   } catch {
     d.log(`[sweep] corrupt sweep state at ${statePath} (invalid JSON) — resetting`);
