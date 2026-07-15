@@ -47,6 +47,9 @@
 #   INSTALL_HEARTBEAT_WAIT_SECS  overrides the heartbeat wait bound
 #                                (default 120s — covers the bridge's 409
 #                                backoff window after a restart)
+#   INSTALL_TEARDOWN_WAIT_SECS   overrides the per-service bootout teardown
+#                                wait bound (default 30s — launchd's bootout
+#                                is asynchronous; see the Services section)
 set -u
 
 START_EPOCH="$(date +%s)"
@@ -57,6 +60,7 @@ HOME_DIR="${INSTALL_HOME:-$HOME}"
 LAUNCH_AGENTS_DIR="${INSTALL_LAUNCH_AGENTS_DIR:-$HOME_DIR/Library/LaunchAgents}"
 LAUNCHCTL="${INSTALL_LAUNCHCTL:-launchctl}"
 HEARTBEAT_WAIT_SECS="${INSTALL_HEARTBEAT_WAIT_SECS:-120}"
+TEARDOWN_WAIT_SECS="${INSTALL_TEARDOWN_WAIT_SECS:-30}"
 DOMAIN="gui/$(id -u)"
 PROACTIVE_CFG="$HOME_DIR/.rachel/proactive/config.json"
 HEARTBEAT_FILE="$HOME_DIR/.rachel/bridge-heartbeat.json"
@@ -237,33 +241,71 @@ fail() {
   FAILED=$((FAILED + 1))
 }
 
-# --- Services: bootout-then-bootstrap each ---------------------------------
+# --- Services: bootout, wait out the teardown, then bootstrap ---------------
+# launchd's bootout is ASYNCHRONOUS: it returns while the old job may still
+# be draining (live-found on the first real deploy — the bridge sits in a
+# 30s Telegram long-poll, `launchctl print` kept finding it, and an
+# immediate bootstrap failed with exit 5 "Input/output error"; the same
+# bootstrap succeeded seconds later once the service was gone). So after a
+# successful bootout we poll `print` until launchd reports the service gone
+# (bounded internal loop — no timeout/gtimeout wrappers), and only then
+# bootstrap, with one bounded retry should exit 5 still slip through.
 
 echo ""
 echo "== Services =="
-# Freshness baseline for the heartbeat check: the instant the OLD bridge is
-# booted out. Its final heartbeat write is necessarily earlier, so it cannot
-# satisfy the verification — only the NEW bridge's writes can.
+# Freshness baseline for the heartbeat check: the instant the OLD bridge's
+# TEARDOWN COMPLETES (not merely when bootout returns — live-observed, the
+# dying process's final heartbeat write landed after bootout returned). From
+# teardown-complete the old writer is provably dead, so the 5s slack below
+# only covers mtime granularity, never a live writer.
 HEARTBEAT_EPOCH="$START_EPOCH"
 i=0
 for tpl in "${TEMPLATES[@]}"; do
   label="${LABELS[$i]}"; i=$((i + 1))
   target="$LAUNCH_AGENTS_DIR/$label.plist"
   if [ "$DRY_RUN" -eq 1 ]; then
-    echo "would run      $LAUNCHCTL bootout $DOMAIN/$label  (exit 3 tolerated when not loaded)"
-    echo "would run      $LAUNCHCTL bootstrap $DOMAIN $target"
+    echo "would run      $LAUNCHCTL bootout $DOMAIN/$label  (exit 3 tolerated when not loaded; then wait up to ${TEARDOWN_WAIT_SECS}s for teardown)"
+    echo "would run      $LAUNCHCTL bootstrap $DOMAIN $target  (one retry after 2s on exit 5)"
     continue
   fi
   bootout_out="$("$LAUNCHCTL" bootout "$DOMAIN/$label" 2>&1)"
   rc=$?
-  if [ "$label" = "$BRIDGE_LABEL" ]; then HEARTBEAT_EPOCH="$(date +%s)"; fi
   case "$rc" in
-    0) echo "booted out     $label  (was loaded)" ;;
-    3) echo "not loaded     $label  (fresh install — nothing to boot out)" ;;
+    0)
+      echo "booted out     $label  (was loaded)"
+      # Teardown-wait: poll until launchd no longer finds the service.
+      td_start="$(date +%s)"
+      td_deadline=$((td_start + TEARDOWN_WAIT_SECS))
+      td_gone=0
+      while :; do
+        if ! "$LAUNCHCTL" print "$DOMAIN/$label" >/dev/null 2>&1; then td_gone=1; break; fi
+        [ "$(date +%s)" -ge "$td_deadline" ] && break
+        sleep 0.5
+      done
+      if [ "$label" = "$BRIDGE_LABEL" ]; then HEARTBEAT_EPOCH="$(date +%s)"; fi
+      if [ "$td_gone" -ne 1 ]; then
+        fail "service still draining after ${TEARDOWN_WAIT_SECS}s teardown wait: $label — skipping bootstrap"
+        continue
+      fi
+      echo "torn down      $label  (after $(( $(date +%s) - td_start ))s)"
+      ;;
+    3)
+      echo "not loaded     $label  (fresh install — nothing to boot out)"
+      if [ "$label" = "$BRIDGE_LABEL" ]; then HEARTBEAT_EPOCH="$(date +%s)"; fi
+      ;;
     *) fail "launchctl bootout $DOMAIN/$label exited $rc: $bootout_out"; continue ;;
   esac
   bootstrap_out="$("$LAUNCHCTL" bootstrap "$DOMAIN" "$target" 2>&1)"
   rc=$?
+  if [ "$rc" -eq 5 ]; then
+    # Exit 5 right after a clean teardown-wait: give launchd 2 more seconds
+    # and retry once (live behaviour: the same bootstrap succeeds shortly
+    # after the teardown finishes).
+    echo "retrying       $label  (bootstrap exit 5 — one retry after 2s)"
+    sleep 2
+    bootstrap_out="$("$LAUNCHCTL" bootstrap "$DOMAIN" "$target" 2>&1)"
+    rc=$?
+  fi
   if [ "$rc" -ne 0 ]; then
     fail "launchctl bootstrap failed for $label (exit $rc): $bootstrap_out"
     continue
@@ -318,10 +360,11 @@ else
 fi
 
 # Bounded heartbeat wait — the loop itself is the bound (no timeout/gtimeout
-# wrappers). Fresh = mtime at or after the bridge's bootout (5s clock
-# slack): the old bridge is dead from that instant, so neither its final
-# write nor a stale file from a dead bridge can pass; only the restarted
-# bridge's polling produces a passing mtime.
+# wrappers). Fresh = mtime at or after the bridge's TEARDOWN completed (5s
+# clock slack for mtime granularity): the old bridge is provably dead from
+# that instant — its final write, which live-observed can land after bootout
+# merely returns, is strictly older — so only the restarted bridge's polling
+# produces a passing mtime.
 wait_start="$(date +%s)"
 deadline=$((wait_start + HEARTBEAT_WAIT_SECS))
 hb_ok=0
@@ -337,7 +380,7 @@ done
 if [ "$hb_ok" -eq 1 ]; then
   pass "heartbeat fresh: $HEARTBEAT_FILE  (after $(( $(date +%s) - wait_start ))s)"
 else
-  fail "heartbeat missing or not written since the bridge bootout, after ${HEARTBEAT_WAIT_SECS}s: $HEARTBEAT_FILE  (is the bridge polling?)"
+  fail "heartbeat missing or not written since the bridge teardown, after ${HEARTBEAT_WAIT_SECS}s: $HEARTBEAT_FILE  (is the bridge polling?)"
 fi
 
 echo ""
