@@ -595,6 +595,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         } finally {
           clearInterval(typingTimer);
           currentAbort = undefined;
+          turnInFlightSince = null;
         }
 
         const replyText = buffer.join("\n").trim();
