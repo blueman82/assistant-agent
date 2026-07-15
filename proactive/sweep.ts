@@ -183,7 +183,7 @@ interface BridgeHeartbeat {
 // is a separate, normal-severity bridge:drain-stall event. Log mtime is
 // message detail only: a healthy idle bridge writes almost nothing, so log
 // staleness would false-positive constantly if used as a trigger.
-async function checkBridgeLiveness(d: SweepDeps, pushDeps: Partial<PushDeps>): Promise<void> {
+async function checkBridgeLiveness(d: SweepDeps, cfg: ProactiveConfig, pushDeps: Partial<PushDeps>): Promise<void> {
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   const result = await d.execFn("launchctl", ["print", `gui/${uid}/com.rachel.telegram-bridge`]);
   const down = result.exitCode !== 0 || !result.stdout.includes("state = running");
