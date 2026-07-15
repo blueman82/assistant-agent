@@ -46,3 +46,7 @@ export function zonedDateString(d: Date, tz: string): string {
   const parts = zonedParts(d, tz, { year: "numeric", month: "2-digit", day: "2-digit" });
   return `${parts.get("year")}-${parts.get("month")}-${parts.get("day")}`;
 }
+
+export function inQuietWindow(_d: Date, _cfg: ProactiveConfig): boolean {
+  throw new Error("not implemented");
+}
