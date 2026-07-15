@@ -226,7 +226,7 @@ export async function push(
   if (!FAMILY_RE.test(family)) {
     throw new Error(`invalid family: ${JSON.stringify(family)} (must match /^[a-z][a-z0-9-]*$/)`);
   }
-  if (!SEVERITIES.includes(severity)) {
+  if (!isSeverity(severity)) {
     throw new Error(`invalid severity: ${JSON.stringify(severity)} (must be urgent | normal | digest)`);
   }
   const now = d.now();
