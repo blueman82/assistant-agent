@@ -402,8 +402,10 @@ function readSweepState(d: SweepDeps, statePath: string, today: string): SweepSt
       return fresh;
     }
     // A date rollover (Dublin midnight) resets the hours-run list but keeps
-    // the failure streaks running.
-    return parsed.date === today ? parsed : { ...fresh, failure_streaks: parsed.failure_streaks ?? {} };
+    // the failure streaks and heartbeat-grace tracking running.
+    return parsed.date === today
+      ? parsed
+      : { ...fresh, failure_streaks: parsed.failure_streaks ?? {}, heartbeat_missing_since: parsed.heartbeat_missing_since };
   } catch {
     d.log(`[sweep] corrupt sweep state at ${statePath} (invalid JSON) — resetting`);
     return fresh;
