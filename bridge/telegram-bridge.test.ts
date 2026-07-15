@@ -1489,22 +1489,29 @@ test("the heartbeat carries turn_in_flight_since while a turn is draining and nu
     pushBaseDir: mkdtempSync(join(tmpdir(), "rachel-bridge-push-")),
   });
 
-  await bridge.drainOnce();
-  // The first turn is now blocked in-flight; the second message waits in the FIFO.
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  await bridge.drainOnce();
-  const during = JSON.parse(fsFn.readFile(heartbeatPath)) as Record<string, unknown>;
-  assert.ok(during["turn_in_flight_since"] !== null, "turn_in_flight_since set while a turn is draining");
-  assert.ok(!Number.isNaN(Date.parse(String(during["turn_in_flight_since"]))), "turn_in_flight_since is a parseable timestamp");
-  assert.equal(during["queue_depth"], 1, "the queued second message is counted");
+  try {
+    await bridge.drainOnce();
+    // The first turn is now blocked in-flight; the second message waits in the FIFO.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await bridge.drainOnce();
+    const during = JSON.parse(fsFn.readFile(heartbeatPath)) as Record<string, unknown>;
+    assert.ok(during["turn_in_flight_since"] !== null, "turn_in_flight_since set while a turn is draining");
+    assert.ok(!Number.isNaN(Date.parse(String(during["turn_in_flight_since"]))), "turn_in_flight_since is a parseable timestamp");
+    assert.equal(during["queue_depth"], 1, "the queued second message is counted");
 
-  releaseTurn!();
-  await new Promise((resolve) => setTimeout(resolve, 30));
-  await bridge.drainOnce();
-  const after = JSON.parse(fsFn.readFile(heartbeatPath)) as Record<string, unknown>;
-  assert.equal(after["turn_in_flight_since"], null, "cleared once the drain completes");
-  assert.equal(after["queue_depth"], 0);
-  await bridge.stop();
+    releaseTurn!();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await bridge.drainOnce();
+    const after = JSON.parse(fsFn.readFile(heartbeatPath)) as Record<string, unknown>;
+    assert.equal(after["turn_in_flight_since"], null, "cleared once the drain completes");
+    assert.equal(after["queue_depth"], 0);
+  } finally {
+    // Release the blocked turn even on assertion failure — a forever-pending
+    // runTurn plus its typing interval would otherwise hang the test run.
+    releaseTurn?.();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await bridge.stop();
+  }
 });
 
 test("a failing heartbeat write never breaks polling and logs once per failure state, not per tick", async () => {
