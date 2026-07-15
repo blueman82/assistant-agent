@@ -459,6 +459,55 @@ test("gh exit 1 on pr list logs a pr-red error and the tick completes", async ()
   );
 });
 
+// --- Review fixes: evidence preservation, alert resilience, exit status ---
+
+test("defaultExecFn preserves the spawn error message when the binary does not exist", async () => {
+  // Local exec of a nonexistent binary — no network, no real tool.
+  const result = await defaultExecFn("/nonexistent-binary-rachel-sweep-test", []);
+  assert.notEqual(result.exitCode, 0);
+  assert.ok(result.stderr.includes("ENOENT"), `stderr carries the spawn failure: ${JSON.stringify(result.stderr)}`);
+});
+
+test("a throwing statMtimeFn cannot kill the urgent bridge-down ping (falls back to unknown)", async () => {
+  const h = makeHarness();
+  h.deps.execFn = async () => ({ stdout: "", stderr: "", exitCode: 1 });
+  h.deps.statMtimeFn = () => {
+    const err = new Error("EACCES: permission denied") as NodeJS.ErrnoException;
+    err.code = "EACCES";
+    throw err;
+  };
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 1, "the urgent down ping is still delivered");
+  assert.equal(h.pushes[0]!.state, "down");
+  assert.ok(h.pushes[0]!.text.includes("unknown"), `age falls back to unknown: ${h.pushes[0]!.text}`);
+});
+
+test("a failing sweep-state write prevents the one-shot spawn (no orphaned child)", async () => {
+  const h = makeHarness({ calendar_oneshot_hours: [8, 11, 14, 17], pr_watch_repos: [] });
+  h.deps.writeFileFn = () => {
+    throw new Error("disk full");
+  };
+  await sweepTick(h.deps);
+  assert.equal(rachelSpawns(h).length, 0, "the spawn never started");
+  assert.ok(h.logs.some((line) => line.startsWith("[sweep] calendar error:")));
+});
+
+test("sweepTick reports per-family results and a healthy tick is all ok", async () => {
+  const h = makeHarness();
+  const results = await sweepTick(h.deps);
+  assert.deepEqual(results, { flush: "ok", "bridge-liveness": "ok", "pr-red": "ok", calendar: "ok" });
+});
+
+test("a failing family is reported as failed so the CLI can exit non-zero", async () => {
+  const h = makeHarness();
+  h.deps.flushFn = async () => {
+    throw new Error("corrupt deferred queue");
+  };
+  const results = await sweepTick(h.deps);
+  assert.equal(results["flush"], "failed");
+  assert.equal(results["bridge-liveness"], "ok");
+});
+
 test("grep guard for proactive/sweep.test.ts: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
   const source = await (await import("node:fs/promises")).readFile(new URL("./sweep.test.ts", import.meta.url), "utf8");
   const realFetchCall = /fetch\(\s*["'`]https:\/\/api\.telegram\.org/;
