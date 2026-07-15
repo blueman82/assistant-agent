@@ -42,6 +42,7 @@ export interface FsFunctions {
   stat: (path: string) => { mtimeMs: number };
   mkdirSync: (path: string, opts: { recursive: boolean }) => void;
   existsSync: (path: string) => boolean;
+  rename: (from: string, to: string) => void;   // same-dir rename — the atomic-write half
   glob: (pattern: string) => string[];          // returns matching paths
 }
 
