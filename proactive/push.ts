@@ -3,7 +3,10 @@
 // and is the ONLY code that reads/writes it. Library for the deterministic
 // sweep, CLI for LLM one-shots.
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { sendChunked } from "../bridge/api.ts";
+import { loadTelegramConfig } from "../gate/surfaces/telegram.ts";
 
 export type Severity = "urgent" | "normal" | "digest";
 export type PushResult = "sent" | "deferred" | "dedup";
