@@ -704,6 +704,68 @@ test("wedge and drain-stall fire in the same tick as independent events", async 
   assert.deepEqual(ids, ["bridge:drain-stall", "bridge:liveness"]);
 });
 
+// --- Heartbeat-missing grace deadline (48h) ---
+
+function seedSweepState(h: ReturnType<typeof makeHarness>, extra: object, date = "2026-07-15"): void {
+  h.files.set(STATE_PATH(h), JSON.stringify({ schema_version: 1, date, oneshot_hours_run: [], ...extra }));
+}
+
+test("first tick observing a missing heartbeat records heartbeat_missing_since and pushes nothing", async () => {
+  const h = makeHarness();
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 0);
+  const state = JSON.parse(h.files.get(STATE_PATH(h))!) as { heartbeat_missing_since?: number };
+  assert.equal(state.heartbeat_missing_since, DAYTIME().getTime(), "first-observed-missing timestamp recorded");
+});
+
+test("a heartbeat missing for 47h with launchctl alive stays silent (inside the deploy-ordering grace)", async () => {
+  const h = makeHarness();
+  seedSweepState(h, { heartbeat_missing_since: DAYTIME().getTime() - 47 * 60 * 60 * 1000 });
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 0);
+});
+
+test("a heartbeat missing for 49h pushes one normal bridge:heartbeat-missing event whose state is the first-observed date", async () => {
+  const h = makeHarness();
+  const since = DAYTIME().getTime() - 49 * 60 * 60 * 1000;
+  // Seeded with a stale date: the grace timestamp must survive the Dublin
+  // date rollover, like the failure streaks.
+  seedSweepState(h, { heartbeat_missing_since: since }, "2026-07-13");
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 1);
+  const p = h.pushes[0]!;
+  assert.equal(p.family, "bridge-liveness");
+  assert.equal(p.eventId, "bridge:heartbeat-missing");
+  assert.equal(p.severity, "normal");
+  assert.equal(p.state, new Date(since).toISOString(), "state is the first-observed date so a resolved-then-rebroken heartbeat re-arms");
+  assert.ok(p.text.includes("wedge detection inactive"), `text names the dead detection: ${p.text}`);
+});
+
+test("integration: the heartbeat-missing alert dedups through the real chokepoint on the next tick", async () => {
+  const { push, getEventState } = await import("./push.ts");
+  const h = makeHarness();
+  const sent: string[] = [];
+  h.deps.sendFn = async (text) => {
+    sent.push(text);
+  };
+  h.deps.pushFn = push;
+  h.deps.getStateFn = getEventState;
+  seedSweepState(h, { heartbeat_missing_since: DAYTIME().getTime() - 49 * 60 * 60 * 1000 });
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  assert.equal(sent.filter((t) => t.includes("wedge detection inactive")).length, 1, "one alert per unbroken missing streak");
+});
+
+test("a heartbeat appearing clears heartbeat_missing_since from the sweep state", async () => {
+  const h = makeHarness();
+  seedSweepState(h, { heartbeat_missing_since: DAYTIME().getTime() - 49 * 60 * 60 * 1000 });
+  seedHeartbeat(h, { lastPollAgoMs: 60_000 });
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 0);
+  const state = JSON.parse(h.files.get(STATE_PATH(h))!) as { heartbeat_missing_since?: number };
+  assert.equal(state.heartbeat_missing_since, undefined, "grace tracking cleared once the heartbeat exists");
+});
+
 test("integration: a wedged bridge delivers ONE urgent push through the real chokepoint inside quiet hours and dedups on the next tick", async () => {
   const { push, getEventState } = await import("./push.ts");
   const h = makeHarness();
