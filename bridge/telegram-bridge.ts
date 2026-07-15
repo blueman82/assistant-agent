@@ -60,6 +60,9 @@ export interface CreateBridgeOptions {
   fsFn?: FsFunctions;                               // defaults to real node:fs wrappers
   isPidAliveFn?: (pid: number, expectedCmd?: string) => boolean;  // defaults to kill -0 check; injectable for tests
   conflictBackoffMs?: number;  // defaults to CONFLICT_BACKOFF_MS (65s); injectable for tests to avoid real waits
+  nowFn?: () => Date;          // clock seam — heartbeat timestamps + push() quiet-hours/dedup decisions
+  heartbeatPath?: string;      // defaults to ~/.rachel/bridge-heartbeat.json (expanded, not ~)
+  pushBaseDir?: string;        // push() state-store dir — defaults to ~/.rachel/proactive (expanded, not ~)
 }
 
 interface TelegramUpdate {
