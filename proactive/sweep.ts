@@ -401,18 +401,76 @@ async function runCalendarOneshot(d: SweepDeps, cfg: ProactiveConfig): Promise<v
   }
 }
 
+// How many consecutive same-family failures before the sweep alerts about
+// itself.
+const ESCALATION_THRESHOLD = 3;
+
+// Escalation delivery is a DIRECT send, deliberately NOT via push(): the
+// failing family might BE the push path, and a broken chokepoint alerting
+// through itself would never land. No config => throw => caught below.
+async function defaultEscalationSend(text: string): Promise<void> {
+  const config = loadTelegramConfig();
+  if (!config) {
+    throw new Error("no Telegram config (RACHEL_TELEGRAM_TOKEN/RACHEL_TELEGRAM_CHAT_ID or ~/.rachel/telegram.json) — cannot send escalation.");
+  }
+  await sendChunked(config, text);
+}
+
+// Self-alert escalation: bump/reset per-family consecutive-failure counters
+// (persisted in the sweep state file), and on EXACTLY the 3rd consecutive
+// failure of a family send one best-effort direct alert. Recursion guard: a
+// failing send is logged and never escalated about — the counter sits above
+// the threshold until the family succeeds, so an unbroken streak attempts
+// the send exactly once. Family results are never affected by any of this.
+async function escalateSweepFailures(
+  d: SweepDeps,
+  cfg: ProactiveConfig,
+  results: Record<string, FamilyResult>,
+  errors: Record<string, string>,
+): Promise<void> {
+  const statePath = join(d.homeDir, ".rachel", "proactive-sweep-state.json");
+  const today = zonedDateString(d.now(), cfg.timezone);
+  const state = readSweepState(d, statePath, today);
+  const streaks: Record<string, number> = { ...(state.failure_streaks ?? {}) };
+  for (const [family, result] of Object.entries(results)) {
+    if (result === "failed") {
+      streaks[family] = (streaks[family] ?? 0) + 1;
+    } else {
+      delete streaks[family];
+    }
+  }
+  try {
+    d.writeFileFn(statePath, JSON.stringify({ ...state, date: today, failure_streaks: streaks } satisfies SweepState, null, 2));
+  } catch (err) {
+    d.log(`[sweep] escalation state write failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  for (const [family, streak] of Object.entries(streaks)) {
+    if (streak !== ESCALATION_THRESHOLD) continue;
+    const text = `${"[urgent] proactive sweep itself failing"}: ${family}: ${errors[family] ?? "unknown error"}`;
+    try {
+      await (d.sendFn ?? defaultEscalationSend)(text);
+    } catch (err) {
+      // Recursion guard: log only. Never re-escalate about the escalation.
+      d.log(`[sweep] escalation send failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
 export async function sweepTick(overrides?: Partial<SweepDeps>): Promise<Record<string, FamilyResult>> {
   const d = resolveSweepDeps(overrides);
   const pushDeps = pushDepsOf(d);
   const cfg = loadConfig(d.baseDir);
-  return {
-    flush: await runFamily("flush", d, async () => {
+  const errors: Record<string, string> = {};
+  const results: Record<string, FamilyResult> = {
+    flush: await runFamily("flush", d, errors, async () => {
       await d.flushFn(pushDeps);
     }),
-    "bridge-liveness": await runFamily("bridge-liveness", d, () => checkBridgeLiveness(d, pushDeps)),
-    "pr-red": await runFamily("pr-red", d, () => checkPrRed(d, cfg, pushDeps)),
-    calendar: await runFamily("calendar", d, () => runCalendarOneshot(d, cfg)),
+    "bridge-liveness": await runFamily("bridge-liveness", d, errors, () => checkBridgeLiveness(d, pushDeps)),
+    "pr-red": await runFamily("pr-red", d, errors, () => checkPrRed(d, cfg, pushDeps)),
+    calendar: await runFamily("calendar", d, errors, () => runCalendarOneshot(d, cfg)),
   };
+  await escalateSweepFailures(d, cfg, results, errors);
+  return results;
 }
 
 // Only run as a CLI when executed directly (tsx proactive/sweep.ts), not when
