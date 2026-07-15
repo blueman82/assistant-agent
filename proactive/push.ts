@@ -47,6 +47,16 @@ export function zonedDateString(d: Date, tz: string): string {
   return `${parts.get("year")}-${parts.get("month")}-${parts.get("day")}`;
 }
 
-export function inQuietWindow(_d: Date, _cfg: ProactiveConfig): boolean {
-  throw new Error("not implemented");
+function parseHM(hm: string): number {
+  const [h, m] = hm.split(":");
+  return Number(h) * 60 + Number(m);
+}
+
+// Inclusive start, exclusive end. A start later than the end means the
+// window wraps midnight (the 22:30-08:00 default).
+export function inQuietWindow(d: Date, cfg: ProactiveConfig): boolean {
+  const m = zonedMinutesOfDay(d, cfg.timezone);
+  const startM = parseHM(cfg.quiet_hours.start);
+  const endM = parseHM(cfg.quiet_hours.end);
+  return startM < endM ? m >= startM && m < endM : m >= startM || m < endM;
 }
