@@ -125,8 +125,21 @@ function writeJsonAtomic(path: string, data: unknown): void {
   renameSync(tmpPath, path);
 }
 
+// readFamilyFile/writeFamilyFile are exported for push.test.ts only — no
+// production caller exists outside this module, preserving the "push.ts is
+// the only reader/writer of the store" invariant.
 export function readFamilyFile(baseDir: string, family: string): FamilyFile {
-  return readJson<FamilyFile>(join(baseDir, `${family}.json`)) ?? { schema_version: 1, events: {} };
+  const path = join(baseDir, `${family}.json`);
+  const parsed = readJson<FamilyFile>(path);
+  if (parsed === undefined) {
+    return { schema_version: 1, events: {} };
+  }
+  // schema_version is load-bearing: an unrecognised shape means silent
+  // dedup loss (a re-ping storm), so it fails loud like corrupt JSON.
+  if (parsed.schema_version !== 1 || typeof parsed.events !== "object" || parsed.events === null || Array.isArray(parsed.events)) {
+    throw new Error(`corrupt family store ${path}: unrecognised shape (want schema_version 1 with an events object)`);
+  }
+  return parsed;
 }
 
 // Every write evicts entries not seen for 14 days — resolved events (a green
