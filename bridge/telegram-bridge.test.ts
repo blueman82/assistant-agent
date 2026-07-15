@@ -2169,6 +2169,7 @@ test("watchdog: empty watchdog dir produces no error and no turn injection", asy
   let threw = false;
   try {
     const bridge = createBridge({
+      ...basePushOpts(),
       config: { token: "t", chatId: "12345", transport },
       runTurn: runTurnStub,
       getSessionId: () => undefined,
