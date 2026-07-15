@@ -35,17 +35,21 @@ const DAYTIME = () => new Date("2026-07-15T11:00:00Z");
 // Dublin 23:00 in summer — inside the default quiet window.
 const NIGHT = () => new Date("2026-07-15T22:00:00Z");
 
-interface DeferredEntry {
-  family: string;
-  event_id: string;
-  state: string;
-  text: string;
-  queued_at: number;
-  reason: string;
-}
-
 function readDeferredEntries(baseDir: string): DeferredEntry[] {
   return (JSON.parse(readFileSync(join(baseDir, "deferred.json"), "utf8")) as { entries: DeferredEntry[] }).entries;
+}
+
+async function withConsoleErrorCapture<T>(fn: () => Promise<T> | T): Promise<{ result: T; errors: string[] }> {
+  const errors: string[] = [];
+  const orig = console.error;
+  console.error = (line: unknown) => {
+    errors.push(String(line));
+  };
+  try {
+    return { result: await fn(), errors };
+  } finally {
+    console.error = orig;
+  }
 }
 
 const DUBLIN = "Europe/Dublin";
