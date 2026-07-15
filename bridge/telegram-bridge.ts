@@ -711,10 +711,14 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         console.error(`[telegram-bridge] setMyCommands failed: ${err instanceof Error ? err.message : String(err)}`);
       });
 
-      // Startup alert — best-effort, non-blocking. A restart is the only signal
-      // Gary gets for a non-409 death (OOM, uncaught exception, reboot): those
-      // exits can't alert themselves, so the NEXT boot announces it happened.
-      sendChunked(config, "Rachel bridge started.").catch(() => {});
+      // Startup alert — best-effort, non-blocking, through the chokepoint at
+      // NORMAL severity: a restart is informational, so a 3am crash-restart
+      // defers overnight and lands in the morning digest instead of waking
+      // Gary (the urgent alert for a dying bridge is the FATAL exit path,
+      // which precedes the restart). A restart is the only signal Gary gets
+      // for a non-409 death (OOM, uncaught exception, reboot): those exits
+      // can't alert themselves, so the NEXT boot announces it happened.
+      void pushAlert("bridge-startup", "bridge:startup", startupState, "normal", "Rachel bridge started.");
 
       while (!stopped) {
         try {
