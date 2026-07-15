@@ -171,3 +171,115 @@ test("a flushFn throw is logged and the bridge check still runs", async () => {
   assert.ok(h.logs.some((line) => line.startsWith("[sweep] flush error:")));
   assert.ok(h.order.includes("exec:launchctl"), "bridge family still ran after the flush error");
 });
+
+// --- PR-red family ---
+
+// Routes a stubbed gh: `pr list` per repo, `pr checks` per PR, launchctl
+// healthy. `checks` responses are keyed "<repo>#<number>" and carry the exit
+// code non-zero when any check fails — exactly how the real gh behaves.
+function ghExecFn(
+  h: ReturnType<typeof makeHarness>,
+  prLists: Record<string, { stdout: string; exitCode: number }>,
+  checks: Record<string, { stdout: string; exitCode: number }>,
+): SweepDeps["execFn"] {
+  return async (cmd, args, opts) => {
+    h.order.push(`exec:${cmd}`);
+    h.execCalls.push({ cmd, args, opts });
+    if (cmd === "launchctl") {
+      return { stdout: RUNNING_STDOUT, stderr: "", exitCode: 0 };
+    }
+    if (cmd === "gh" && args[0] === "pr" && args[1] === "list") {
+      const repo = args[args.indexOf("--repo") + 1]!;
+      const res = prLists[repo] ?? { stdout: "[]", exitCode: 0 };
+      return { stdout: res.stdout, stderr: res.exitCode === 0 ? "" : "gh boom", exitCode: res.exitCode };
+    }
+    if (cmd === "gh" && args[0] === "pr" && args[1] === "checks") {
+      const repo = args[args.indexOf("--repo") + 1]!;
+      const res = checks[`${repo}#${args[2]}`] ?? { stdout: "[]", exitCode: 0 };
+      return { stdout: res.stdout, stderr: "", exitCode: res.exitCode };
+    }
+    throw new Error(`unexpected exec: ${cmd} ${args.join(" ")}`);
+  };
+}
+
+test("one red PR among two watched repos pushes exactly one normal pr-red event", async () => {
+  const h = makeHarness({ calendar_oneshot_hours: [], pr_watch_repos: ["owner/repo", "owner/other"] });
+  h.deps.execFn = ghExecFn(
+    h,
+    {
+      "owner/repo": { stdout: JSON.stringify([{ number: 41, headRefOid: "abc1234deadbeef" }]), exitCode: 0 },
+      "owner/other": { stdout: JSON.stringify([{ number: 7, headRefOid: "fedcba9876543" }]), exitCode: 0 },
+    },
+    {
+      // gh pr checks exits non-zero when checks fail — that exit code is
+      // DATA, not an exec error.
+      "owner/repo#41": { stdout: JSON.stringify([{ name: "ci", state: "FAILURE" }, { name: "lint", state: "SUCCESS" }]), exitCode: 8 },
+      "owner/other#7": { stdout: JSON.stringify([{ name: "ci", state: "SUCCESS" }]), exitCode: 0 },
+    },
+  );
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 1);
+  const p = h.pushes[0]!;
+  assert.equal(p.family, "pr-red");
+  assert.equal(p.eventId, "pr:owner/repo#41");
+  assert.equal(p.state, "abc1234deadbeef:failure");
+  assert.equal(p.severity, "normal");
+  assert.equal(p.text, "[pr] owner/repo #41 checks failing (abc1234)");
+  assert.ok(!h.logs.some((line) => line.includes("pr-red error")), `no pr-red error logged: ${JSON.stringify(h.logs)}`);
+});
+
+test("gh pr list and pr checks are invoked with the documented argument shapes", async () => {
+  const h = makeHarness({ calendar_oneshot_hours: [], pr_watch_repos: ["owner/repo"] });
+  h.deps.execFn = ghExecFn(
+    h,
+    { "owner/repo": { stdout: JSON.stringify([{ number: 41, headRefOid: "abc1234deadbeef" }]), exitCode: 0 } },
+    { "owner/repo#41": { stdout: "[]", exitCode: 0 } },
+  );
+  await sweepTick(h.deps);
+  const list = h.execCalls.find((c) => c.cmd === "gh" && c.args[1] === "list");
+  assert.deepEqual(list?.args, ["pr", "list", "--repo", "owner/repo", "--author", "@me", "--state", "open", "--json", "number,headRefOid"]);
+  const checks = h.execCalls.find((c) => c.cmd === "gh" && c.args[1] === "checks");
+  assert.deepEqual(checks?.args, ["pr", "checks", "41", "--repo", "owner/repo", "--json", "name,state"]);
+});
+
+test("integration: the same red PR across two ticks dedups through the real push chokepoint", async () => {
+  const { push, getEventState } = await import("./push.ts");
+  const h = makeHarness({ calendar_oneshot_hours: [], pr_watch_repos: ["owner/repo"] });
+  const sent: string[] = [];
+  const results: string[] = [];
+  h.deps.sendFn = async (text) => {
+    sent.push(text);
+  };
+  h.deps.pushFn = async (...args) => {
+    const result = await push(...args);
+    results.push(result);
+    return result;
+  };
+  h.deps.getStateFn = getEventState;
+  h.deps.execFn = ghExecFn(
+    h,
+    { "owner/repo": { stdout: JSON.stringify([{ number: 41, headRefOid: "abc1234deadbeef" }]), exitCode: 0 } },
+    { "owner/repo#41": { stdout: JSON.stringify([{ name: "ci", state: "FAILURE" }]), exitCode: 8 } },
+  );
+  await sweepTick(h.deps);
+  assert.deepEqual(results, ["sent"]);
+  assert.equal(sent.length, 1);
+  assert.equal(getEventState("pr-red", "pr:owner/repo#41", { baseDir: h.baseDir }), "abc1234deadbeef:failure");
+  await sweepTick(h.deps);
+  assert.deepEqual(results, ["sent", "dedup"], "second identical tick dedups");
+  assert.equal(sent.length, 1, "no second Telegram delivery");
+});
+
+test("empty pr_watch_repos makes the pr-red family a silent no-op (zero gh calls)", async () => {
+  const h = makeHarness();
+  await sweepTick(h.deps);
+  assert.equal(h.execCalls.filter((c) => c.cmd === "gh").length, 0);
+});
+
+test("gh exit 1 on pr list logs a pr-red error and the tick completes", async () => {
+  const h = makeHarness({ calendar_oneshot_hours: [], pr_watch_repos: ["owner/repo"] });
+  h.deps.execFn = ghExecFn(h, { "owner/repo": { stdout: "", exitCode: 1 } }, {});
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 0);
+  assert.ok(h.logs.some((line) => line.startsWith("[sweep] pr-red error:")), `pr-red error logged: ${JSON.stringify(h.logs)}`);
+});
