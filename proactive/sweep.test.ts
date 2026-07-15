@@ -213,8 +213,14 @@ test("one red PR among two watched repos pushes exactly one normal pr-red event"
     {
       // gh pr checks exits non-zero when checks fail — that exit code is
       // DATA, not an exec error.
-      "owner/repo#41": { stdout: JSON.stringify([{ name: "ci", state: "FAILURE" }, { name: "lint", state: "SUCCESS" }]), exitCode: 8 },
-      "owner/other#7": { stdout: JSON.stringify([{ name: "ci", state: "SUCCESS" }]), exitCode: 0 },
+      "owner/repo#41": {
+        stdout: JSON.stringify([
+          { name: "ci", state: "FAILURE", bucket: "fail" },
+          { name: "lint", state: "SUCCESS", bucket: "pass" },
+        ]),
+        exitCode: 8,
+      },
+      "owner/other#7": { stdout: JSON.stringify([{ name: "ci", state: "SUCCESS", bucket: "pass" }]), exitCode: 0 },
     },
   );
   await sweepTick(h.deps);
