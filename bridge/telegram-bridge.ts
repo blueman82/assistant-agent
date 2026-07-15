@@ -469,6 +469,38 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     await sendChunked(config, text);
   }
 
+  // Proactive-alert plumbing: startup notice, watchdog pings, and health
+  // transitions route through proactive/push.ts's push() chokepoint so they
+  // pick up quiet-hours deferral, dedup, and budget like every other
+  // proactive ping. The FATAL 5x409 exit alert deliberately does NOT — the
+  // process is dying and that alert keeps its direct awaited send.
+  const pushBaseDir = options.pushBaseDir ?? join(homedir(), ".rachel", "proactive");
+  const bridgePushDeps: Partial<PushDeps> = {
+    now: nowFn,
+    baseDir: pushBaseDir,
+    sendFn: (text: string) => sendChunked(config, text),
+  };
+  // A push() failure must never crash the bridge, and an alert must never be
+  // lost to the chokepoint plumbing: on any push() throw we fall back to a
+  // direct sendChunked (giving up quiet-hours/dedup semantics for that one
+  // alert — the safe direction). Never rejects.
+  async function pushAlert(family: string, eventId: string, state: string, severity: Severity, text: string): Promise<void> {
+    try {
+      await push(family, eventId, state, severity, text, bridgePushDeps);
+    } catch (err) {
+      console.error(`[telegram-bridge] push() failed for ${family}/${eventId}: ${err instanceof Error ? err.message : String(err)} — falling back to direct send`);
+      try {
+        await sendChunked(config, text);
+      } catch (sendErr) {
+        console.error(`[telegram-bridge] direct-send fallback also failed for ${family}/${eventId}: ${sendErr instanceof Error ? sendErr.message : String(sendErr)}`);
+      }
+    }
+  }
+  // Startup state is pinned per process: run() re-entry within one process
+  // dedups at the chokepoint, while a crash-restart (new process, new boot
+  // time) re-arms and announces itself.
+  const startupState = `boot:${nowFn().toISOString()}`;
+
   async function handleMessage(msg: NonNullable<TelegramUpdate["message"]>): Promise<void> {
     const fromChatId = String(msg.chat.id);
     if (fromChatId !== config.chatId) {
