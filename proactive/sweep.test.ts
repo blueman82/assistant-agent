@@ -704,6 +704,34 @@ test("wedge and drain-stall fire in the same tick as independent events", async 
   assert.deepEqual(ids, ["bridge:drain-stall", "bridge:liveness"]);
 });
 
+test("integration: a wedged bridge delivers ONE urgent push through the real chokepoint inside quiet hours and dedups on the next tick", async () => {
+  const { push, getEventState } = await import("./push.ts");
+  const h = makeHarness();
+  // 23:30 Dublin — inside the quiet window; only urgent deliveries go out.
+  h.deps.now = () => new Date("2026-07-15T22:30:00Z");
+  const sent: string[] = [];
+  h.deps.sendFn = async (text) => {
+    sent.push(text);
+  };
+  h.deps.pushFn = push;
+  h.deps.getStateFn = getEventState;
+  h.files.set(
+    HEARTBEAT_PATH(h),
+    JSON.stringify({
+      schema_version: 1,
+      last_poll_at: new Date(h.deps.now().getTime() - 11 * 60_000).toISOString(),
+      queue_depth: 0,
+      turn_in_flight_since: null,
+    }),
+  );
+  await sweepTick(h.deps);
+  assert.equal(sent.length, 1, "the urgent wedge ping bypasses quiet hours");
+  assert.ok(sent[0]!.includes("wedged"), `delivered text identifies the wedge: ${sent[0]}`);
+  assert.equal(getEventState("bridge-liveness", "bridge:liveness", { baseDir: h.baseDir }), "down");
+  await sweepTick(h.deps);
+  assert.equal(sent.length, 1, "an identical second tick dedups — no re-ping");
+});
+
 // --- Self-alert escalation: 3 consecutive same-family failures ---
 
 const ESCALATION_PREFIX = "[urgent] proactive sweep itself failing";
