@@ -41,6 +41,18 @@ test("notify() throws when no Telegram config is available, rather than silently
   );
 });
 
+test("parseNotifyArgv returns the file path for exactly one CLI argument", () => {
+  assert.equal(parseNotifyArgv(["node", "notify.ts", "/tmp/x"]), "/tmp/x");
+});
+
+test("parseNotifyArgv returns null when the file path argument is missing", () => {
+  assert.equal(parseNotifyArgv(["node", "notify.ts"]), null);
+});
+
+test("parseNotifyArgv returns null when any extra argument is present (no-destination pin: extra argv must reject, never be silently ignored)", () => {
+  assert.equal(parseNotifyArgv(["node", "notify.ts", "/tmp/x", "@evil_chat"]), null);
+});
+
 test("grep guard: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
   const source = await (await import("node:fs/promises")).readFile(new URL("./notify.test.ts", import.meta.url), "utf8");
   const realFetchCall = /fetch\(\s*["'`]https:\/\/api\.telegram\.org/;
