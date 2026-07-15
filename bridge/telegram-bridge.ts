@@ -779,9 +779,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
             if (health !== "failed") {
               health = "failed";
               console.error(`[telegram-bridge] poll error (entering failed state): ${message}`);
-              sendChunked(config, `Rachel bridge poll error: ${message}. Retrying with backoff.`).catch((alertErr) => {
-                console.error(`[telegram-bridge] failed to send poll-error alert: ${alertErr instanceof Error ? alertErr.message : String(alertErr)}`);
-              });
+              void pushAlert("bridge-health", "bridge:health", "failed", "normal", `Rachel bridge poll error: ${message}. Retrying with backoff.`);
             } else {
               console.error(`[telegram-bridge] poll error: ${message}`);
             }
