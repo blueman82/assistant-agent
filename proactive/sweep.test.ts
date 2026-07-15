@@ -704,6 +704,84 @@ test("wedge and drain-stall fire in the same tick as independent events", async 
   assert.deepEqual(ids, ["bridge:drain-stall", "bridge:liveness"]);
 });
 
+// --- Self-alert escalation: 3 consecutive same-family failures ---
+
+const ESCALATION_PREFIX = "[urgent] proactive sweep itself failing";
+
+function escalations(sent: string[]): string[] {
+  return sent.filter((text) => text.startsWith(ESCALATION_PREFIX));
+}
+
+function failingFlushHarness() {
+  const h = makeHarness();
+  const sent: string[] = [];
+  h.deps.sendFn = async (text) => {
+    sent.push(text);
+  };
+  h.deps.flushFn = async () => {
+    throw new Error("corrupt deferred queue");
+  };
+  return { h, sent };
+}
+
+test("the 3rd consecutive failure of one family sends exactly one escalation naming the family and last error — none at 1-2, none at 4", async () => {
+  const { h, sent } = failingFlushHarness();
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  assert.equal(escalations(sent).length, 0, "no escalation before the 3rd consecutive failure");
+  await sweepTick(h.deps);
+  assert.deepEqual(escalations(sent), ["[urgent] proactive sweep itself failing: flush: corrupt deferred queue"]);
+  await sweepTick(h.deps);
+  assert.equal(escalations(sent).length, 1, "an unbroken streak escalates exactly once");
+  assert.ok(!h.pushes.some((p) => p.text.startsWith(ESCALATION_PREFIX)), "escalation is a direct send, never routed via push()");
+});
+
+test("a family success resets the streak and a fresh 3-streak escalates again", async () => {
+  const { h, sent } = failingFlushHarness();
+  const failingFlush = h.deps.flushFn;
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  h.deps.flushFn = async () => "empty";
+  await sweepTick(h.deps);
+  assert.equal(escalations(sent).length, 0, "a success before the 3rd failure means no escalation");
+  h.deps.flushFn = failingFlush;
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  assert.equal(escalations(sent).length, 1, "a fresh 3-streak after a reset escalates once");
+});
+
+test("a rejecting escalation send is logged, never re-escalated, and the tick still returns family results", async () => {
+  const { h } = failingFlushHarness();
+  let attempts = 0;
+  h.deps.sendFn = async () => {
+    attempts++;
+    throw new Error("telegram is the thing that is down");
+  };
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  const results = await sweepTick(h.deps);
+  assert.equal(results["flush"], "failed", "family results are unaffected by the escalation send outcome");
+  assert.equal(attempts, 1, "exactly one escalation attempt for the streak — the failing send is never itself escalated about");
+  assert.ok(
+    h.logs.some((line) => line.includes("escalation send failed")),
+    `send failure logged: ${JSON.stringify(h.logs)}`,
+  );
+  await sweepTick(h.deps);
+  assert.equal(attempts, 1, "no retry on tick 4 of the same streak");
+});
+
+test("failure streaks persist in the sweep state file and survive a Dublin date rollover", async () => {
+  const { h, sent } = failingFlushHarness();
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  const state = JSON.parse(h.files.get(STATE_PATH(h))!) as { failure_streaks?: Record<string, number> };
+  assert.equal(state.failure_streaks?.["flush"], 2, "streak counter persisted in the sweep state file");
+  h.deps.now = () => new Date("2026-07-16T11:00:00Z");
+  await sweepTick(h.deps);
+  assert.equal(escalations(sent).length, 1, "the streak survives the date rollover — 3rd consecutive failure still escalates");
+});
+
 test("grep guard for proactive/sweep.test.ts: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
   const source = await (await import("node:fs/promises")).readFile(new URL("./sweep.test.ts", import.meta.url), "utf8");
   const realFetchCall = /fetch\(\s*["'`]https:\/\/api\.telegram\.org/;
