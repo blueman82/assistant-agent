@@ -40,8 +40,9 @@ export interface SweepDeps {
 // (gh pr checks exits non-zero when checks fail). timeoutMs maps to
 // execFile's timeout option, which kills the child on expiry. opts.env is
 // merged OVER the inherited process.env, never replacing it — a launchd
-// child stripped of PATH/HOME cannot resolve node.
-function defaultExecFn(
+// child stripped of PATH/HOME cannot resolve node. Exported for
+// sweep.test.ts only — production callers go through SweepDeps.
+export function defaultExecFn(
   cmd: string,
   args: string[],
   opts?: { env?: Record<string, string>; stdinNull?: boolean; timeoutMs?: number },
@@ -56,12 +57,23 @@ function defaultExecFn(
         maxBuffer: 10 * 1024 * 1024,
       },
       (err, stdout, stderr) => {
-        const code = (err as NodeJS.ErrnoException | null)?.code;
-        resolve({
-          stdout: String(stdout),
-          stderr: String(stderr),
-          exitCode: err === null ? 0 : typeof code === "number" ? code : 1,
-        });
+        if (err === null) {
+          resolve({ stdout: String(stdout), stderr: String(stderr), exitCode: 0 });
+          return;
+        }
+        const e = err as NodeJS.ErrnoException & { killed?: boolean; signal?: NodeJS.Signals | null };
+        if (typeof e.code === "number") {
+          resolve({ stdout: String(stdout), stderr: String(stderr), exitCode: e.code });
+          return;
+        }
+        // No numeric exit code: spawn failure (ENOENT) or kill (timeout /
+        // signal). Fold the evidence into stderr so downstream logs carry
+        // the truth instead of a bare exit-1 with nothing attached.
+        const detail = [e.message, e.killed ? "(killed)" : "", e.signal ? `signal=${e.signal}` : ""]
+          .filter(Boolean)
+          .join(" ");
+        const errText = String(stderr).trim() === "" ? detail : `${String(stderr)}\n${detail}`;
+        resolve({ stdout: String(stdout), stderr: errText, exitCode: 1 });
       },
     );
     if (opts?.stdinNull) {
