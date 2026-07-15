@@ -422,6 +422,110 @@ function readSweepState(d: SweepDeps, statePath: string, today: string): SweepSt
   }
 }
 
+// --- Calendar <2h escalation: deterministic consumer of the one-shot's cache ---
+
+// The LLM one-shot (tasks/proactive-calendar.md) writes this cache and pushes
+// each conflict at severity NORMAL under event-id cal:<idA>+<idB>. This
+// deterministic block re-reads the cache every tick and escalates any
+// conflict starting within 2h to URGENT.
+//
+// Red-team rationale for the :2h event-id suffix: the escalation carries its
+// OWN event-id (cal:<idA>+<idB>:2h) so it dedups INDEPENDENTLY of the
+// one-shot's normal ping — if it shared the one-shot's id, the normal ping's
+// recorded state would swallow the urgent escalation (or vice versa) and
+// Gary would never get the <2h heads-up. And because the state is hash16
+// over the four start/end timestamps, a reschedule changes the hash and
+// re-arms BOTH pings — a moved conflict is news again, on both channels.
+interface CalendarCacheConflict {
+  idA: string;
+  idB: string;
+  startA: string;
+  endA: string;
+  startB: string;
+  endB: string;
+  title_hint?: string;
+}
+
+interface CalendarCache {
+  schema_version: number;
+  fetched_at: string;
+  conflicts: CalendarCacheConflict[];
+}
+
+// A cache older than 26h is treated as absent: the one-shot refreshes it 4x
+// a day, so >26h means the producer is dead and the data is yesterday's —
+// escalating on it would page Gary about meetings that may have moved.
+const CACHE_STALE_MS = 26 * 60 * 60 * 1000;
+const ESCALATION_WINDOW_MS = 2 * 60 * 60 * 1000;
+
+// hash16 recipe — pinned identically in tasks/proactive-calendar.md (the
+// task file's shell line: printf '%s' "<startA>|<endA>|<startB>|<endB>" |
+// shasum -a 256 | cut -c1-16). Run-to-run stability is what dedup rests on.
+function hash16(c: CalendarCacheConflict): string {
+  return createHash("sha256").update(`${c.startA}|${c.endA}|${c.startB}|${c.endB}`, "utf8").digest("hex").slice(0, 16);
+}
+
+function zonedHHMM(ms: number, tz: string): string {
+  return new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(ms));
+}
+
+async function checkCalendarEscalation(d: SweepDeps, cfg: ProactiveConfig, pushDeps: Partial<PushDeps>): Promise<void> {
+  const cachePath = join(d.homeDir, ".rachel", "calendar-cache.json");
+  const raw = d.readFileFn(cachePath);
+  if (raw === undefined) {
+    d.log("[sweep] calendar-escalation: no cache — skipped");
+    return;
+  }
+  let cache: CalendarCache;
+  try {
+    cache = JSON.parse(raw) as CalendarCache;
+  } catch {
+    d.log(`[sweep] calendar-escalation: corrupt cache at ${cachePath} — skipped`);
+    return;
+  }
+  if (cache?.schema_version !== 1 || !Array.isArray(cache.conflicts)) {
+    d.log(`[sweep] calendar-escalation: corrupt cache at ${cachePath} (unrecognised shape) — skipped`);
+    return;
+  }
+  const nowMs = d.now().getTime();
+  const fetchedMs = Date.parse(String(cache.fetched_at));
+  if (Number.isNaN(fetchedMs) || nowMs - fetchedMs > CACHE_STALE_MS) {
+    d.log(`[sweep] calendar-escalation: stale cache (fetched_at ${String(cache.fetched_at)}) — skipped`);
+    return;
+  }
+  for (const entry of cache.conflicts) {
+    // Defensive re-sort: the producer contract says idA < idB, but the
+    // sweep's own event-id/hash must be run-to-run stable even against a
+    // one-shot that mis-sorted once — so sort here regardless.
+    const c: CalendarCacheConflict =
+      String(entry.idA) <= String(entry.idB)
+        ? entry
+        : { ...entry, idA: entry.idB, idB: entry.idA, startA: entry.startB, endA: entry.endB, startB: entry.startA, endB: entry.startB === undefined ? entry.endA : entry.endA };
+    const startAMs = Date.parse(String(c.startA));
+    const startBMs = Date.parse(String(c.startB));
+    if (Number.isNaN(startAMs) || Number.isNaN(startBMs)) {
+      d.log(`[sweep] calendar-escalation: unparseable conflict times for ${String(c.idA)}+${String(c.idB)} — entry skipped`);
+      continue;
+    }
+    const earlierMs = Math.min(startAMs, startBMs);
+    // Window is (now, now + 2h]: a conflict already underway is not a
+    // heads-up any more, and one >2h out is the one-shot's normal ping.
+    if (!(earlierMs > nowMs && earlierMs - nowMs <= ESCALATION_WINDOW_MS)) {
+      continue;
+    }
+    const minutes = Math.round((earlierMs - nowMs) / 60_000);
+    const title = typeof c.title_hint === "string" && c.title_hint !== "" ? c.title_hint : `${c.idA}+${c.idB}`;
+    await d.pushFn(
+      "calendar",
+      `cal:${c.idA}+${c.idB}:2h`,
+      hash16(c),
+      "urgent",
+      `[urgent · cal] Conflict: ${title} — ${zonedHHMM(startAMs, cfg.timezone)} overlaps ${zonedHHMM(startBMs, cfg.timezone)}, starts in ${minutes}m`,
+      pushDeps,
+    );
+  }
+}
+
 const ONESHOT_TOOLS = "Read,Write,Bash,mcp__claude_ai_Google_Calendar__*";
 
 // Calendar one-shot spawn cadence: each due configured hour (h <= current
