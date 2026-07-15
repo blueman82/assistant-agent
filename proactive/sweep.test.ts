@@ -270,6 +270,85 @@ test("integration: the same red PR across two ticks dedups through the real push
   assert.equal(sent.length, 1, "no second Telegram delivery");
 });
 
+test("a checkless PR (gh checks exit 1, EMPTY stdout) is skipped with a log and later PRs are still checked", async () => {
+  const h = makeHarness({ calendar_oneshot_hours: [], pr_watch_repos: ["owner/repo"] });
+  h.deps.execFn = ghExecFn(
+    h,
+    {
+      "owner/repo": {
+        stdout: JSON.stringify([
+          { number: 41, headRefOid: "abc1234deadbeef" },
+          { number: 42, headRefOid: "beefbeef1234567" },
+        ]),
+        exitCode: 0,
+      },
+    },
+    {
+      // A PR with no checks at all: gh exits 1 with EMPTY stdout — this must
+      // not abort the family (live-verified failure mode on checkless repos).
+      "owner/repo#41": { stdout: "", exitCode: 1 },
+      "owner/repo#42": { stdout: JSON.stringify([{ name: "ci", state: "FAILURE", bucket: "fail" }]), exitCode: 8 },
+    },
+  );
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 1, "the red PR after the checkless one is still pushed");
+  assert.equal(h.pushes[0]!.eventId, "pr:owner/repo#42");
+  assert.ok(
+    h.logs.some((line) => line.includes("owner/repo#41")),
+    `checkless PR logged with repo#number: ${JSON.stringify(h.logs)}`,
+  );
+});
+
+test("a broken repo (gh pr list exit 1) cannot blind the remaining repos", async () => {
+  const h = makeHarness({ calendar_oneshot_hours: [], pr_watch_repos: ["owner/broken", "owner/good"] });
+  h.deps.execFn = ghExecFn(
+    h,
+    {
+      "owner/broken": { stdout: "", exitCode: 1 },
+      "owner/good": { stdout: JSON.stringify([{ number: 9, headRefOid: "cafecafe1234567" }]), exitCode: 0 },
+    },
+    { "owner/good#9": { stdout: JSON.stringify([{ name: "ci", state: "FAILURE", bucket: "fail" }]), exitCode: 8 } },
+  );
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 1, "the good repo's red PR is still pushed");
+  assert.equal(h.pushes[0]!.eventId, "pr:owner/good#9");
+  assert.ok(
+    h.logs.some((line) => line.includes("owner/broken")),
+    `broken repo logged: ${JSON.stringify(h.logs)}`,
+  );
+});
+
+test("a TIMED_OUT check with bucket fail is red (state-string-only detection misses it)", async () => {
+  const h = makeHarness({ calendar_oneshot_hours: [], pr_watch_repos: ["owner/repo"] });
+  h.deps.execFn = ghExecFn(
+    h,
+    { "owner/repo": { stdout: JSON.stringify([{ number: 41, headRefOid: "abc1234deadbeef" }]), exitCode: 0 } },
+    { "owner/repo#41": { stdout: JSON.stringify([{ name: "ci", state: "TIMED_OUT", bucket: "fail" }]), exitCode: 8 } },
+  );
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 1);
+  assert.equal(h.pushes[0]!.state, "abc1234deadbeef:failure");
+});
+
+test("pass and skipping buckets are not red", async () => {
+  const h = makeHarness({ calendar_oneshot_hours: [], pr_watch_repos: ["owner/repo"] });
+  h.deps.execFn = ghExecFn(
+    h,
+    { "owner/repo": { stdout: JSON.stringify([{ number: 41, headRefOid: "abc1234deadbeef" }]), exitCode: 0 } },
+    {
+      "owner/repo#41": {
+        stdout: JSON.stringify([
+          { name: "ci", state: "SUCCESS", bucket: "pass" },
+          { name: "optional", state: "SKIPPED", bucket: "skipping" },
+        ]),
+        exitCode: 0,
+      },
+    },
+  );
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 0);
+});
+
 test("empty pr_watch_repos makes the pr-red family a silent no-op (zero gh calls)", async () => {
   const h = makeHarness();
   await sweepTick(h.deps);
