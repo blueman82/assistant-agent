@@ -277,6 +277,51 @@ async function checkBridgeLiveness(d: SweepDeps, cfg: ProactiveConfig, pushDeps:
   }
 }
 
+function sweepStatePath(d: SweepDeps): string {
+  return join(d.homeDir, ".rachel", "proactive-sweep-state.json");
+}
+
+// Missing-heartbeat bookkeeping: record first-observed-missing in the sweep
+// state file; past the 48h grace push ONE normal-severity alert. The
+// chokepoint dedup keys on the first-observed date, so a heartbeat that
+// appears (clearing the tracking) and later goes missing again re-arms with
+// a fresh date instead of deduping forever.
+async function checkHeartbeatNeverObserved(
+  d: SweepDeps,
+  cfg: ProactiveConfig,
+  pushDeps: Partial<PushDeps>,
+  now: number,
+): Promise<void> {
+  const statePath = sweepStatePath(d);
+  const today = zonedDateString(d.now(), cfg.timezone);
+  const state = readSweepState(d, statePath, today);
+  if (state.heartbeat_missing_since === undefined) {
+    d.writeFileFn(statePath, JSON.stringify({ ...state, heartbeat_missing_since: now } satisfies SweepState, null, 2));
+    return;
+  }
+  if (now - state.heartbeat_missing_since > HEARTBEAT_MISSING_GRACE_MS) {
+    await d.pushFn(
+      "bridge-liveness",
+      "bridge:heartbeat-missing",
+      new Date(state.heartbeat_missing_since).toISOString(),
+      "normal",
+      "[bridge] heartbeat never observed — wedge detection inactive",
+      pushDeps,
+    );
+  }
+}
+
+function clearHeartbeatMissingSince(d: SweepDeps, cfg: ProactiveConfig): void {
+  const statePath = sweepStatePath(d);
+  const today = zonedDateString(d.now(), cfg.timezone);
+  const state = readSweepState(d, statePath, today);
+  if (state.heartbeat_missing_since === undefined) {
+    return;
+  }
+  const { heartbeat_missing_since: _cleared, ...rest } = state;
+  d.writeFileFn(statePath, JSON.stringify(rest satisfies SweepState, null, 2));
+}
+
 // PR-red: pushes only on red (recovery is not pinged; the stale entry ages
 // out via the store's 14-day eviction). A new head SHA while still red
 // changes the state string, so a fresh push to the branch re-arms the ping.
