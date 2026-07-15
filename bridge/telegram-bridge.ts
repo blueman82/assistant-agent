@@ -8,6 +8,7 @@
 // pending chat turns, since a gate decision may be blocking a turn.
 
 import { tg, sendChunked, sendTyping, setMyCommands, downloadFile, type ApiConfig } from "./api.ts";
+import { push, type PushDeps, type Severity } from "../proactive/push.ts";
 import { homedir } from "node:os";
 import type { TelegramApprovalSurface, TelegramCallbackQuery } from "../gate/surfaces/telegram.ts";
 import type { TurnEmit } from "../rachel.ts";
