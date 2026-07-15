@@ -574,6 +574,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         const text = fifo.shift()!;
         const abortController = new AbortController();
         currentAbort = abortController;
+        turnInFlightSince = nowFn();
 
         const typingTimer = setInterval(() => {
           sendTyping(config).catch(() => {
