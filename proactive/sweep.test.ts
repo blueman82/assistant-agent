@@ -455,13 +455,82 @@ test("a never-resolving one-shot exec cannot wedge the tick (timeout logged, tic
   );
 });
 
-test("a completed one-shot logs its exit code", async () => {
+test("a completed one-shot logs the literal exit-code line", async () => {
   const h = makeHarness({ calendar_oneshot_hours: [8, 11, 14, 17], pr_watch_repos: [] });
   await sweepTick(h.deps);
   assert.ok(
-    h.logs.some((line) => line.includes("calendar one-shot") && line.includes("0")),
-    `exit code logged: ${JSON.stringify(h.logs)}`,
+    h.logs.some((line) => line === "[sweep] calendar one-shot exit 0"),
+    `exact exit line logged: ${JSON.stringify(h.logs)}`,
   );
+});
+
+test("one-shot due-hour comparison runs in Dublin time, not UTC", async () => {
+  // 13:30Z is 14:30 Dublin in summer: hour 14 is due. A UTC implementation
+  // sees hour 13 and skips.
+  const h = makeHarness({ calendar_oneshot_hours: [14], pr_watch_repos: [] });
+  h.deps.now = () => new Date("2026-07-15T13:30:00Z");
+  await sweepTick(h.deps);
+  assert.equal(rachelSpawns(h).length, 1);
+});
+
+test("a configured hour is due at that hour exactly (boundary: 08:00 Dublin, hours [8])", async () => {
+  // 07:00Z is 08:00 Dublin exactly — kills an h < currentHour mutant.
+  const h = makeHarness({ calendar_oneshot_hours: [8], pr_watch_repos: [] });
+  h.deps.now = () => new Date("2026-07-15T07:00:00Z");
+  await sweepTick(h.deps);
+  assert.equal(rachelSpawns(h).length, 1);
+});
+
+test("a timed-out one-shot does not respawn on the next tick (hours recorded before the race)", async () => {
+  const h = makeHarness({ calendar_oneshot_hours: [8, 11, 14, 17], pr_watch_repos: [] });
+  h.deps.oneshotTimeoutMs = 50;
+  const baseExec = h.deps.execFn;
+  h.deps.execFn = (cmd, args, opts) => {
+    if (cmd.endsWith("/bin/rachel")) {
+      h.execCalls.push({ cmd, args, opts });
+      return new Promise(() => {
+        // never settles
+      });
+    }
+    return baseExec(cmd, args, opts);
+  };
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  assert.equal(rachelSpawns(h).length, 1, "exactly one spawn across both ticks");
+});
+
+test("a corrupt sweep-state file logs one reset line and the spawn still happens", async () => {
+  const h = makeHarness({ calendar_oneshot_hours: [8, 11, 14, 17], pr_watch_repos: [] });
+  h.files.set(STATE_PATH(h), "not json {");
+  await sweepTick(h.deps);
+  assert.equal(rachelSpawns(h).length, 1);
+  assert.ok(
+    h.logs.some((line) => line.includes("corrupt sweep state")),
+    `reset logged: ${JSON.stringify(h.logs)}`,
+  );
+});
+
+test("integration: the tick's flush passthrough delivers a pre-seeded deferred entry via the real flushDeferred", async () => {
+  const { flushDeferred } = await import("./push.ts");
+  const h = makeHarness();
+  writeFileSync(
+    join(h.baseDir, "deferred.json"),
+    JSON.stringify({
+      schema_version: 1,
+      entries: [
+        { family: "pr-red", event_id: "pr:owner/repo#3", state: "aaa:failure", text: "[pr] owner/repo #3 checks failing (aaa)", queued_at: 1, reason: "quiet" },
+      ],
+    }),
+  );
+  const sent: string[] = [];
+  h.deps.sendFn = async (text) => {
+    sent.push(text);
+  };
+  h.deps.flushFn = flushDeferred;
+  await sweepTick(h.deps);
+  assert.equal(sent.length, 1, "the deferred digest went out through the injected sendFn");
+  assert.ok(sent[0]!.startsWith("[digest] 1 item (1 overnight):"), `digest header: ${sent[0]}`);
+  assert.ok(sent[0]!.includes("[pr] owner/repo #3 checks failing (aaa)"));
 });
 
 test("gh exit 1 on pr list logs a pr-red error and the tick completes", async () => {
