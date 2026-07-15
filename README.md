@@ -41,9 +41,10 @@ See [`CLAUDE.md`](./CLAUDE.md) for the full architecture notes.
 ```
 rachel.ts           # CLI entry point (the plumbing)
 prompts/system.md   # system prompt (the behaviour)
+bridge/             # Telegram bridge (second front-end) + notify.ts
+gate/               # send-approval gate (PreToolUse hook + approval surfaces)
 proactive/          # proactive layer: push.ts alert chokepoint, sweep.ts launchd tick, allowedTools.ts
 tasks/              # task files (YYYY-MM-DD-slug.md)
-src/                # shared utilities (currently empty)
 ```
 
 ## Commands
