@@ -7,7 +7,7 @@
     "start": "tsx rachel.ts",
     "bridge": "tsx bridge/telegram-bridge.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test 'gate/**/*.test.ts' 'bridge/**/*.test.ts' 'proactive/**/*.test.ts' && bash hooks/scripts/tests/probe_conventions.test.sh"
+    "test": "node --experimental-strip-types --test 'gate/**/*.test.ts' 'bridge/**/*.test.ts' 'proactive/**/*.test.ts' 'scripts/**/*.test.ts' && bash hooks/scripts/tests/probe_conventions.test.sh"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.0"
