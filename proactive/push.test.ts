@@ -374,3 +374,90 @@ test("getEventState: returns the stored state for a pinged event", async () => {
   assert.equal(getEventState("bridge-liveness", "bridge:liveness", { baseDir }), "down");
   assert.equal(getEventState("bridge-liveness", "bridge:other", { baseDir }), undefined);
 });
+
+// cliMain receives a full process.argv-shaped array: [node, script, ...args].
+function cliArgv(...args: string[]): string[] {
+  return ["node", "proactive/push.ts", ...args];
+}
+
+function writeMessageFile(baseDir: string, text: string): string {
+  const path = join(baseDir, "message.txt");
+  writeFileSync(path, text);
+  return path;
+}
+
+test("cliMain: happy path returns 0, sends the file's text, prints [push] sent.", async () => {
+  const baseDir = makeBaseDir();
+  const { sent, sendFn } = makeSendStub();
+  const messageFile = writeMessageFile(baseDir, "[pr] a/b #1 checks failing");
+  const logged: string[] = [];
+  const origLog = console.log;
+  console.log = (line: string) => logged.push(line);
+  let code: number;
+  try {
+    code = await cliMain(cliArgv("pr-red", "pr:a/b#1", "abc:failure", "normal", messageFile), { now: DAYTIME, baseDir, sendFn });
+  } finally {
+    console.log = origLog;
+  }
+  assert.equal(code, 0);
+  assert.deepEqual(sent, ["[pr] a/b #1 checks failing"]);
+  assert.deepEqual(logged, ["[push] sent."]);
+});
+
+test("cliMain: too few args returns 2 and never sends", async () => {
+  const { sent, sendFn } = makeSendStub();
+  const code = await cliMain(cliArgv("pr-red", "pr:a/b#1"), { now: DAYTIME, baseDir: makeBaseDir(), sendFn });
+  assert.equal(code, 2);
+  assert.equal(sent.length, 0);
+});
+
+test("cliMain: a sixth destination-looking argument is rejected with 2 and never sends (no-destination pin)", async () => {
+  const baseDir = makeBaseDir();
+  const { sent, sendFn } = makeSendStub();
+  const messageFile = writeMessageFile(baseDir, "x");
+  const code = await cliMain(
+    cliArgv("pr-red", "pr:a/b#1", "abc:failure", "normal", messageFile, "@evil_chat"),
+    { now: DAYTIME, baseDir, sendFn },
+  );
+  assert.equal(code, 2);
+  assert.equal(sent.length, 0);
+});
+
+test("cliMain: bad severity returns 2 and never sends", async () => {
+  const baseDir = makeBaseDir();
+  const { sent, sendFn } = makeSendStub();
+  const messageFile = writeMessageFile(baseDir, "x");
+  const code = await cliMain(cliArgv("pr-red", "pr:a/b#1", "abc:failure", "loud", messageFile), { now: DAYTIME, baseDir, sendFn });
+  assert.equal(code, 2);
+  assert.equal(sent.length, 0);
+});
+
+test("cliMain: missing message file returns 2 and never sends", async () => {
+  const baseDir = makeBaseDir();
+  const { sent, sendFn } = makeSendStub();
+  const code = await cliMain(
+    cliArgv("pr-red", "pr:a/b#1", "abc:failure", "normal", join(baseDir, "no-such-file.txt")),
+    { now: DAYTIME, baseDir, sendFn },
+  );
+  assert.equal(code, 2);
+  assert.equal(sent.length, 0);
+});
+
+test("cliMain: a sendFn throw returns 1", async () => {
+  const baseDir = makeBaseDir();
+  const messageFile = writeMessageFile(baseDir, "x");
+  const failingSend = async (): Promise<void> => {
+    throw new Error("network down");
+  };
+  const code = await cliMain(
+    cliArgv("pr-red", "pr:a/b#1", "abc:failure", "normal", messageFile),
+    { now: DAYTIME, baseDir, sendFn: failingSend },
+  );
+  assert.equal(code, 1);
+});
+
+test("grep guard: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
+  const source = await (await import("node:fs/promises")).readFile(new URL("./push.test.ts", import.meta.url), "utf8");
+  const realFetchCall = /fetch\(\s*["'`]https:\/\/api\.telegram\.org/;
+  assert.equal(realFetchCall.test(source), false);
+});
