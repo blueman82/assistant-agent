@@ -169,18 +169,9 @@ export async function runTurn(
     model: MODEL,
     maxTurns: MAX_TURNS,
     permissionMode: "auto",
-    allowedTools: [
-      "Read", "Write", "Edit", "Glob", "Grep", "Bash",
-      "WebSearch", "WebFetch",
-      "ToolSearch", "Skill",
-      "mcp__mcp-exec__execute_code_with_wrappers",
-      "mcp__mcp-exec__list_available_mcp_servers",
-      "mcp__mcp-exec__get_mcp_tool_schema",
-      "mcp__claude-in-chrome__*",
-      "mcp__claude_ai_Gmail__*",
-      "mcp__claude_ai_Google_Calendar__*",
-      "mcp__claude_ai_Slack__*",
-    ],
+    // Env read here, per call, not at module load — launchd/spawn
+    // environments differ per invocation.
+    allowedTools: resolveAllowedTools(DEFAULT_ALLOWED_TOOLS, process.env["RACHEL_ALLOWED_TOOLS"]),
     mcpServers,
     extraArgs: { "chrome": null },
     abortController,
