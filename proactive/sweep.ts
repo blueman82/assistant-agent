@@ -480,9 +480,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const results = await sweepTick();
     // Any family failure exits 1 so the monitor's own death is machine-
     // visible in launchctl's last-exit-status instead of a green tick over
-    // dead delivery. Self-alerting escalation (pushing about our own
-    // failures) is deliberately deferred to Loop 2 alongside the bridge
-    // heartbeat-file item.
+    // dead delivery. Self-alerting escalation (a direct best-effort ping on
+    // the 3rd consecutive same-family failure) already ran inside sweepTick.
     process.exit(Object.values(results).some((r) => r === "failed") ? 1 : 0);
   } catch (err) {
     console.error(`[sweep] fatal: ${err instanceof Error ? (err.stack ?? String(err)) : String(err)}`);
