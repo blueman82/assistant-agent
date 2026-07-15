@@ -217,7 +217,9 @@ async function checkBridgeLiveness(d: SweepDeps, cfg: ProactiveConfig, pushDeps:
   let heartbeat: BridgeHeartbeat | undefined;
   if (raw === undefined) {
     d.log("[sweep] bridge-liveness: no heartbeat file (pre-U2b bridge not yet restarted?) — wedge check skipped");
+    await checkHeartbeatNeverObserved(d, cfg, pushDeps, now);
   } else {
+    clearHeartbeatMissingSince(d, cfg);
     try {
       heartbeat = JSON.parse(raw) as BridgeHeartbeat;
     } catch {
