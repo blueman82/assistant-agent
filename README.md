@@ -41,8 +41,10 @@ See [`CLAUDE.md`](./CLAUDE.md) for the full architecture notes.
 ```
 rachel.ts           # CLI entry point (the plumbing)
 prompts/system.md   # system prompt (the behaviour)
+bridge/             # Telegram bridge (second front-end) + notify.ts
+gate/               # send-approval gate (PreToolUse hook + approval surfaces)
+proactive/          # proactive layer: push.ts alert chokepoint, sweep.ts launchd tick, allowedTools.ts
 tasks/              # task files (YYYY-MM-DD-slug.md)
-src/                # shared utilities (currently empty)
 ```
 
 ## Commands
@@ -50,7 +52,9 @@ src/                # shared utilities (currently empty)
 ```bash
 npx tsx rachel.ts           # run interactively
 npm start                   # alias for the above
+npm run bridge              # tsx bridge/telegram-bridge.ts (Telegram front-end)
 npm run typecheck           # tsc --noEmit
+npm test                    # gate/bridge/proactive test suites + hook conventions test
 ```
 
 ### At the `You:` prompt
@@ -67,3 +71,4 @@ npm run typecheck           # tsc --noEmit
 |----------|---------|---------|
 | `RACHEL_MODEL` | `claude-sonnet-4-6` | Model to run |
 | `RACHEL_MAX_TURNS` | `200` | Max agent turns per request |
+| `RACHEL_ALLOWED_TOOLS` | unset (full list) | Narrow headless one-shots to a subset of the default tools (remove-only) |
