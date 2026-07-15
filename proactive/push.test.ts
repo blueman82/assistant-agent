@@ -1,8 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   zonedMinutesOfDay,
   zonedDateString,
@@ -630,6 +632,31 @@ test("push: a post-send store-write failure still returns 'sent' with exactly on
     errors.some((e) => e.includes(baseDir)),
     `loud log names the store path: ${JSON.stringify(errors)}`,
   );
+});
+
+// CLI regression: the module's entrypoint guard must run AFTER every
+// top-level const a CLI code path can reach. With config.json PRESENT,
+// push -> loadConfig -> configProblem reads HM_RE; a guard placed above that
+// const crashes every one-shot with a TDZ ReferenceError. Config-absent runs
+// early-return before configProblem, which is why this stayed latent until
+// an installer wrote config.json. Digest severity keeps the run fully
+// offline (defer, never send).
+test("CLI one-shot: exits 0 and defers when config.json exists (TDZ regression)", () => {
+  const home = mkdtempSync(join(tmpdir(), "rachel-push-cli-home-"));
+  const storeDir = join(home, ".rachel", "proactive");
+  mkdirSync(storeDir, { recursive: true });
+  writeFileSync(join(storeDir, "config.json"), JSON.stringify(DEFAULT_CONFIG));
+  const messageFile = join(home, "message.txt");
+  writeFileSync(messageFile, "[digest] cli tdz regression probe");
+  const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  const result = spawnSync(
+    join(repoRoot, "node_modules", ".bin", "tsx"),
+    [join(repoRoot, "proactive", "push.ts"), "mail", "mail:cli-tdz", "fyi:m1", "digest", messageFile],
+    { env: { ...process.env, HOME: home }, encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, `CLI exited ${result.status}; stderr:\n${result.stderr}`);
+  assert.match(result.stdout, /\[push\] deferred\./);
+  assert.equal(existsSync(join(storeDir, "deferred.json")), true, "deferred.json written to the isolated store");
 });
 
 test("grep guard: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
