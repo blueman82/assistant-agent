@@ -226,6 +226,12 @@ test("sendChunked strips markdown before the text reaches the sendMessage body",
   assert.equal((sendCalls[0]!.body as Record<string, unknown>)["text"], "Done. Draft saved to drafts/");
 });
 
+test("DEFAULT_REQUEST_TIMEOUT_MS stays comfortably above the 30s getUpdates server-side long-poll", () => {
+  // A value at or under 30_000 would abort every long-poll — this guards the
+  // constant against a production-breaking edit.
+  assert.ok(DEFAULT_REQUEST_TIMEOUT_MS > 30_000, `got ${DEFAULT_REQUEST_TIMEOUT_MS}`);
+});
+
 test("grep guard: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
   const source = await (await import("node:fs/promises")).readFile(new URL("./api.test.ts", import.meta.url), "utf8");
   const realFetchCall = /fetch\(\s*["'`]https:\/\/api\.telegram\.org/;
