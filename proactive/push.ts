@@ -8,8 +8,13 @@ import { dirname, join } from "node:path";
 import { sendChunked } from "../bridge/api.ts";
 import { loadTelegramConfig } from "../gate/surfaces/telegram.ts";
 
-export type Severity = "urgent" | "normal" | "digest";
+const SEVERITIES = ["urgent", "normal", "digest"] as const;
+export type Severity = (typeof SEVERITIES)[number];
 export type PushResult = "sent" | "deferred" | "dedup";
+
+function isSeverity(value: string): value is Severity {
+  return (SEVERITIES as readonly string[]).includes(value);
+}
 
 export interface PushDeps {
   now: () => Date;
