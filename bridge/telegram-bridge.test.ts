@@ -1767,10 +1767,11 @@ test("watchdog: pid-gone with complete LOOP-STOP injects a synthetic turn and un
     emit("ok", "text");
   };
 
-  const { transport } = makeStubTransport([{ ok: true, result: [] }]);
+  const { transport, calls } = makeStubTransport([{ ok: true, result: [] }]);
+  const pushSeams = basePushOpts();
 
   const bridge = createBridge({
-    ...basePushOpts(),
+    ...pushSeams,
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -1785,10 +1786,21 @@ test("watchdog: pid-gone with complete LOOP-STOP injects a synthetic turn and un
   await new Promise((resolve) => setTimeout(resolve, 100));
   await bridge.stop();
 
+  // The exit ping routes through the push() chokepoint (family
+  // loop-watchdog, event loop-exit:<slug>), not through a synthetic Rachel
+  // turn — daytime clock, so it delivers immediately via the transport.
+  const sent = calls
+    .filter((c) => c.url.includes("/sendMessage"))
+    .map((c) => String((c.body as Record<string, unknown>)["text"]));
   assert.ok(
-    capturedInputs.some((s) => /complete:1/.test(s)),
-    `expected a turn containing "complete:1", got: ${JSON.stringify(capturedInputs)}`,
+    sent.some((s) => /complete:1/.test(s) && /has exited/.test(s)),
+    `expected a delivered exit ping containing "complete:1", got: ${JSON.stringify(sent)}`,
   );
+  assert.equal(capturedInputs.length, 0, "no synthetic turn is injected — the ping goes via push(), not runTurn");
+  const familyStore = JSON.parse(readFileSync(join(pushSeams.pushBaseDir, "loop-watchdog.json"), "utf8")) as {
+    events: Record<string, { state: string }>;
+  };
+  assert.ok(familyStore.events["loop-exit:test-loop"], `loop-exit:<slug> recorded in the store: ${JSON.stringify(familyStore.events)}`);
   assert.ok(
     fsFn.unlinked.includes(watchdogPath),
     `expected watchdog file to be unlinked, got unlinked: ${JSON.stringify(fsFn.unlinked)}`,
