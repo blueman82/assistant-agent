@@ -243,11 +243,13 @@ function readSweepState(d: SweepDeps, statePath: string, today: string): SweepSt
   try {
     const parsed = JSON.parse(raw) as SweepState;
     if (parsed.schema_version !== 1 || !Array.isArray(parsed.oneshot_hours_run)) {
+      d.log(`[sweep] corrupt sweep state at ${statePath} (unrecognised shape) — resetting`);
       return fresh;
     }
     // A date rollover (Dublin midnight) resets the hours-run list.
     return parsed.date === today ? parsed : fresh;
   } catch {
+    d.log(`[sweep] corrupt sweep state at ${statePath} (invalid JSON) — resetting`);
     return fresh;
   }
 }
