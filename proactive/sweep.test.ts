@@ -704,6 +704,55 @@ test("wedge and drain-stall fire in the same tick as independent events", async 
   assert.deepEqual(ids, ["bridge:drain-stall", "bridge:liveness"]);
 });
 
+test("a heartbeat exactly 10 minutes stale is not wedged (strict threshold)", async () => {
+  const h = makeHarness();
+  seedHeartbeat(h, { lastPollAgoMs: 10 * 60_000 });
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 0);
+});
+
+test("a heartbeat 10 minutes and one second stale is wedged", async () => {
+  const h = makeHarness();
+  seedHeartbeat(h, { lastPollAgoMs: 10 * 60_000 + 1000 });
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 1);
+  assert.equal(h.pushes[0]!.state, "down");
+});
+
+test("a turn in flight exactly 30 minutes is not a drain stall (strict threshold)", async () => {
+  const h = makeHarness();
+  seedHeartbeat(h, { lastPollAgoMs: 60_000, turnInFlightAgoMs: 30 * 60_000, queueDepth: 1 });
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 0);
+});
+
+test("a turn in flight 30 minutes and one second is a drain stall", async () => {
+  const h = makeHarness();
+  seedHeartbeat(h, { lastPollAgoMs: 60_000, turnInFlightAgoMs: 30 * 60_000 + 1000, queueDepth: 1 });
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 1);
+  assert.equal(h.pushes[0]!.eventId, "bridge:drain-stall");
+  assert.equal(h.pushes[0]!.text, "[bridge] turn running 30m, queue depth 1");
+});
+
+test("integration: a NEW in-flight turn re-arms the drain-stall ping through the real chokepoint", async () => {
+  const { push, getEventState } = await import("./push.ts");
+  const h = makeHarness();
+  const sent: string[] = [];
+  h.deps.sendFn = async (text) => {
+    sent.push(text);
+  };
+  h.deps.pushFn = push;
+  h.deps.getStateFn = getEventState;
+  seedHeartbeat(h, { lastPollAgoMs: 60_000, turnInFlightAgoMs: 31 * 60_000, queueDepth: 2 });
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  assert.equal(sent.filter((t) => t.includes("turn running")).length, 1, "identical stall dedups");
+  seedHeartbeat(h, { lastPollAgoMs: 60_000, turnInFlightAgoMs: 45 * 60_000, queueDepth: 2 });
+  await sweepTick(h.deps);
+  assert.equal(sent.filter((t) => t.includes("turn running")).length, 2, "a different turn_in_flight_since re-arms");
+});
+
 // --- Heartbeat-missing grace deadline (48h) ---
 
 function seedSweepState(h: ReturnType<typeof makeHarness>, extra: object, date = "2026-07-15"): void {
