@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sweepTick } from "./sweep.ts";
+import { defaultExecFn, sweepTick } from "./sweep.ts";
 import type { SweepDeps } from "./sweep.ts";
 import type { Severity } from "./push.ts";
 
