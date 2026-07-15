@@ -41,6 +41,7 @@ See [`CLAUDE.md`](./CLAUDE.md) for the full architecture notes.
 ```
 rachel.ts           # CLI entry point (the plumbing)
 prompts/system.md   # system prompt (the behaviour)
+proactive/          # proactive layer: push.ts alert chokepoint, sweep.ts launchd tick, allowedTools.ts
 tasks/              # task files (YYYY-MM-DD-slug.md)
 src/                # shared utilities (currently empty)
 ```
