@@ -392,16 +392,56 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   process.exit(await cliMain(process.argv));
 }
 
-// config.json is written by the (Loop-2) installer, never by push.ts.
-// Absent or malformed => sane defaults; a partial file shallow-merges over
-// the defaults.
-export function loadConfig(baseDir: string): ProactiveConfig {
+const HM_RE = /^\d{2}:\d{2}$/;
+
+// Returns a description of the first problem, or undefined when valid.
+function configProblem(cfg: ProactiveConfig): string | undefined {
   try {
-    const parsed = JSON.parse(readFileSync(join(baseDir, "config.json"), "utf8")) as Partial<ProactiveConfig>;
-    return { ...DEFAULT_CONFIG, ...parsed };
+    // Intl probe: the only reliable way to know a timezone string is real.
+    new Intl.DateTimeFormat("en-GB", { timeZone: cfg.timezone });
   } catch {
+    return `unknown timezone ${JSON.stringify(cfg.timezone)}`;
+  }
+  if (
+    typeof cfg.quiet_hours !== "object" ||
+    cfg.quiet_hours === null ||
+    !HM_RE.test(String(cfg.quiet_hours.start)) ||
+    !HM_RE.test(String(cfg.quiet_hours.end))
+  ) {
+    return `quiet_hours must be { start: "HH:MM", end: "HH:MM" }`;
+  }
+  if (typeof cfg.daily_budget !== "number" || !Number.isFinite(cfg.daily_budget)) {
+    return "daily_budget must be a finite number";
+  }
+  if (!Array.isArray(cfg.calendar_oneshot_hours) || !cfg.calendar_oneshot_hours.every((h) => Number.isInteger(h))) {
+    return "calendar_oneshot_hours must be an array of integers";
+  }
+  return undefined;
+}
+
+// config.json is written by the (Loop-2) installer, never by push.ts.
+// Absent => sane defaults. Corrupt or invalid after the shallow merge =>
+// loud console.error, then DEFAULT_CONFIG — better default pings than none,
+// but never silently.
+export function loadConfig(baseDir: string): ProactiveConfig {
+  const path = join(baseDir, "config.json");
+  let parsed: Partial<ProactiveConfig> | undefined;
+  try {
+    parsed = readJson<Partial<ProactiveConfig>>(path);
+  } catch (err) {
+    console.error(`[push] ${err instanceof Error ? err.message : String(err)} — falling back to DEFAULT_CONFIG`);
     return { ...DEFAULT_CONFIG };
   }
+  if (parsed === undefined) {
+    return { ...DEFAULT_CONFIG };
+  }
+  const merged = { ...DEFAULT_CONFIG, ...parsed };
+  const problem = configProblem(merged);
+  if (problem !== undefined) {
+    console.error(`[push] invalid config.json (${path}): ${problem} — falling back to DEFAULT_CONFIG`);
+    return { ...DEFAULT_CONFIG };
+  }
+  return merged;
 }
 
 // Inclusive start, exclusive end. A start later than the end means the
