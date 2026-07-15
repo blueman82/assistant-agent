@@ -506,8 +506,10 @@ test("honours INSTALL_HOME, INSTALL_LAUNCH_AGENTS_DIR and INSTALL_LAUNCHCTL seam
   const { status, output } = runInstaller(sb, [], {
     INSTALL_HOME: altHome,
     INSTALL_LAUNCH_AGENTS_DIR: altAgents,
+    // Shim NOT on PATH — launchctl must come from INSTALL_LAUNCHCTL. node's
+    // own directory stays on PATH (the preflight needs it for validation).
     INSTALL_LAUNCHCTL: join(sb.binDir, "launchctl"),
-    PATH: "/usr/bin:/bin", // shim NOT on PATH — must come from INSTALL_LAUNCHCTL
+    PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
   });
   assert.strictEqual(status, 0, output);
   assert.strictEqual(readdirSync(altAgents).filter((f) => f.endsWith(".plist")).length, 4);
