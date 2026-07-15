@@ -615,6 +615,23 @@ test("a digest flush never creates or touches budget.json", async () => {
   assert.equal(existsSync(join(baseDir, "budget.json")), false);
 });
 
+test("push: a post-send store-write failure still returns 'sent' with exactly one delivery and a loud path-naming log — never a rejection the caller could re-send on", async () => {
+  const baseDir = makeBaseDir();
+  const { sent, sendFn } = makeSendStub();
+  // A directory squatting on the family file's temp path makes the atomic
+  // write throw AFTER sendFn has already delivered.
+  mkdirSync(join(baseDir, `pr-red.json.tmp-${process.pid}`));
+  const { result, errors } = await withConsoleErrorCapture(() =>
+    push("pr-red", "pr:owner/repo#1", "abc:failure", "normal", "[pr] owner/repo #1 checks failing", { now: DAYTIME, baseDir, sendFn }),
+  );
+  assert.equal(result, "sent", "a delivered alert is 'sent' even when the bookkeeping write fails");
+  assert.equal(sent.length, 1, "exactly one delivery — the caller must never be told to re-send");
+  assert.ok(
+    errors.some((e) => e.includes(baseDir)),
+    `loud log names the store path: ${JSON.stringify(errors)}`,
+  );
+});
+
 test("grep guard: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
   const source = await (await import("node:fs/promises")).readFile(new URL("./push.test.ts", import.meta.url), "utf8");
   const realFetchCall = /fetch\(\s*["'`]https:\/\/api\.telegram\.org/;
