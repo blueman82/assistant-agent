@@ -653,6 +653,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         console.error(`[telegram-bridge] watchdog drain error: ${err instanceof Error ? err.message : String(err)}`);
       }),
     });
+    writeHeartbeat();
   }
 
   return {
