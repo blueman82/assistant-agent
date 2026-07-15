@@ -239,7 +239,7 @@ test("gh pr list and pr checks are invoked with the documented argument shapes",
   const list = h.execCalls.find((c) => c.cmd === "gh" && c.args[1] === "list");
   assert.deepEqual(list?.args, ["pr", "list", "--repo", "owner/repo", "--author", "@me", "--state", "open", "--json", "number,headRefOid"]);
   const checks = h.execCalls.find((c) => c.cmd === "gh" && c.args[1] === "checks");
-  assert.deepEqual(checks?.args, ["pr", "checks", "41", "--repo", "owner/repo", "--json", "name,state"]);
+  assert.deepEqual(checks?.args, ["pr", "checks", "41", "--repo", "owner/repo", "--json", "name,bucket,state"]);
 });
 
 test("integration: the same red PR across two ticks dedups through the real push chokepoint", async () => {
