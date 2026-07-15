@@ -78,7 +78,7 @@ export async function tg(config: ApiConfig, method: string, body: unknown): Prom
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(config.requestTimeoutMs ?? 45_000),
+      signal: AbortSignal.timeout(config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS),
     });
     parsed = (await res.json()) as TelegramResponseBody;
   } catch (err) {
