@@ -1577,17 +1577,26 @@ function makeStubFs(opts: {
   files?: Map<string, string>;
   mtimes?: Map<string, number>;
   globResults?: string[];
-}): FsFunctions & { written: { path: string; content: string }[]; unlinked: string[] } {
+}): FsFunctions & { written: { path: string; content: string }[]; unlinked: string[]; renames: { from: string; to: string }[] } {
   const files: Map<string, string> = opts.files ?? new Map();
   const mtimes: Map<string, number> = opts.mtimes ?? new Map();
   const globResults: string[] = opts.globResults ?? [];
   const existingDirs: Set<string> = new Set([opts.watchdogDir]);
   const written: { path: string; content: string }[] = [];
   const unlinked: string[] = [];
+  const renames: { from: string; to: string }[] = [];
 
   return {
     written,
     unlinked,
+    renames,
+    rename(from: string, to: string): void {
+      const content = files.get(from);
+      if (content === undefined) throw new Error(`ENOENT rename: ${from}`);
+      files.delete(from);
+      files.set(to, content);
+      renames.push({ from, to });
+    },
     readdir(dir: string): string[] {
       const prefix = dir.endsWith("/") ? dir : dir + "/";
       const names: string[] = [];
