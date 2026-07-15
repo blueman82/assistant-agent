@@ -8,11 +8,12 @@
 // pending chat turns, since a gate decision may be blocking a turn.
 
 import { tg, sendChunked, sendTyping, setMyCommands, downloadFile, type ApiConfig } from "./api.ts";
+import { push, type PushDeps, type Severity } from "../proactive/push.ts";
 import { homedir } from "node:os";
 import type { TelegramApprovalSurface, TelegramCallbackQuery } from "../gate/surfaces/telegram.ts";
 import type { TurnEmit } from "../rachel.ts";
-import { readdirSync, readFileSync, writeFileSync, unlinkSync, statSync, mkdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, readFileSync, writeFileSync, unlinkSync, statSync, mkdirSync, existsSync, renameSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { execSync } from "node:child_process";
 
 export type BridgeRunTurn = (input: string, emit: TurnEmit, signal: AbortSignal) => Promise<void>;
@@ -42,6 +43,7 @@ export interface FsFunctions {
   stat: (path: string) => { mtimeMs: number };
   mkdirSync: (path: string, opts: { recursive: boolean }) => void;
   existsSync: (path: string) => boolean;
+  rename: (from: string, to: string) => void;   // same-dir rename — the atomic-write half
   glob: (pattern: string) => string[];          // returns matching paths
 }
 
@@ -59,6 +61,9 @@ export interface CreateBridgeOptions {
   fsFn?: FsFunctions;                               // defaults to real node:fs wrappers
   isPidAliveFn?: (pid: number, expectedCmd?: string) => boolean;  // defaults to kill -0 check; injectable for tests
   conflictBackoffMs?: number;  // defaults to CONFLICT_BACKOFF_MS (65s); injectable for tests to avoid real waits
+  nowFn?: () => Date;          // clock seam — heartbeat timestamps + push() quiet-hours/dedup decisions
+  heartbeatPath?: string;      // defaults to ~/.rachel/bridge-heartbeat.json (expanded, not ~)
+  pushBaseDir?: string;        // push() state-store dir — defaults to ~/.rachel/proactive (expanded, not ~)
 }
 
 interface TelegramUpdate {
@@ -102,6 +107,7 @@ export function defaultFsFn(): FsFunctions {
     stat: (path) => statSync(path),
     mkdirSync: (path, opts) => mkdirSync(path, opts),
     existsSync: (path) => existsSync(path),
+    rename: (from, to) => renameSync(from, to),
     // glob: two-level readdir walk for the one pattern used in this feature.
     // Pattern (fully expanded, no ~): <base>/*<fragment>*/*/progress.json
     // Walk: list slug-level dirs containing <fragment>, then session-id dirs under each.
@@ -192,13 +198,14 @@ function readLoopStopCounts(progressPath: string, fs: FsFunctions): Record<strin
 
 async function checkWatchdogs(opts: {
   watchdogDir: string;
-  fifo: string[];
   pollPeriodMs: number;
   fs: FsFunctions;
   isPidAlive: (pid: number, expectedCmd?: string) => boolean;  // injectable for tests (stress-test fix 1)
-  drainFifo: () => void;                                       // called after any fifo.push() (stress-test fix 3)
+  // Delivers a loop-watchdog ping through the push() chokepoint (never
+  // rejects — the caller wraps push() with a direct-send fallback).
+  pushPing: (eventId: string, state: string, text: string) => Promise<void>;
 }): Promise<void> {
-  const { watchdogDir, fifo, pollPeriodMs, fs, isPidAlive: pidAliveCheck, drainFifo: triggerDrain } = opts;
+  const { watchdogDir, pollPeriodMs, fs, isPidAlive: pidAliveCheck, pushPing } = opts;
 
   if (!fs.existsSync(watchdogDir)) return;
 
@@ -237,13 +244,19 @@ async function checkWatchdogs(opts: {
         .map(([k, v]) => `${k}:${v}`)
         .join(", ") || "none";
 
-      fifo.push(
+      // Routed through the push() chokepoint (quiet-hours aware). State
+      // carries spawn_time so a relaunched loop with the same slug re-arms
+      // instead of deduping against a previous run's exit. The watchdog file
+      // is consumed (done + unlink below) even if delivery totally failed —
+      // a deliberate tradeoff: losing one exit ping beats a re-ping storm on
+      // every subsequent poll while the send path is down.
+      await pushPing(
+        `loop-exit:${entry.slug}`,
+        `exited:${entry.spawn_time}`,
         `[watchdog] Loop "${entry.loop_name}" (slug: ${entry.slug}) has exited. ` +
         `progress.json status=${String(status)}, loop_stop_counts={${nonZeroCategories}}. ` +
-        `Log: ${entry.log_path}. ` +
-        `Read the log tail and progress.json, then relay a summary ping to Gary via Telegram.`
+        `Log: ${entry.log_path}.`
       );
-      triggerDrain(); // stress-test fix 3: drain immediately, not on next poll cycle
 
       entry.done = true;
       try { fs.writeFile(watchdogPath, JSON.stringify(entry, null, 2)); } catch { /* best-effort */ }
@@ -299,12 +312,19 @@ async function checkWatchdogs(opts: {
         } catch { /* ignore */ }
         return "unknown";
       })();
-      fifo.push(
+      // Routed through the push() chokepoint. The pinged_at debounce above
+      // is KEPT as its own layer rather than superseded by chokepoint dedup:
+      // the two are not behaviour-equivalent (verified against the watchdog
+      // tests — e.g. a sleep/wake bumps wake_floor into a fresh stall onset,
+      // which would read as a new chokepoint state and re-ping a
+      // still-stalled loop that pinged_at correctly keeps quiet, and the
+      // mtime-advance-clears-debounce re-arm below has no store analogue).
+      await pushPing(
+        `loop-stall:${entry.slug}`,
+        `stalled:${new Date(liveMtime).toISOString()}`,
         `[watchdog] Loop "${entry.loop_name}" (slug: ${entry.slug}, pid: ${entry.pid}) has gone quiet for 60+ min. ` +
-        `Last known unit: ${lastUnit}. Log: ${entry.log_path}. ` +
-        `Ping Gary via Telegram that the loop appears stalled.`
+        `Last known unit: ${lastUnit}. Log: ${entry.log_path}.`
       );
-      triggerDrain(); // stress-test fix 3: drain immediately, not on next poll cycle
       entry.pinged_at = now;
     }
 
@@ -390,6 +410,8 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   const resolvedFs = options.fsFn ?? defaultFsFn();
   const resolvedIsPidAlive = options.isPidAliveFn ?? isPidAlive;
   const resolvedConflictBackoffMs = options.conflictBackoffMs ?? CONFLICT_BACKOFF_MS;
+  const nowFn = options.nowFn ?? (() => new Date());
+  const heartbeatPath = options.heartbeatPath ?? join(homedir(), ".rachel", "bridge-heartbeat.json");
 
   try { resolvedFs.mkdirSync(watchdogDir, { recursive: true }); } catch { /* already exists */ }
 
@@ -401,6 +423,44 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   let backoffMs = 1000;
   const MAX_BACKOFF_MS = 30_000;
 
+  // Heartbeat: written once per successful poll iteration. Deliberately NOT
+  // written during 409-conflict backoff — the sweep's wedge detection reads
+  // staleness as "poll loop silent", and the 10-minute threshold there
+  // clears the legitimate 5x65s backoff window.
+  let turnInFlightSince: Date | null = null;   // set while drainFifo has a turn running
+  let lastHeartbeatMs = 0;
+  let heartbeatWriteFailing = false;
+
+  function writeHeartbeat(): void {
+    try {
+      // Strictly monotonic per iteration even under a coarse or frozen
+      // clock, so consecutive heartbeats are always distinguishable.
+      const nowMs = Math.max(nowFn().getTime(), lastHeartbeatMs + 1);
+      lastHeartbeatMs = nowMs;
+      const heartbeat = {
+        schema_version: 1,
+        last_poll_at: new Date(nowMs).toISOString(),
+        queue_depth: fifo.length,
+        turn_in_flight_since: turnInFlightSince === null ? null : turnInFlightSince.toISOString(),
+      };
+      // Temp-file + rename in the same directory — push.ts's atomic-write
+      // idiom. A sweep reading mid-write never sees a torn file.
+      resolvedFs.mkdirSync(dirname(heartbeatPath), { recursive: true });
+      const tmpPath = `${heartbeatPath}.tmp-${process.pid}`;
+      resolvedFs.writeFile(tmpPath, JSON.stringify(heartbeat, null, 2));
+      resolvedFs.rename(tmpPath, heartbeatPath);
+      heartbeatWriteFailing = false;
+    } catch (err) {
+      // A heartbeat failure must NEVER break polling, and must not spam the
+      // log every tick — log once on entering the failing state, re-arm on
+      // recovery.
+      if (!heartbeatWriteFailing) {
+        heartbeatWriteFailing = true;
+        console.error(`[telegram-bridge] heartbeat write failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
   // Health state machine — mutated only in run() loop below.
   // health: current state; consecutive409: 409 streak; lastError: last failure for /status.
   type BridgeHealth = "healthy" | "conflict" | "failed";
@@ -411,6 +471,41 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   async function reply(text: string): Promise<void> {
     await sendChunked(config, text);
   }
+
+  // Proactive-alert plumbing: startup notice, watchdog pings, and health
+  // transitions route through proactive/push.ts's push() chokepoint so they
+  // pick up quiet-hours deferral, dedup, and budget like every other
+  // proactive ping. The FATAL 5x409 exit alert deliberately does NOT — the
+  // process is dying and that alert keeps its direct awaited send.
+  const pushBaseDir = options.pushBaseDir ?? join(homedir(), ".rachel", "proactive");
+  const bridgePushDeps: Partial<PushDeps> = {
+    now: nowFn,
+    baseDir: pushBaseDir,
+    sendFn: (text: string) => sendChunked(config, text),
+  };
+  // A push() failure must never crash the bridge, and an alert must never be
+  // lost to the chokepoint plumbing: on any push() throw we fall back to a
+  // direct sendChunked (giving up quiet-hours/dedup semantics for that one
+  // alert — the safe direction). Never rejects. push() itself treats a
+  // sent-but-unrecorded event as "sent" (post-send bookkeeping failures do
+  // not throw), so this fallback only fires for PRE-send failures and can
+  // never double-deliver an alert push() already sent.
+  async function pushAlert(family: string, eventId: string, state: string, severity: Severity, text: string): Promise<void> {
+    try {
+      await push(family, eventId, state, severity, text, bridgePushDeps);
+    } catch (err) {
+      console.error(`[telegram-bridge] push() failed for ${family}/${eventId}: ${err instanceof Error ? err.message : String(err)} — falling back to direct send`);
+      try {
+        await sendChunked(config, text);
+      } catch (sendErr) {
+        console.error(`[telegram-bridge] direct-send fallback also failed for ${family}/${eventId}: ${sendErr instanceof Error ? sendErr.message : String(sendErr)}`);
+      }
+    }
+  }
+  // Startup state is pinned per process: run() re-entry within one process
+  // dedups at the chokepoint, while a crash-restart (new process, new boot
+  // time) re-arms and announces itself.
+  const startupState = `boot:${nowFn().toISOString()}`;
 
   async function handleMessage(msg: NonNullable<TelegramUpdate["message"]>): Promise<void> {
     const fromChatId = String(msg.chat.id);
@@ -529,6 +624,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         const text = fifo.shift()!;
         const abortController = new AbortController();
         currentAbort = abortController;
+        turnInFlightSince = nowFn();
 
         const typingTimer = setInterval(() => {
           sendTyping(config).catch(() => {
@@ -549,6 +645,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         } finally {
           clearInterval(typingTimer);
           currentAbort = undefined;
+          turnInFlightSince = null;
         }
 
         const replyText = buffer.join("\n").trim();
@@ -598,14 +695,12 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     await processUpdates(result ?? []);
     await checkWatchdogs({
       watchdogDir,
-      fifo,
       pollPeriodMs: pollIntervalMs,
       fs: resolvedFs,
       isPidAlive: resolvedIsPidAlive,
-      drainFifo: () => void drainFifo().catch((err) => {
-        console.error(`[telegram-bridge] watchdog drain error: ${err instanceof Error ? err.message : String(err)}`);
-      }),
+      pushPing: (eventId, state, text) => pushAlert("loop-watchdog", eventId, state, "normal", text),
     });
+    writeHeartbeat();
   }
 
   return {
@@ -622,10 +717,14 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         console.error(`[telegram-bridge] setMyCommands failed: ${err instanceof Error ? err.message : String(err)}`);
       });
 
-      // Startup alert — best-effort, non-blocking. A restart is the only signal
-      // Gary gets for a non-409 death (OOM, uncaught exception, reboot): those
-      // exits can't alert themselves, so the NEXT boot announces it happened.
-      sendChunked(config, "Rachel bridge started.").catch(() => {});
+      // Startup alert — best-effort, non-blocking, through the chokepoint at
+      // NORMAL severity: a restart is informational, so a 3am crash-restart
+      // defers overnight and lands in the morning digest instead of waking
+      // Gary (the urgent alert for a dying bridge is the FATAL exit path,
+      // which precedes the restart). A restart is the only signal Gary gets
+      // for a non-409 death (OOM, uncaught exception, reboot): those exits
+      // can't alert themselves, so the NEXT boot announces it happened.
+      void pushAlert("bridge-startup", "bridge:startup", startupState, "normal", "Rachel bridge started.");
 
       while (!stopped) {
         try {
@@ -640,9 +739,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
               ? "Rachel bridge recovered from Telegram conflict — back online."
               : "Rachel bridge recovered from poll error — back online.";
             console.log(`[telegram-bridge] recovered from ${prev} state.`);
-            sendChunked(config, msg).catch((alertErr) => {
-              console.error(`[telegram-bridge] failed to send recovery alert: ${alertErr instanceof Error ? alertErr.message : String(alertErr)}`);
-            });
+            void pushAlert("bridge-health", "bridge:health", "healthy", "normal", msg);
           }
           // Yield to the macrotask queue so that bridge.stop() → stopped=true
           // is observable before the next iteration. A zero-delay setTimeout is
@@ -660,11 +757,9 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
             if (health !== "conflict") {
               health = "conflict";
               console.error(`[telegram-bridge] 409 conflict (${consecutive409}/${CONFLICT_EXIT_THRESHOLD}): ${message} — backing off ${resolvedConflictBackoffMs / 1000}s, will auto-recover.`);
-              sendChunked(config,
+              void pushAlert("bridge-health", "bridge:health", "conflict", "normal",
                 `Rachel bridge: Telegram 409 conflict detected. Backing off ${resolvedConflictBackoffMs / 1000}s and retrying — will auto-recover if this is a launchd restart race.`
-              ).catch((alertErr) => {
-                console.error(`[telegram-bridge] failed to send conflict alert: ${alertErr instanceof Error ? alertErr.message : String(alertErr)}`);
-              });
+              );
             } else {
               console.error(`[telegram-bridge] 409 conflict (${consecutive409}/${CONFLICT_EXIT_THRESHOLD}): ${message}`);
             }
@@ -690,9 +785,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
             if (health !== "failed") {
               health = "failed";
               console.error(`[telegram-bridge] poll error (entering failed state): ${message}`);
-              sendChunked(config, `Rachel bridge poll error: ${message}. Retrying with backoff.`).catch((alertErr) => {
-                console.error(`[telegram-bridge] failed to send poll-error alert: ${alertErr instanceof Error ? alertErr.message : String(alertErr)}`);
-              });
+              void pushAlert("bridge-health", "bridge:health", "failed", "normal", `Rachel bridge poll error: ${message}. Retrying with backoff.`);
             } else {
               console.error(`[telegram-bridge] poll error: ${message}`);
             }

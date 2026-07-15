@@ -12,6 +12,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { push, flushDeferred, getEventState, loadConfig, zonedDateString, zonedMinutesOfDay } from "./push.ts";
 import type { ProactiveConfig, PushDeps } from "./push.ts";
+import { sendChunked } from "../bridge/api.ts";
+import { loadTelegramConfig } from "../gate/surfaces/telegram.ts";
 
 export interface SweepDeps {
   now: () => Date;
@@ -129,25 +131,59 @@ function pushDepsOf(d: SweepDeps): Partial<PushDeps> {
 
 export type FamilyResult = "ok" | "failed";
 
-async function runFamily(family: string, d: SweepDeps, fn: () => Promise<void>): Promise<FamilyResult> {
+async function runFamily(
+  family: string,
+  d: SweepDeps,
+  errors: Record<string, string>,
+  fn: () => Promise<void>,
+): Promise<FamilyResult> {
   try {
     await fn();
     return "ok";
   } catch (err) {
     // Full stack — same convention as push.ts: launchd logs are the only
-    // debugging signal.
+    // debugging signal. The first line is kept separately for the
+    // escalation message.
+    errors[family] = String(err instanceof Error ? err.message : err).split("\n")[0] ?? "unknown error";
     d.log(`[sweep] ${family} error: ${err instanceof Error ? (err.stack ?? String(err)) : String(err)}`);
     return "failed";
   }
 }
 
-// Bridge-liveness: launchctl state is the ONLY trigger. The detection
-// boundary is launchd-level death — a wedged-alive bridge (long-poll loop
-// healthy, replies dead) is NOT detected here; that gap is named in the
-// design docs, not papered over. Log mtime is message detail only: a healthy
-// idle bridge writes almost nothing, so mtime staleness would false-positive
-// constantly if used as a trigger.
-async function checkBridgeLiveness(d: SweepDeps, pushDeps: Partial<PushDeps>): Promise<void> {
+// Wedged-alive threshold: >10 minutes without a heartbeat write. The bridge
+// deliberately stops polling (and stops writing heartbeats) during its 409
+// conflict backoff — up to 5 x 65s ≈ 5.4 minutes of legitimate, self-healing
+// silence — so 10 minutes comfortably clears that whole window before
+// declaring a wedge.
+const WEDGE_THRESHOLD_MS = 10 * 60_000;
+
+// Drain-stall threshold: a single turn in flight for >30 minutes means the
+// FIFO is starved behind it — worth a normal (not urgent) ping.
+const DRAIN_STALL_THRESHOLD_MS = 30 * 60_000;
+
+// Deadline on the missing-heartbeat grace. The grace exists ONLY for the
+// deploy-ordering window (the sweep can pick up heartbeat-aware code a
+// restart cycle before the long-lived bridge does); U4 deploys within hours,
+// so 48h of launchctl-alive with no heartbeat file ever appearing means
+// wedge detection is silently dead (unwritable path, wrong HOME, ...) and
+// Gary gets ONE normal-severity ping about it instead of silence forever.
+const HEARTBEAT_MISSING_GRACE_MS = 48 * 60 * 60 * 1000;
+
+interface BridgeHeartbeat {
+  schema_version: number;
+  last_poll_at: string;
+  queue_depth: number;
+  turn_in_flight_since: string | null;
+}
+
+// Bridge-liveness detection is layered: launchd-level death (launchctl says
+// not running) is urgent bridge-down; a wedged-alive bridge (process running
+// but the poll loop silent — heartbeat last_poll_at stale) is ALSO urgent
+// bridge-down; a stalled drain (poll loop fine, one turn in flight >30min)
+// is a separate, normal-severity bridge:drain-stall event. Log mtime is
+// message detail only: a healthy idle bridge writes almost nothing, so log
+// staleness would false-positive constantly if used as a trigger.
+async function checkBridgeLiveness(d: SweepDeps, cfg: ProactiveConfig, pushDeps: Partial<PushDeps>): Promise<void> {
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   const result = await d.execFn("launchctl", ["print", `gui/${uid}/com.rachel.telegram-bridge`]);
   const down = result.exitCode !== 0 || !result.stdout.includes("state = running");
@@ -168,11 +204,122 @@ async function checkBridgeLiveness(d: SweepDeps, pushDeps: Partial<PushDeps>): P
     await d.pushFn("bridge-liveness", "bridge:liveness", "down", "urgent", `[urgent · bridge] Bridge down. Last log ${age}.${infra}`, pushDeps);
     return;
   }
+
+  // Process is alive per launchd — check the heartbeat for a wedged poll
+  // loop and a stalled drain. A missing heartbeat file with a running
+  // process is treated as UNKNOWN, never as a wedge: it means a pre-U2b
+  // bridge that has not been restarted onto heartbeat-writing code yet
+  // (deploy ordering safety — the sweep can pick up merged code a full
+  // restart cycle before the long-lived bridge process does).
+  const now = d.now().getTime();
+  const heartbeatPath = join(d.homeDir, ".rachel", "bridge-heartbeat.json");
+  const raw = d.readFileFn(heartbeatPath);
+  let heartbeat: BridgeHeartbeat | undefined;
+  if (raw === undefined) {
+    d.log("[sweep] bridge-liveness: no heartbeat file (pre-U2b bridge not yet restarted?) — wedge check skipped");
+    await checkHeartbeatNeverObserved(d, cfg, pushDeps, now);
+  } else {
+    clearHeartbeatMissingSince(d, cfg);
+    try {
+      heartbeat = JSON.parse(raw) as BridgeHeartbeat;
+    } catch {
+      // Corrupt is unknown, not wedged — a half-written or damaged file must
+      // not fire an urgent alarm on a healthy bridge.
+      d.log(`[sweep] bridge-liveness: corrupt heartbeat at ${heartbeatPath} — wedge check skipped`);
+    }
+  }
+
+  let wedged = false;
+  if (heartbeat !== undefined) {
+    const lastPollMs = Date.parse(String(heartbeat.last_poll_at));
+    if (Number.isNaN(lastPollMs)) {
+      d.log(`[sweep] bridge-liveness: unparseable last_poll_at in heartbeat — wedge check skipped`);
+    } else if (now - lastPollMs > WEDGE_THRESHOLD_MS) {
+      wedged = true;
+      const staleMin = Math.floor((now - lastPollMs) / 60_000);
+      await d.pushFn(
+        "bridge-liveness",
+        "bridge:liveness",
+        "down",
+        "urgent",
+        `[urgent · bridge] Bridge wedged — launchd reports running but last poll ${staleMin}m ago.`,
+        pushDeps,
+      );
+    }
+
+    // Drain-stall is its own event (bridge:drain-stall), checked
+    // independently of the wedge — both can be true at once and neither's
+    // dedup may suppress the other. State is the turn_in_flight_since
+    // timestamp itself: a new in-flight turn (or a clear-then-restall)
+    // changes the state and re-arms the ping.
+    if (typeof heartbeat.turn_in_flight_since === "string") {
+      const sinceMs = Date.parse(heartbeat.turn_in_flight_since);
+      if (!Number.isNaN(sinceMs) && now - sinceMs > DRAIN_STALL_THRESHOLD_MS) {
+        const stallMin = Math.floor((now - sinceMs) / 60_000);
+        const depth = typeof heartbeat.queue_depth === "number" ? heartbeat.queue_depth : 0;
+        await d.pushFn(
+          "bridge-liveness",
+          "bridge:drain-stall",
+          heartbeat.turn_in_flight_since,
+          "normal",
+          `[bridge] turn running ${stallMin}m, queue depth ${depth}`,
+          pushDeps,
+        );
+      }
+    }
+  }
+
   // A first-ever observation of a healthy bridge pushes nothing — recovery
-  // is only announced after a recorded "down".
-  if (d.getStateFn("bridge-liveness", "bridge:liveness", pushDeps) === "down") {
+  // is only announced after a recorded "down". A wedged bridge is down-class,
+  // so it never announces recovery in the same tick.
+  if (!wedged && d.getStateFn("bridge-liveness", "bridge:liveness", pushDeps) === "down") {
     await d.pushFn("bridge-liveness", "bridge:liveness", "up", "normal", "[bridge] Bridge recovered.", pushDeps);
   }
+}
+
+function sweepStatePath(d: SweepDeps): string {
+  return join(d.homeDir, ".rachel", "proactive-sweep-state.json");
+}
+
+// Missing-heartbeat bookkeeping: record first-observed-missing in the sweep
+// state file; past the 48h grace push ONE normal-severity alert. The
+// chokepoint dedup keys on the first-observed date, so a heartbeat that
+// appears (clearing the tracking) and later goes missing again re-arms with
+// a fresh date instead of deduping forever.
+async function checkHeartbeatNeverObserved(
+  d: SweepDeps,
+  cfg: ProactiveConfig,
+  pushDeps: Partial<PushDeps>,
+  now: number,
+): Promise<void> {
+  const statePath = sweepStatePath(d);
+  const today = zonedDateString(d.now(), cfg.timezone);
+  const state = readSweepState(d, statePath, today);
+  if (state.heartbeat_missing_since === undefined) {
+    d.writeFileFn(statePath, JSON.stringify({ ...state, heartbeat_missing_since: now } satisfies SweepState, null, 2));
+    return;
+  }
+  if (now - state.heartbeat_missing_since > HEARTBEAT_MISSING_GRACE_MS) {
+    await d.pushFn(
+      "bridge-liveness",
+      "bridge:heartbeat-missing",
+      new Date(state.heartbeat_missing_since).toISOString(),
+      "normal",
+      "[bridge] heartbeat never observed — wedge detection inactive",
+      pushDeps,
+    );
+  }
+}
+
+function clearHeartbeatMissingSince(d: SweepDeps, cfg: ProactiveConfig): void {
+  const statePath = sweepStatePath(d);
+  const today = zonedDateString(d.now(), cfg.timezone);
+  const state = readSweepState(d, statePath, today);
+  if (state.heartbeat_missing_since === undefined) {
+    return;
+  }
+  const { heartbeat_missing_since: _cleared, ...rest } = state;
+  d.writeFileFn(statePath, JSON.stringify(rest satisfies SweepState, null, 2));
 }
 
 // PR-red: pushes only on red (recovery is not pinged; the stale entry ages
@@ -230,12 +377,23 @@ interface SweepState {
   schema_version: 1;
   date: string; // Dublin date, YYYY-MM-DD
   oneshot_hours_run: number[];
+  // Consecutive-failure count per family — the self-alert escalation
+  // counter. Unlike oneshot_hours_run it survives the Dublin date rollover:
+  // "3 consecutive failures" means consecutive ticks, not consecutive ticks
+  // within one calendar day.
+  failure_streaks?: Record<string, number>;
+  // First tick (ms epoch) that saw launchctl-alive with NO heartbeat file —
+  // the missing-heartbeat grace tracking. Survives the date rollover.
+  heartbeat_missing_since?: number;
+  // Whether the current streak's escalation has been DELIVERED (a failed
+  // send stays false and is retried next tick). Cleared on family success.
+  escalation_sent?: Record<string, boolean>;
 }
 
 // Sweep-owned state, deliberately OUTSIDE the push store dir — that dir is
 // push.ts-only by invariant.
 function readSweepState(d: SweepDeps, statePath: string, today: string): SweepState {
-  const fresh: SweepState = { schema_version: 1, date: today, oneshot_hours_run: [] };
+  const fresh: SweepState = { schema_version: 1, date: today, oneshot_hours_run: [], failure_streaks: {} };
   const raw = d.readFileFn(statePath);
   if (raw === undefined) {
     return fresh;
@@ -246,8 +404,17 @@ function readSweepState(d: SweepDeps, statePath: string, today: string): SweepSt
       d.log(`[sweep] corrupt sweep state at ${statePath} (unrecognised shape) — resetting`);
       return fresh;
     }
-    // A date rollover (Dublin midnight) resets the hours-run list.
-    return parsed.date === today ? parsed : fresh;
+    // A date rollover (Dublin midnight) resets the hours-run list but keeps
+    // the failure streaks, escalation flags, and heartbeat-grace tracking
+    // running.
+    return parsed.date === today
+      ? parsed
+      : {
+          ...fresh,
+          failure_streaks: parsed.failure_streaks ?? {},
+          escalation_sent: parsed.escalation_sent ?? {},
+          heartbeat_missing_since: parsed.heartbeat_missing_since,
+        };
   } catch {
     d.log(`[sweep] corrupt sweep state at ${statePath} (invalid JSON) — resetting`);
     return fresh;
@@ -281,7 +448,9 @@ async function runCalendarOneshot(d: SweepDeps, cfg: ProactiveConfig): Promise<v
   // when the one-shot itself hangs or times out.
   d.writeFileFn(
     statePath,
-    JSON.stringify({ schema_version: 1, date: today, oneshot_hours_run: [...state.oneshot_hours_run, ...due] } satisfies SweepState, null, 2),
+    // Spread preserves failure_streaks — this write must never clobber the
+    // escalation counters bookkept at the end of the tick.
+    JSON.stringify({ ...state, date: today, oneshot_hours_run: [...state.oneshot_hours_run, ...due] } satisfies SweepState, null, 2),
   );
   const spawn = d.execFn(join(d.repoDir, "bin", "rachel"), ["Read tasks/proactive-calendar.md and follow it."], {
     env: { RACHEL_ALLOWED_TOOLS: ONESHOT_TOOLS },
@@ -301,18 +470,97 @@ async function runCalendarOneshot(d: SweepDeps, cfg: ProactiveConfig): Promise<v
   }
 }
 
+// How many consecutive same-family failures before the sweep alerts about
+// itself.
+const ESCALATION_THRESHOLD = 3;
+
+// Escalation delivery is a DIRECT send, deliberately NOT via push(): the
+// failing family might BE the push path, and a broken chokepoint alerting
+// through itself would never land. No config => throw => caught below.
+async function defaultEscalationSend(text: string): Promise<void> {
+  const config = loadTelegramConfig();
+  if (!config) {
+    throw new Error("no Telegram config (RACHEL_TELEGRAM_TOKEN/RACHEL_TELEGRAM_CHAT_ID or ~/.rachel/telegram.json) — cannot send escalation.");
+  }
+  await sendChunked(config, text);
+}
+
+// Self-alert escalation: bump/reset per-family consecutive-failure counters
+// (persisted in the sweep state file), and from the 3rd consecutive failure
+// of a family send one best-effort direct alert — retried on subsequent
+// ticks until a send succeeds, then never repeated for the same unbroken
+// streak (the escalation_sent flag persists the success; a family recovery
+// clears both counter and flag). Recursion guard: a failing send is logged
+// and never escalated about. Family results are never affected by this.
+async function escalateSweepFailures(
+  d: SweepDeps,
+  cfg: ProactiveConfig,
+  results: Record<string, FamilyResult>,
+  errors: Record<string, string>,
+): Promise<void> {
+  const statePath = sweepStatePath(d);
+  const today = zonedDateString(d.now(), cfg.timezone);
+  const state = readSweepState(d, statePath, today);
+  // Coerce persisted counters on read: valid-JSON corruption (a "2" string)
+  // must not make the threshold comparison silently unreachable.
+  const streaks: Record<string, number> = {};
+  for (const [family, value] of Object.entries(state.failure_streaks ?? {})) {
+    streaks[family] = Number(value) || 0;
+  }
+  const escalationSent: Record<string, boolean> = { ...(state.escalation_sent ?? {}) };
+  for (const [family, result] of Object.entries(results)) {
+    if (result === "failed") {
+      streaks[family] = (streaks[family] ?? 0) + 1;
+    } else {
+      delete streaks[family];
+      delete escalationSent[family];
+    }
+  }
+  // Sends happen BEFORE the state write so a delivered escalation is what
+  // gets persisted; a failed send stays unflagged and retries next tick.
+  for (const [family, streak] of Object.entries(streaks)) {
+    if (streak < ESCALATION_THRESHOLD || escalationSent[family] === true) continue;
+    const text = `[urgent] proactive sweep itself failing: ${family}: ${errors[family] ?? "unknown error"}`;
+    try {
+      await (d.sendFn ?? defaultEscalationSend)(text);
+      escalationSent[family] = true;
+    } catch (err) {
+      // Recursion guard: log only. Never re-escalate about the escalation.
+      d.log(`[sweep] escalation send failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  try {
+    d.writeFileFn(
+      statePath,
+      JSON.stringify({ ...state, date: today, failure_streaks: streaks, escalation_sent: escalationSent } satisfies SweepState, null, 2),
+    );
+  } catch (err) {
+    d.log(`[sweep] escalation state write failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 export async function sweepTick(overrides?: Partial<SweepDeps>): Promise<Record<string, FamilyResult>> {
   const d = resolveSweepDeps(overrides);
   const pushDeps = pushDepsOf(d);
   const cfg = loadConfig(d.baseDir);
-  return {
-    flush: await runFamily("flush", d, async () => {
+  const errors: Record<string, string> = {};
+  const results: Record<string, FamilyResult> = {
+    flush: await runFamily("flush", d, errors, async () => {
       await d.flushFn(pushDeps);
     }),
-    "bridge-liveness": await runFamily("bridge-liveness", d, () => checkBridgeLiveness(d, pushDeps)),
-    "pr-red": await runFamily("pr-red", d, () => checkPrRed(d, cfg, pushDeps)),
-    calendar: await runFamily("calendar", d, () => runCalendarOneshot(d, cfg)),
+    "bridge-liveness": await runFamily("bridge-liveness", d, errors, () => checkBridgeLiveness(d, cfg, pushDeps)),
+    "pr-red": await runFamily("pr-red", d, errors, () => checkPrRed(d, cfg, pushDeps)),
+    calendar: await runFamily("calendar", d, errors, () => runCalendarOneshot(d, cfg)),
   };
+  try {
+    await escalateSweepFailures(d, cfg, results, errors);
+  } catch (err) {
+    // A broken escalation bookkeeping path (state file unreadable, ...) must
+    // not convert a partially-successful tick into a fatal rejection — the
+    // family results still return and the CLI exits on their truth.
+    d.log(`[sweep] escalation bookkeeping failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return results;
 }
 
 // Only run as a CLI when executed directly (tsx proactive/sweep.ts), not when
@@ -322,9 +570,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const results = await sweepTick();
     // Any family failure exits 1 so the monitor's own death is machine-
     // visible in launchctl's last-exit-status instead of a green tick over
-    // dead delivery. Self-alerting escalation (pushing about our own
-    // failures) is deliberately deferred to Loop 2 alongside the bridge
-    // heartbeat-file item.
+    // dead delivery. Self-alerting escalation (a direct best-effort ping on
+    // the 3rd consecutive same-family failure) already ran inside sweepTick.
     process.exit(Object.values(results).some((r) => r === "failed") ? 1 : 0);
   } catch (err) {
     console.error(`[sweep] fatal: ${err instanceof Error ? (err.stack ?? String(err)) : String(err)}`);

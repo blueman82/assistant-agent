@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync as realExistsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -59,6 +59,38 @@ function makeStubTransport(updatesSequence: unknown[]) {
     return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
   };
   return { transport, calls, getGetUpdatesCallCount: () => getUpdatesCallCount };
+}
+
+// 12:00 Dublin in summer (IST = UTC+1) — outside the 22:30-08:00 quiet
+// window, so normal-severity pushes send immediately unless a test injects
+// its own quiet clock.
+const DAYTIME = () => new Date("2026-07-15T11:00:00Z");
+// 23:30 Dublin — inside the quiet window.
+const QUIET_TIME = () => new Date("2026-07-15T22:30:00Z");
+
+// Every createBridge call in this file spreads these seams in FIRST (explicit
+// per-test values override them): the bridge's push() store and heartbeat
+// file must always land in a throwaway tmpdir, never the operator's real
+// ~/.rachel, and the clock must be pinned outside quiet hours so alert tests
+// are deterministic regardless of when the suite runs.
+function basePushOpts() {
+  const dir = mkdtempSync(join(tmpdir(), "rachel-bridge-test-"));
+  return {
+    pushBaseDir: join(dir, "proactive"),
+    heartbeatPath: join(dir, "bridge-heartbeat.json"),
+    nowFn: DAYTIME,
+  };
+}
+
+interface DeferredFileShape {
+  schema_version: number;
+  entries: Array<{ family: string; event_id: string; state: string; text: string; reason: string }>;
+}
+
+function readDeferred(pushBaseDir: string): DeferredFileShape {
+  const path = join(pushBaseDir, "deferred.json");
+  if (!realExistsSync(path)) return { schema_version: 1, entries: [] };
+  return JSON.parse(readFileSync(path, "utf8")) as DeferredFileShape;
 }
 
 function messageUpdate(updateId: number, text: string, chatId = 12345) {
@@ -158,6 +190,7 @@ test("gate integrity: a gated send-class tool call issued during a bridge-dispat
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: wrappedRunTurn,
     getSessionId: () => undefined,
@@ -240,6 +273,7 @@ test("a text message round-trips through the bridge's FIFO dispatch into runTurn
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -272,6 +306,7 @@ test("a turn emitting text, tool, and meta lines sends only the text lines to Te
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -303,6 +338,7 @@ test("a turn emitting only tool and meta lines (no text) falls back to '(no outp
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -319,7 +355,7 @@ test("a turn emitting only tool and meta lines (no text) falls back to '(no outp
   assert.equal((sendCall!.body as Record<string, unknown>)["text"], "(no output)");
 });
 
-test("a throwing runTurn still produces a reply containing '[Rachel] error:'", async () => {
+test("a throwing runTurn still produces a reply containing '[Rachel] error:' and clears the heartbeat's turn_in_flight_since", async () => {
   const { transport, calls } = makeStubTransport([
     messageUpdate(1, "trigger a failure"),
     { ok: true, result: [] },
@@ -329,7 +365,9 @@ test("a throwing runTurn still produces a reply containing '[Rachel] error:'", a
     throw new Error("boom - synthetic failure for this test");
   };
 
+  const pushSeams = basePushOpts();
   const bridge = createBridge({
+    ...pushSeams,
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -339,11 +377,17 @@ test("a throwing runTurn still produces a reply containing '[Rachel] error:'", a
 
   await bridge.drainOnce();
   await new Promise((resolve) => setTimeout(resolve, 50));
+  // A second poll iteration writes the post-throw heartbeat — the finally in
+  // drainFifo must have cleared turn_in_flight_since despite the throw.
+  await bridge.drainOnce();
   await bridge.stop();
 
   const sendCall = calls.find((c) => c.url.includes("/sendMessage"));
   assert.ok(sendCall, "expected a sendMessage reply");
   assert.match(String((sendCall!.body as Record<string, unknown>)["text"]), /\[Rachel\] error:/);
+
+  const heartbeat = JSON.parse(readFileSync(pushSeams.heartbeatPath, "utf8")) as Record<string, unknown>;
+  assert.equal(heartbeat["turn_in_flight_since"], null, "a thrown turn must not leave turn_in_flight_since stuck (phantom drain-stall)");
 });
 
 test("a runTurn that emits partial text then throws produces a reply containing both the emitted text and '[Rachel] error:'", async () => {
@@ -358,6 +402,7 @@ test("a runTurn that emits partial text then throws produces a reply containing 
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -388,6 +433,7 @@ test("/reset clears the session id so the next dispatched turn calls query() wit
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => "stale-session-id",
@@ -423,6 +469,7 @@ test("/stop aborts an in-flight turn via the AbortController passed to runTurn",
     });
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -465,6 +512,7 @@ test("a callback_query is routed to handleCallbackQuery immediately, not queued 
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -506,6 +554,7 @@ test("a callback_query from an unauthorised from.id is still routed to the surfa
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -537,6 +586,7 @@ test("a message from a chat.id other than the configured owner is dropped, not d
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -563,6 +613,7 @@ test("/status replies without dispatching to runTurn", async () => {
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -590,6 +641,7 @@ test("run() exits fatally after CONFLICT_EXIT_THRESHOLD (5) consecutive 409s —
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -638,6 +690,7 @@ test("first 409 sends a Telegram alert via sendMessage and backs off before retr
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -678,6 +731,7 @@ test("run() sends a one-time 'started' alert on boot", async () => {
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -717,6 +771,7 @@ test("recovery from 409 sends a recovery Telegram alert", async () => {
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -754,6 +809,7 @@ test("409 persisting to threshold sends FATAL alert before exiting", async () =>
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -810,6 +866,7 @@ test("/status reports last_error (recovered) after a 409 that self-healed", asyn
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -860,6 +917,7 @@ test("/status includes 'ongoing' suffix in last_error line when error has not ye
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -903,6 +961,7 @@ test("4 consecutive 409s (N-1, boundary) followed by success does NOT exit and s
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -958,6 +1017,7 @@ test("non-409 poll error sends a Telegram alert on first occurrence (healthy →
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -1008,6 +1068,7 @@ test("consecutive409 resets on non-409 error — mixed 409/non-409 streak does n
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -1044,6 +1105,7 @@ test("run() does NOT exit on a non-409/conflict poll error — only the single-p
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => {},
     getSessionId: () => undefined,
@@ -1130,6 +1192,7 @@ test("a photo message is downloaded and passed to runTurn as '[image: /path]' wi
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -1188,6 +1251,7 @@ test("a photo message with no caption passes '[image: /path]' (no newline/captio
   };
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -1233,6 +1297,7 @@ test("a document message with an image MIME type is downloaded and passed to run
   let capturedInput: string | undefined;
   let downloadedPath: string | undefined;
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async (input, emit) => { capturedInput = input; emit("ok", "text"); },
     getSessionId: () => undefined,
@@ -1279,6 +1344,7 @@ test("a document message with a non-image MIME type replies with an unsupported-
 
   let dispatched = false;
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => { dispatched = true; },
     getSessionId: () => undefined,
@@ -1325,6 +1391,7 @@ test("a photo whose downloadFileFn rejects sends a failure reply to the user and
 
   let dispatched = false;
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => { dispatched = true; },
     getSessionId: () => undefined,
@@ -1371,6 +1438,7 @@ test("a photo whose getFile call returns ok:false sends a failure reply and does
 
   let dispatched = false;
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async () => { dispatched = true; },
     getSessionId: () => undefined,
@@ -1386,6 +1454,459 @@ test("a photo whose getFile call returns ok:false sends a failure reply and does
   const sendCall = calls.find((c) => c.url.includes("/sendMessage"));
   assert.ok(sendCall, "expected a sendMessage failure reply to the user");
   assert.match(String((sendCall!.body as Record<string, unknown>)["text"]), /Failed to download image/);
+});
+
+// ---------------------------------------------------------------------------
+// Chokepoint routing — startup notice, watchdog pings, and health-transition
+// alerts go through proactive/push.ts's push() (family store + deferred.json
+// under pushBaseDir); only the FATAL 5x409 exit alert stays a direct awaited
+// sendChunked.
+// ---------------------------------------------------------------------------
+
+test("the startup notice is deferred to the push store during quiet hours instead of being sent", async () => {
+  const sendMessages: string[] = [];
+  const transport: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) {
+      return { ok: true, json: async () => ({ ok: true, result: [] }) } as Response;
+    }
+    if (url.includes("/sendMessage")) {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+      sendMessages.push(String(body.text ?? ""));
+    }
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  const pushSeams = basePushOpts();
+  const bridge = createBridge({
+    ...pushSeams,
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {},
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    nowFn: QUIET_TIME,
+  });
+
+  const runPromise = bridge.run();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await bridge.stop();
+  await runPromise;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.ok(!sendMessages.some((m) => m.toLowerCase().includes("started")), `no immediate startup send in quiet hours: ${JSON.stringify(sendMessages)}`);
+  const deferred = readDeferred(pushSeams.pushBaseDir);
+  const startupEntry = deferred.entries.find((e) => e.family === "bridge-startup");
+  assert.ok(startupEntry, `startup notice queued in deferred.json (a 3am crash-restart lands in the morning digest): ${JSON.stringify(deferred)}`);
+  assert.equal(startupEntry.event_id, "bridge:startup");
+  assert.equal(startupEntry.reason, "quiet");
+});
+
+test("startup-alert re-entry: run() driven twice on one bridge sends exactly one 'started' alert (chokepoint dedup)", async () => {
+  const sendMessages: string[] = [];
+  const transport: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) {
+      return { ok: true, json: async () => ({ ok: true, result: [] }) } as Response;
+    }
+    if (url.includes("/sendMessage")) {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+      sendMessages.push(String(body.text ?? ""));
+    }
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {},
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  // First run(): note stop() latches `stopped`, so the second run() exits its
+  // loop immediately — but its startup push still fires, which is the
+  // re-entry being pinned here.
+  const firstRun = bridge.run();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await bridge.stop();
+  await firstRun;
+  const secondRun = bridge.run();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await secondRun;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const startedAlerts = sendMessages.filter((m) => m.toLowerCase().includes("started"));
+  assert.equal(startedAlerts.length, 1, `re-entering run() must not re-announce startup — got: ${JSON.stringify(startedAlerts)}`);
+});
+
+test("a watchdog stall ping is deferred to the push store during quiet hours — no transport send, no synthetic turn", async () => {
+  const now = Date.now();
+  const watchdogDir = "/fake/watchdog";
+  const watchdogPath = watchdogDir + "/quiet-loop.watchdog.json";
+  const progressPath = "/fake/quiet-progress.json";
+
+  const entry = makeWatchdogEntry({
+    slug: "quiet-loop",
+    loop_name: "Quiet Loop",
+    pid: 22222,
+    progress_json_path: progressPath,
+    spawn_time: now - 70 * 60 * 1000,
+    last_check: null,
+    pinged_at: null,
+    done: false,
+  });
+
+  const fsFn = makeStubFs({
+    watchdogDir,
+    files: new Map([
+      [watchdogPath, JSON.stringify(entry)],
+      [progressPath, JSON.stringify({ status: "in_progress" })],
+    ]),
+    mtimes: new Map([[progressPath, now - 61 * 60 * 1000]]),
+  });
+
+  const { transport, calls } = makeStubTransport([{ ok: true, result: [] }]);
+  const pushSeams = basePushOpts();
+  let dispatched = false;
+
+  const bridge = createBridge({
+    ...pushSeams,
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => { dispatched = true; },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    watchdogDir,
+    fsFn,
+    isPidAliveFn: () => true,
+    nowFn: QUIET_TIME,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  const sendCalls = calls.filter((c) => c.url.includes("/sendMessage"));
+  assert.equal(sendCalls.length, 0, `nothing goes out over the transport in quiet hours: ${JSON.stringify(sendCalls)}`);
+  assert.equal(dispatched, false, "no synthetic turn is injected");
+  const deferred = readDeferred(pushSeams.pushBaseDir);
+  const stallEntry = deferred.entries.find((e) => e.family === "loop-watchdog");
+  assert.ok(stallEntry, `stall ping queued in deferred.json: ${JSON.stringify(deferred)}`);
+  assert.equal(stallEntry.event_id, "loop-stall:quiet-loop");
+  assert.equal(stallEntry.reason, "quiet");
+});
+
+test("the conflict-entry health alert defers during quiet hours while the FATAL 5x409 exit alert is still sent directly", async () => {
+  const sendMessages: string[] = [];
+  const transport: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) {
+      return { ok: false, json: async () => ({ ok: false, description: "Conflict: terminated by other getUpdates request" }) } as Response;
+    }
+    if (url.includes("/sendMessage")) {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+      sendMessages.push(String(body.text ?? ""));
+    }
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  const pushSeams = basePushOpts();
+  const bridge = createBridge({
+    ...pushSeams,
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {},
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    conflictBackoffMs: 5,
+    nowFn: QUIET_TIME,
+  });
+
+  const originalExit = process.exit;
+  const exitOrder: string[] = [];
+  process.exit = ((_code?: number) => {
+    exitOrder.push("exit");
+    throw new Error("process.exit stub halting run()");
+  }) as typeof process.exit;
+
+  try {
+    await assert.rejects(() => bridge.run(), /process\.exit stub/);
+  } finally {
+    process.exit = originalExit;
+  }
+
+  const fatalAlerts = sendMessages.filter((m) => m.toUpperCase().includes("FATAL"));
+  assert.equal(fatalAlerts.length, 1, `the FATAL exit alert bypasses quiet hours via direct send: ${JSON.stringify(sendMessages)}`);
+  assert.ok(
+    !sendMessages.some((m) => m.toLowerCase().includes("conflict detected")),
+    `the conflict-entry alert must NOT go out during quiet hours: ${JSON.stringify(sendMessages)}`,
+  );
+  const deferred = readDeferred(pushSeams.pushBaseDir);
+  const healthEntry = deferred.entries.find((e) => e.family === "bridge-health");
+  assert.ok(healthEntry, `conflict-entry alert queued in deferred.json: ${JSON.stringify(deferred)}`);
+  assert.equal(healthEntry.event_id, "bridge:health");
+});
+
+test("a push() failure falls back to a direct send so the startup alert is never lost to the chokepoint plumbing", async () => {
+  const sendMessages: string[] = [];
+  const transport: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) {
+      return { ok: true, json: async () => ({ ok: true, result: [] }) } as Response;
+    }
+    if (url.includes("/sendMessage")) {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+      sendMessages.push(String(body.text ?? ""));
+    }
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  const pushSeams = basePushOpts();
+  // A corrupt family store makes push() throw loudly for this family — the
+  // bridge must catch and fall back to a direct send.
+  const { mkdirSync: realMkdirSync, writeFileSync: realWriteFileSync } = await import("node:fs");
+  realMkdirSync(pushSeams.pushBaseDir, { recursive: true });
+  realWriteFileSync(join(pushSeams.pushBaseDir, "bridge-startup.json"), "not json {");
+
+  const bridge = createBridge({
+    ...pushSeams,
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {},
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  const runPromise = bridge.run();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await bridge.stop();
+  await runPromise;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const startedAlerts = sendMessages.filter((m) => m.toLowerCase().includes("started"));
+  assert.equal(startedAlerts.length, 1, `startup alert delivered via the direct-send fallback: ${JSON.stringify(sendMessages)}`);
+});
+
+// ---------------------------------------------------------------------------
+// Heartbeat tests — the bridge writes ~/.rachel/bridge-heartbeat.json (path
+// injectable via heartbeatPath) atomically on every poll iteration.
+// ---------------------------------------------------------------------------
+
+test("each poll iteration atomically writes the heartbeat with the exact four-key shape and an advancing last_poll_at", async () => {
+  const { transport } = makeStubTransport([{ ok: true, result: [] }]);
+  const watchdogDir = "/fake/watchdog";
+  const heartbeatPath = "/fake/hb/bridge-heartbeat.json";
+  const fsFn = makeStubFs({ watchdogDir });
+
+  let nowMs = new Date("2026-07-15T11:00:00Z").getTime();
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {},
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    watchdogDir,
+    fsFn,
+    isPidAliveFn: () => false,
+    heartbeatPath,
+    nowFn: () => new Date(nowMs),
+    pushBaseDir: mkdtempSync(join(tmpdir(), "rachel-bridge-push-")),
+  });
+
+  await bridge.drainOnce();
+  const first = JSON.parse(fsFn.readFile(heartbeatPath)) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(first).sort(), ["last_poll_at", "queue_depth", "schema_version", "turn_in_flight_since"]);
+  assert.equal(first["schema_version"], 1);
+  assert.equal(first["queue_depth"], 0);
+  assert.equal(first["turn_in_flight_since"], null);
+  assert.ok(!Number.isNaN(Date.parse(String(first["last_poll_at"]))), "last_poll_at is a parseable timestamp");
+
+  nowMs += 5000;
+  await bridge.drainOnce();
+  const second = JSON.parse(fsFn.readFile(heartbeatPath)) as Record<string, unknown>;
+  assert.ok(
+    Date.parse(String(second["last_poll_at"])) > Date.parse(String(first["last_poll_at"])),
+    "last_poll_at strictly advances between iterations",
+  );
+
+  // Atomicity: every heartbeat write is temp-file-then-rename in the same
+  // directory (push.ts idiom) — never a direct write to the final path.
+  assert.ok(
+    fsFn.written.every((w) => w.path !== heartbeatPath),
+    "no direct write to the final heartbeat path",
+  );
+  const tmpWrites = fsFn.written.filter((w) => w.path.startsWith(`${heartbeatPath}.tmp-`));
+  assert.equal(tmpWrites.length, 2, "one temp write per poll iteration");
+  assert.ok(
+    fsFn.renames.some((r) => r.from.startsWith(`${heartbeatPath}.tmp-`) && r.to === heartbeatPath),
+    `temp file renamed onto the heartbeat path, got renames: ${JSON.stringify(fsFn.renames)}`,
+  );
+  await bridge.stop();
+});
+
+test("the heartbeat carries turn_in_flight_since while a turn is draining and null once it completes, with queue_depth counting waiting turns", async () => {
+  const { transport } = makeStubTransport([
+    {
+      ok: true,
+      result: [
+        { update_id: 1, message: { message_id: 1, chat: { id: 12345 }, text: "slow task", from: { id: 12345 } } },
+        { update_id: 2, message: { message_id: 2, chat: { id: 12345 }, text: "queued behind it", from: { id: 12345 } } },
+      ],
+    },
+    { ok: true, result: [] },
+  ]);
+  const watchdogDir = "/fake/watchdog";
+  const heartbeatPath = "/fake/hb/bridge-heartbeat.json";
+  const fsFn = makeStubFs({ watchdogDir });
+
+  let releaseTurn: (() => void) | undefined;
+  let turnCount = 0;
+  const runTurnStub: BridgeRunTurn = (_input, emit) =>
+    new Promise<void>((resolve) => {
+      turnCount++;
+      if (turnCount === 1) {
+        releaseTurn = () => {
+          emit("done", "text");
+          resolve();
+        };
+      } else {
+        emit("ok", "text");
+        resolve();
+      }
+    });
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    watchdogDir,
+    fsFn,
+    isPidAliveFn: () => false,
+    heartbeatPath,
+    pushBaseDir: mkdtempSync(join(tmpdir(), "rachel-bridge-push-")),
+  });
+
+  try {
+    await bridge.drainOnce();
+    // The first turn is now blocked in-flight; the second message waits in the FIFO.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await bridge.drainOnce();
+    const during = JSON.parse(fsFn.readFile(heartbeatPath)) as Record<string, unknown>;
+    assert.ok(during["turn_in_flight_since"] !== null, "turn_in_flight_since set while a turn is draining");
+    assert.ok(!Number.isNaN(Date.parse(String(during["turn_in_flight_since"]))), "turn_in_flight_since is a parseable timestamp");
+    assert.equal(during["queue_depth"], 1, "the queued second message is counted");
+
+    releaseTurn!();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await bridge.drainOnce();
+    const after = JSON.parse(fsFn.readFile(heartbeatPath)) as Record<string, unknown>;
+    assert.equal(after["turn_in_flight_since"], null, "cleared once the drain completes");
+    assert.equal(after["queue_depth"], 0);
+  } finally {
+    // Release the blocked turn even on assertion failure — a forever-pending
+    // runTurn plus its typing interval would otherwise hang the test run.
+    releaseTurn?.();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await bridge.stop();
+  }
+});
+
+test("no heartbeat is written while polls are failing — staleness under backoff is the wedge detector's load-bearing signal", async () => {
+  let getUpdatesCalls = 0;
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) {
+      getUpdatesCalls++;
+      throw new Error("ECONNRESET: network down");
+    }
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+  const watchdogDir = "/fake/watchdog";
+  const heartbeatPath = "/fake/hb/bridge-heartbeat.json";
+  const fsFn = makeStubFs({ watchdogDir });
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {},
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    watchdogDir,
+    fsFn,
+    isPidAliveFn: () => false,
+    heartbeatPath,
+  });
+
+  const runPromise = bridge.run();
+  // First failure hits the 1000ms initial backoff, the second doubles it —
+  // waiting 2200ms spans multiple failing poll/backoff cycles.
+  await new Promise((resolve) => setTimeout(resolve, 2200));
+  await bridge.stop();
+  await runPromise;
+
+  assert.ok(getUpdatesCalls >= 2, `multiple failing poll cycles occurred (got ${getUpdatesCalls})`);
+  assert.equal(
+    fsFn.written.filter((w) => w.path.includes("bridge-heartbeat")).length,
+    0,
+    `ZERO heartbeat writes while polling fails — wedge detection reads this staleness: ${JSON.stringify(fsFn.written.map((w) => w.path))}`,
+  );
+  assert.equal(fsFn.renames.length, 0, "zero heartbeat renames while polling fails");
+});
+
+test("a failing heartbeat write never breaks polling and logs once per failure state, not per tick", async () => {
+  const { transport, getGetUpdatesCallCount } = makeStubTransport([{ ok: true, result: [] }]);
+  const watchdogDir = "/fake/watchdog";
+  const heartbeatPath = "/fake/hb/bridge-heartbeat.json";
+  const fsFn = makeStubFs({ watchdogDir });
+  let failWrites = true;
+  const originalWrite = fsFn.writeFile.bind(fsFn);
+  fsFn.writeFile = (path: string, content: string) => {
+    if (failWrites && path.includes("bridge-heartbeat")) throw new Error("EACCES: heartbeat dir unwritable");
+    originalWrite(path, content);
+  };
+
+  const errorLines: string[] = [];
+  const originalConsoleError = console.error;
+  console.error = (...args: unknown[]) => {
+    errorLines.push(args.map(String).join(" "));
+  };
+
+  try {
+    const bridge = createBridge({
+      ...basePushOpts(),
+      config: { token: "t", chatId: "12345", transport },
+      runTurn: async () => {},
+      getSessionId: () => undefined,
+      resetSession: () => {},
+      pollIntervalMs: 5,
+      watchdogDir,
+      fsFn,
+      isPidAliveFn: () => false,
+      heartbeatPath,
+    });
+
+    await bridge.drainOnce();
+    await bridge.drainOnce();
+    const heartbeatErrors = () => errorLines.filter((l) => l.includes("heartbeat"));
+    assert.equal(heartbeatErrors().length, 1, `one log for the whole failing state, not one per tick: ${JSON.stringify(errorLines)}`);
+
+    failWrites = false;
+    await bridge.drainOnce();
+    failWrites = true;
+    await bridge.drainOnce();
+    assert.equal(heartbeatErrors().length, 2, "a recovery then a fresh failure logs again");
+    assert.equal(getGetUpdatesCallCount(), 4, "polling never stopped");
+    await bridge.stop();
+  } finally {
+    console.error = originalConsoleError;
+  }
 });
 
 test("grep guard: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
@@ -1409,17 +1930,26 @@ function makeStubFs(opts: {
   files?: Map<string, string>;
   mtimes?: Map<string, number>;
   globResults?: string[];
-}): FsFunctions & { written: { path: string; content: string }[]; unlinked: string[] } {
+}): FsFunctions & { written: { path: string; content: string }[]; unlinked: string[]; renames: { from: string; to: string }[] } {
   const files: Map<string, string> = opts.files ?? new Map();
   const mtimes: Map<string, number> = opts.mtimes ?? new Map();
   const globResults: string[] = opts.globResults ?? [];
   const existingDirs: Set<string> = new Set([opts.watchdogDir]);
   const written: { path: string; content: string }[] = [];
   const unlinked: string[] = [];
+  const renames: { from: string; to: string }[] = [];
 
   return {
     written,
     unlinked,
+    renames,
+    rename(from: string, to: string): void {
+      const content = files.get(from);
+      if (content === undefined) throw new Error(`ENOENT rename: ${from}`);
+      files.delete(from);
+      files.set(to, content);
+      renames.push({ from, to });
+    },
     readdir(dir: string): string[] {
       const prefix = dir.endsWith("/") ? dir : dir + "/";
       const names: string[] = [];
@@ -1520,9 +2050,11 @@ test("watchdog: pid-gone with complete LOOP-STOP injects a synthetic turn and un
     emit("ok", "text");
   };
 
-  const { transport } = makeStubTransport([{ ok: true, result: [] }]);
+  const { transport, calls } = makeStubTransport([{ ok: true, result: [] }]);
+  const pushSeams = basePushOpts();
 
   const bridge = createBridge({
+    ...pushSeams,
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -1537,10 +2069,21 @@ test("watchdog: pid-gone with complete LOOP-STOP injects a synthetic turn and un
   await new Promise((resolve) => setTimeout(resolve, 100));
   await bridge.stop();
 
+  // The exit ping routes through the push() chokepoint (family
+  // loop-watchdog, event loop-exit:<slug>), not through a synthetic Rachel
+  // turn — daytime clock, so it delivers immediately via the transport.
+  const sent = calls
+    .filter((c) => c.url.includes("/sendMessage"))
+    .map((c) => String((c.body as Record<string, unknown>)["text"]));
   assert.ok(
-    capturedInputs.some((s) => /complete:1/.test(s)),
-    `expected a turn containing "complete:1", got: ${JSON.stringify(capturedInputs)}`,
+    sent.some((s) => /complete:1/.test(s) && /has exited/.test(s)),
+    `expected a delivered exit ping containing "complete:1", got: ${JSON.stringify(sent)}`,
   );
+  assert.equal(capturedInputs.length, 0, "no synthetic turn is injected — the ping goes via push(), not runTurn");
+  const familyStore = JSON.parse(readFileSync(join(pushSeams.pushBaseDir, "loop-watchdog.json"), "utf8")) as {
+    events: Record<string, { state: string }>;
+  };
+  assert.ok(familyStore.events["loop-exit:test-loop"], `loop-exit:<slug> recorded in the store: ${JSON.stringify(familyStore.events)}`);
   assert.ok(
     fsFn.unlinked.includes(watchdogPath),
     `expected watchdog file to be unlinked, got unlinked: ${JSON.stringify(fsFn.unlinked)}`,
@@ -1588,9 +2131,11 @@ test("watchdog: pid alive with 61 min progress.json silence injects a stall turn
     emit("ok", "text");
   };
 
-  const { transport } = makeStubTransport([{ ok: true, result: [] }]);
+  const { transport, calls } = makeStubTransport([{ ok: true, result: [] }]);
+  const pushSeams = basePushOpts();
 
   const bridge = createBridge({
+    ...pushSeams,
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -1605,16 +2150,25 @@ test("watchdog: pid alive with 61 min progress.json silence injects a stall turn
   await new Promise((resolve) => setTimeout(resolve, 100));
   await bridge.stop();
 
+  // The stall ping routes through the push() chokepoint (family
+  // loop-watchdog, event loop-stall:<slug>) — not a synthetic Rachel turn.
+  const sent = calls
+    .filter((c) => c.url.includes("/sendMessage"))
+    .map((c) => String((c.body as Record<string, unknown>)["text"]));
   assert.ok(
-    capturedInputs.some((s) => /gone quiet/i.test(s)),
-    `expected a turn containing "gone quiet", got: ${JSON.stringify(capturedInputs)}`,
+    sent.some((s) => /gone quiet/i.test(s) && /Stall Loop/.test(s)),
+    `expected a delivered stall ping naming the loop, got: ${JSON.stringify(sent)}`,
   );
-  assert.ok(
-    capturedInputs.some((s) => /Stall Loop/.test(s)),
-    `expected the loop name in the turn, got: ${JSON.stringify(capturedInputs)}`,
-  );
+  assert.equal(capturedInputs.length, 0, "no synthetic turn is injected — the ping goes via push(), not runTurn");
+  const familyStore = JSON.parse(readFileSync(join(pushSeams.pushBaseDir, "loop-watchdog.json"), "utf8")) as {
+    events: Record<string, { state: string }>;
+  };
+  assert.ok(familyStore.events["loop-stall:stall-loop"], `loop-stall:<slug> recorded in the store: ${JSON.stringify(familyStore.events)}`);
 
-  // The watchdog should have been written with pinged_at set.
+  // The watchdog's own pinged_at debounce is KEPT as a layer above the
+  // chokepoint dedup: they are not behaviour-equivalent (a sleep/wake bumps
+  // the wake_floor into a fresh chokepoint state, which would re-ping a
+  // still-stalled loop that pinged_at correctly suppresses).
   const writtenForWatchdog = fsFn.written.filter((w) => w.path === watchdogPath);
   assert.ok(writtenForWatchdog.length > 0, "expected watchdog to be written");
   const lastWritten = JSON.parse(writtenForWatchdog[writtenForWatchdog.length - 1]!.content) as WatchdogEntry;
@@ -1666,6 +2220,7 @@ test("watchdog: sleep gap sets wake_floor and suppresses false stall ping", asyn
   const { transport } = makeStubTransport([{ ok: true, result: [] }]);
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -1751,6 +2306,7 @@ test("watchdog: session-id binding resolves progress_json_path via session_id, n
   const { transport } = makeStubTransport([{ ok: true, result: [] }]);
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: async (_input, emit) => { emit("ok", "text"); },
     getSessionId: () => undefined,
@@ -1818,6 +2374,7 @@ test("watchdog: mtime advance past pinged_at clears the stall debounce (pinged_a
   const { transport } = makeStubTransport([{ ok: true, result: [] }]);
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -1877,6 +2434,7 @@ test("watchdog: done=true watchdog file is unlinked and no turn is injected", as
   const { transport } = makeStubTransport([{ ok: true, result: [] }]);
 
   const bridge = createBridge({
+    ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -1916,6 +2474,7 @@ test("watchdog: empty watchdog dir produces no error and no turn injection", asy
   let threw = false;
   try {
     const bridge = createBridge({
+      ...basePushOpts(),
       config: { token: "t", chatId: "12345", transport },
       runTurn: runTurnStub,
       getSessionId: () => undefined,

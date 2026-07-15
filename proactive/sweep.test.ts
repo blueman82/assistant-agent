@@ -593,6 +593,382 @@ test("a failing family is reported as failed so the CLI can exit non-zero", asyn
   assert.equal(results["bridge-liveness"], "ok");
 });
 
+// --- Bridge heartbeat: wedged-alive + drain-stall detection ---
+
+const HEARTBEAT_PATH = (h: ReturnType<typeof makeHarness>) => join(h.homeDir, ".rachel", "bridge-heartbeat.json");
+
+function seedHeartbeat(
+  h: ReturnType<typeof makeHarness>,
+  opts: { lastPollAgoMs: number; turnInFlightAgoMs?: number; queueDepth?: number },
+): { turnInFlightSince: string | null } {
+  const turnInFlightSince =
+    opts.turnInFlightAgoMs === undefined ? null : new Date(DAYTIME().getTime() - opts.turnInFlightAgoMs).toISOString();
+  h.files.set(
+    HEARTBEAT_PATH(h),
+    JSON.stringify({
+      schema_version: 1,
+      last_poll_at: new Date(DAYTIME().getTime() - opts.lastPollAgoMs).toISOString(),
+      queue_depth: opts.queueDepth ?? 0,
+      turn_in_flight_since: turnInFlightSince,
+    }),
+  );
+  return { turnInFlightSince };
+}
+
+test("heartbeat 11min stale with launchctl alive pushes one urgent wedged bridge-down event", async () => {
+  const h = makeHarness();
+  seedHeartbeat(h, { lastPollAgoMs: 11 * 60_000 });
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 1);
+  const p = h.pushes[0]!;
+  assert.equal(p.family, "bridge-liveness");
+  assert.equal(p.eventId, "bridge:liveness");
+  assert.equal(p.state, "down");
+  assert.equal(p.severity, "urgent");
+  assert.ok(p.text.startsWith("[urgent · bridge]"), `urgent bridge tag: ${p.text}`);
+  assert.ok(p.text.toLowerCase().includes("wedged"), `message identifies the wedge: ${p.text}`);
+});
+
+test("heartbeat 6min stale (past the whole 5x65s conflict-backoff window) with launchctl alive pushes nothing", async () => {
+  const h = makeHarness();
+  seedHeartbeat(h, { lastPollAgoMs: 6 * 60_000 });
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 0);
+});
+
+test("missing heartbeat file with launchctl alive pushes nothing and logs the pre-U2b unknown", async () => {
+  const h = makeHarness();
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 0);
+  assert.ok(
+    h.logs.some((line) => line.includes("no heartbeat file")),
+    `unknown (pre-U2b) logged, never alarmed: ${JSON.stringify(h.logs)}`,
+  );
+});
+
+test("corrupt heartbeat JSON logs and pushes nothing (treated as unknown, not wedged)", async () => {
+  const h = makeHarness();
+  h.files.set(HEARTBEAT_PATH(h), "not json {");
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 0);
+  assert.ok(
+    h.logs.some((line) => line.includes("heartbeat")),
+    `corrupt heartbeat logged: ${JSON.stringify(h.logs)}`,
+  );
+});
+
+test("a wedged bridge suppresses the recovery push (no up ping while the heartbeat is stale)", async () => {
+  const h = makeHarness();
+  h.deps.getStateFn = () => "down";
+  seedHeartbeat(h, { lastPollAgoMs: 11 * 60_000 });
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 1);
+  assert.equal(h.pushes[0]!.state, "down");
+});
+
+test("a fresh heartbeat with prior state down still pushes the recovery event", async () => {
+  const h = makeHarness();
+  h.deps.getStateFn = () => "down";
+  seedHeartbeat(h, { lastPollAgoMs: 60_000 });
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 1);
+  assert.equal(h.pushes[0]!.state, "up");
+});
+
+test("turn_in_flight_since 31min old with a fresh poll pushes one normal drain-stall event carrying duration and queue depth", async () => {
+  const h = makeHarness();
+  const { turnInFlightSince } = seedHeartbeat(h, { lastPollAgoMs: 60_000, turnInFlightAgoMs: 31 * 60_000, queueDepth: 3 });
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 1);
+  const p = h.pushes[0]!;
+  assert.equal(p.family, "bridge-liveness");
+  assert.equal(p.eventId, "bridge:drain-stall");
+  assert.equal(p.state, turnInFlightSince, "state is the turn_in_flight_since timestamp so a new turn re-arms the ping");
+  assert.equal(p.severity, "normal");
+  assert.equal(p.text, "[bridge] turn running 31m, queue depth 3");
+});
+
+test("turn_in_flight_since 20min old pushes nothing (under the 30min threshold)", async () => {
+  const h = makeHarness();
+  seedHeartbeat(h, { lastPollAgoMs: 60_000, turnInFlightAgoMs: 20 * 60_000, queueDepth: 3 });
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 0);
+});
+
+test("wedge and drain-stall fire in the same tick as independent events", async () => {
+  const h = makeHarness();
+  seedHeartbeat(h, { lastPollAgoMs: 11 * 60_000, turnInFlightAgoMs: 40 * 60_000, queueDepth: 2 });
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 2);
+  const ids = h.pushes.map((p) => p.eventId).sort();
+  assert.deepEqual(ids, ["bridge:drain-stall", "bridge:liveness"]);
+});
+
+test("a heartbeat exactly 10 minutes stale is not wedged (strict threshold)", async () => {
+  const h = makeHarness();
+  seedHeartbeat(h, { lastPollAgoMs: 10 * 60_000 });
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 0);
+});
+
+test("a heartbeat 10 minutes and one second stale is wedged", async () => {
+  const h = makeHarness();
+  seedHeartbeat(h, { lastPollAgoMs: 10 * 60_000 + 1000 });
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 1);
+  assert.equal(h.pushes[0]!.state, "down");
+});
+
+test("a turn in flight exactly 30 minutes is not a drain stall (strict threshold)", async () => {
+  const h = makeHarness();
+  seedHeartbeat(h, { lastPollAgoMs: 60_000, turnInFlightAgoMs: 30 * 60_000, queueDepth: 1 });
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 0);
+});
+
+test("a turn in flight 30 minutes and one second is a drain stall", async () => {
+  const h = makeHarness();
+  seedHeartbeat(h, { lastPollAgoMs: 60_000, turnInFlightAgoMs: 30 * 60_000 + 1000, queueDepth: 1 });
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 1);
+  assert.equal(h.pushes[0]!.eventId, "bridge:drain-stall");
+  assert.equal(h.pushes[0]!.text, "[bridge] turn running 30m, queue depth 1");
+});
+
+test("integration: a NEW in-flight turn re-arms the drain-stall ping through the real chokepoint", async () => {
+  const { push, getEventState } = await import("./push.ts");
+  const h = makeHarness();
+  const sent: string[] = [];
+  h.deps.sendFn = async (text) => {
+    sent.push(text);
+  };
+  h.deps.pushFn = push;
+  h.deps.getStateFn = getEventState;
+  seedHeartbeat(h, { lastPollAgoMs: 60_000, turnInFlightAgoMs: 31 * 60_000, queueDepth: 2 });
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  assert.equal(sent.filter((t) => t.includes("turn running")).length, 1, "identical stall dedups");
+  seedHeartbeat(h, { lastPollAgoMs: 60_000, turnInFlightAgoMs: 45 * 60_000, queueDepth: 2 });
+  await sweepTick(h.deps);
+  assert.equal(sent.filter((t) => t.includes("turn running")).length, 2, "a different turn_in_flight_since re-arms");
+});
+
+// --- Heartbeat-missing grace deadline (48h) ---
+
+function seedSweepState(h: ReturnType<typeof makeHarness>, extra: object, date = "2026-07-15"): void {
+  h.files.set(STATE_PATH(h), JSON.stringify({ schema_version: 1, date, oneshot_hours_run: [], ...extra }));
+}
+
+test("first tick observing a missing heartbeat records heartbeat_missing_since and pushes nothing", async () => {
+  const h = makeHarness();
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 0);
+  const state = JSON.parse(h.files.get(STATE_PATH(h))!) as { heartbeat_missing_since?: number };
+  assert.equal(state.heartbeat_missing_since, DAYTIME().getTime(), "first-observed-missing timestamp recorded");
+});
+
+test("a heartbeat missing for 47h with launchctl alive stays silent (inside the deploy-ordering grace)", async () => {
+  const h = makeHarness();
+  seedSweepState(h, { heartbeat_missing_since: DAYTIME().getTime() - 47 * 60 * 60 * 1000 });
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 0);
+});
+
+test("a heartbeat missing for 49h pushes one normal bridge:heartbeat-missing event whose state is the first-observed date", async () => {
+  const h = makeHarness();
+  const since = DAYTIME().getTime() - 49 * 60 * 60 * 1000;
+  // Seeded with a stale date: the grace timestamp must survive the Dublin
+  // date rollover, like the failure streaks.
+  seedSweepState(h, { heartbeat_missing_since: since }, "2026-07-13");
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 1);
+  const p = h.pushes[0]!;
+  assert.equal(p.family, "bridge-liveness");
+  assert.equal(p.eventId, "bridge:heartbeat-missing");
+  assert.equal(p.severity, "normal");
+  assert.equal(p.state, new Date(since).toISOString(), "state is the first-observed date so a resolved-then-rebroken heartbeat re-arms");
+  assert.ok(p.text.includes("wedge detection inactive"), `text names the dead detection: ${p.text}`);
+});
+
+test("integration: the heartbeat-missing alert dedups through the real chokepoint on the next tick", async () => {
+  const { push, getEventState } = await import("./push.ts");
+  const h = makeHarness();
+  const sent: string[] = [];
+  h.deps.sendFn = async (text) => {
+    sent.push(text);
+  };
+  h.deps.pushFn = push;
+  h.deps.getStateFn = getEventState;
+  seedSweepState(h, { heartbeat_missing_since: DAYTIME().getTime() - 49 * 60 * 60 * 1000 });
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  assert.equal(sent.filter((t) => t.includes("wedge detection inactive")).length, 1, "one alert per unbroken missing streak");
+});
+
+test("a heartbeat appearing clears heartbeat_missing_since from the sweep state", async () => {
+  const h = makeHarness();
+  seedSweepState(h, { heartbeat_missing_since: DAYTIME().getTime() - 49 * 60 * 60 * 1000 });
+  seedHeartbeat(h, { lastPollAgoMs: 60_000 });
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 0);
+  const state = JSON.parse(h.files.get(STATE_PATH(h))!) as { heartbeat_missing_since?: number };
+  assert.equal(state.heartbeat_missing_since, undefined, "grace tracking cleared once the heartbeat exists");
+});
+
+test("integration: a wedged bridge delivers ONE urgent push through the real chokepoint inside quiet hours and dedups on the next tick", async () => {
+  const { push, getEventState } = await import("./push.ts");
+  const h = makeHarness();
+  // 23:30 Dublin — inside the quiet window; only urgent deliveries go out.
+  h.deps.now = () => new Date("2026-07-15T22:30:00Z");
+  const sent: string[] = [];
+  h.deps.sendFn = async (text) => {
+    sent.push(text);
+  };
+  h.deps.pushFn = push;
+  h.deps.getStateFn = getEventState;
+  h.files.set(
+    HEARTBEAT_PATH(h),
+    JSON.stringify({
+      schema_version: 1,
+      last_poll_at: new Date(h.deps.now().getTime() - 11 * 60_000).toISOString(),
+      queue_depth: 0,
+      turn_in_flight_since: null,
+    }),
+  );
+  await sweepTick(h.deps);
+  assert.equal(sent.length, 1, "the urgent wedge ping bypasses quiet hours");
+  assert.ok(sent[0]!.includes("wedged"), `delivered text identifies the wedge: ${sent[0]}`);
+  assert.equal(getEventState("bridge-liveness", "bridge:liveness", { baseDir: h.baseDir }), "down");
+  await sweepTick(h.deps);
+  assert.equal(sent.length, 1, "an identical second tick dedups — no re-ping");
+});
+
+// --- Self-alert escalation: 3 consecutive same-family failures ---
+
+const ESCALATION_PREFIX = "[urgent] proactive sweep itself failing";
+
+function escalations(sent: string[]): string[] {
+  return sent.filter((text) => text.startsWith(ESCALATION_PREFIX));
+}
+
+function failingFlushHarness() {
+  const h = makeHarness();
+  const sent: string[] = [];
+  h.deps.sendFn = async (text) => {
+    sent.push(text);
+  };
+  h.deps.flushFn = async () => {
+    throw new Error("corrupt deferred queue");
+  };
+  return { h, sent };
+}
+
+test("the 3rd consecutive failure of one family sends exactly one escalation naming the family and last error — none at 1-2, none at 4", async () => {
+  const { h, sent } = failingFlushHarness();
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  assert.equal(escalations(sent).length, 0, "no escalation before the 3rd consecutive failure");
+  await sweepTick(h.deps);
+  assert.deepEqual(escalations(sent), ["[urgent] proactive sweep itself failing: flush: corrupt deferred queue"]);
+  await sweepTick(h.deps);
+  assert.equal(escalations(sent).length, 1, "an unbroken streak escalates exactly once");
+  assert.ok(!h.pushes.some((p) => p.text.startsWith(ESCALATION_PREFIX)), "escalation is a direct send, never routed via push()");
+});
+
+test("a family success resets the streak and a fresh 3-streak escalates again", async () => {
+  const { h, sent } = failingFlushHarness();
+  const failingFlush = h.deps.flushFn;
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  h.deps.flushFn = async () => "empty";
+  await sweepTick(h.deps);
+  assert.equal(escalations(sent).length, 0, "a success before the 3rd failure means no escalation");
+  h.deps.flushFn = failingFlush;
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  assert.equal(escalations(sent).length, 1, "a fresh 3-streak after a reset escalates once");
+});
+
+test("a failed escalation send is logged, never re-escalated about, retried on later ticks, and never repeated once one succeeds", async () => {
+  const { h } = failingFlushHarness();
+  let attempts = 0;
+  let failSend = true;
+  h.deps.sendFn = async () => {
+    attempts++;
+    if (failSend) throw new Error("telegram is the thing that is down");
+  };
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  const results = await sweepTick(h.deps);
+  assert.equal(results["flush"], "failed", "family results are unaffected by the escalation send outcome");
+  assert.equal(attempts, 1, "one attempt on the 3rd consecutive failure");
+  assert.ok(
+    h.logs.some((line) => line.includes("escalation send failed")),
+    `send failure logged: ${JSON.stringify(h.logs)}`,
+  );
+  await sweepTick(h.deps);
+  assert.equal(attempts, 2, "tick 4 retries ONLY because tick 3's send failed");
+  failSend = false;
+  await sweepTick(h.deps);
+  assert.equal(attempts, 3, "retry keeps going until one send succeeds");
+  await sweepTick(h.deps);
+  assert.equal(attempts, 3, "once a send succeeded, no repeats until the streak resets");
+});
+
+test("string-corrupted failure_streaks values are coerced on read so the threshold still fires", async () => {
+  const { h, sent } = failingFlushHarness();
+  seedSweepState(h, { failure_streaks: { flush: "2" } });
+  await sweepTick(h.deps);
+  assert.deepEqual(escalations(sent), ["[urgent] proactive sweep itself failing: flush: corrupt deferred queue"]);
+});
+
+test("two families failing simultaneously escalate independently, each naming its own family and error", async () => {
+  const h = makeHarness();
+  const sent: string[] = [];
+  h.deps.sendFn = async (text) => {
+    sent.push(text);
+  };
+  h.deps.flushFn = async () => {
+    throw new Error("corrupt deferred queue");
+  };
+  h.deps.execFn = async (cmd) => {
+    if (cmd === "launchctl") throw new Error("launchctl exploded");
+    return { stdout: "", stderr: "", exitCode: 0 };
+  };
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  const esc = escalations(sent);
+  assert.equal(esc.length, 2, `one escalation per failing family: ${JSON.stringify(esc)}`);
+  assert.ok(esc.some((t) => t.includes("flush: corrupt deferred queue")));
+  assert.ok(esc.some((t) => t.includes("bridge-liveness: launchctl exploded")));
+});
+
+test("an escalation bookkeeping failure (state file unreadable) is logged and never rejects the tick", async () => {
+  const h = makeHarness();
+  h.deps.readFileFn = () => {
+    throw new Error("EIO: state file unreadable");
+  };
+  const results = await sweepTick(h.deps);
+  assert.equal(results["bridge-liveness"], "failed", "the heartbeat read failure still surfaces as a family failure");
+  assert.ok(
+    h.logs.some((line) => line.includes("escalation bookkeeping failed")),
+    `bookkeeping failure logged, tick resolved: ${JSON.stringify(h.logs)}`,
+  );
+});
+
+test("failure streaks persist in the sweep state file and survive a Dublin date rollover", async () => {
+  const { h, sent } = failingFlushHarness();
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  const state = JSON.parse(h.files.get(STATE_PATH(h))!) as { failure_streaks?: Record<string, number> };
+  assert.equal(state.failure_streaks?.["flush"], 2, "streak counter persisted in the sweep state file");
+  h.deps.now = () => new Date("2026-07-16T11:00:00Z");
+  await sweepTick(h.deps);
+  assert.equal(escalations(sent).length, 1, "the streak survives the date rollover — 3rd consecutive failure still escalates");
+});
+
 test("grep guard for proactive/sweep.test.ts: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
   const source = await (await import("node:fs/promises")).readFile(new URL("./sweep.test.ts", import.meta.url), "utf8");
   const realFetchCall = /fetch\(\s*["'`]https:\/\/api\.telegram\.org/;

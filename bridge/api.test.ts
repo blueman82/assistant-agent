@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { tg, sendChunked, sendTyping, setMyCommands, stripMarkdown } from "./api.ts";
+import { tg, sendChunked, sendTyping, setMyCommands, stripMarkdown, DEFAULT_REQUEST_TIMEOUT_MS } from "./api.ts";
 
 function makeStubTransport(handler: (url: string, body: unknown) => unknown) {
   const calls: { url: string; body: unknown }[] = [];
@@ -224,6 +224,12 @@ test("sendChunked strips markdown before the text reaches the sendMessage body",
   await sendChunked({ token: "t", chatId: "1", transport }, "**Done.** Draft saved to `drafts/`");
   const sendCalls = calls.filter((c) => c.url.includes("/sendMessage"));
   assert.equal((sendCalls[0]!.body as Record<string, unknown>)["text"], "Done. Draft saved to drafts/");
+});
+
+test("DEFAULT_REQUEST_TIMEOUT_MS stays comfortably above the 30s getUpdates server-side long-poll", () => {
+  // A value at or under 30_000 would abort every long-poll — this guards the
+  // constant against a production-breaking edit.
+  assert.ok(DEFAULT_REQUEST_TIMEOUT_MS > 30_000, `got ${DEFAULT_REQUEST_TIMEOUT_MS}`);
 });
 
 test("grep guard: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
