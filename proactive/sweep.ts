@@ -10,7 +10,7 @@ import { readFileSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { push, flushDeferred, getEventState, loadConfig, zonedMinutesOfDay } from "./push.ts";
+import { push, flushDeferred, getEventState, loadConfig, zonedDateString, zonedMinutesOfDay } from "./push.ts";
 import type { ProactiveConfig, PushDeps } from "./push.ts";
 
 export interface SweepDeps {
