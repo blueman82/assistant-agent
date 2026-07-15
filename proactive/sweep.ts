@@ -275,15 +275,19 @@ async function runCalendarOneshot(d: SweepDeps, cfg: ProactiveConfig): Promise<v
   if (due.length === 0) {
     return;
   }
+  // State is written BEFORE the spawn starts: a failing write then means no
+  // child was ever started (no orphaned 15-minute LLM run), while the
+  // recorded hours still prevent a respawn storm on every subsequent tick
+  // when the one-shot itself hangs or times out.
+  d.writeFileFn(
+    statePath,
+    JSON.stringify({ schema_version: 1, date: today, oneshot_hours_run: [...state.oneshot_hours_run, ...due] } satisfies SweepState, null, 2),
+  );
   const spawn = d.execFn(join(d.repoDir, "bin", "rachel"), ["Read tasks/proactive-calendar.md and follow it."], {
     env: { RACHEL_ALLOWED_TOOLS: ONESHOT_TOOLS },
     stdinNull: true,
     timeoutMs: d.oneshotTimeoutMs,
   });
-  d.writeFileFn(
-    statePath,
-    JSON.stringify({ schema_version: 1, date: today, oneshot_hours_run: [...state.oneshot_hours_run, ...due] } satisfies SweepState, null, 2),
-  );
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<"timeout">((resolve) => {
     timer = setTimeout(() => resolve("timeout"), d.oneshotTimeoutMs);
