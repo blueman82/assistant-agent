@@ -1810,6 +1810,49 @@ test("the heartbeat carries turn_in_flight_since while a turn is draining and nu
   }
 });
 
+test("no heartbeat is written while polls are failing — staleness under backoff is the wedge detector's load-bearing signal", async () => {
+  let getUpdatesCalls = 0;
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) {
+      getUpdatesCalls++;
+      throw new Error("ECONNRESET: network down");
+    }
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+  const watchdogDir = "/fake/watchdog";
+  const heartbeatPath = "/fake/hb/bridge-heartbeat.json";
+  const fsFn = makeStubFs({ watchdogDir });
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {},
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    watchdogDir,
+    fsFn,
+    isPidAliveFn: () => false,
+    heartbeatPath,
+  });
+
+  const runPromise = bridge.run();
+  // First failure hits the 1000ms initial backoff, the second doubles it —
+  // waiting 2200ms spans multiple failing poll/backoff cycles.
+  await new Promise((resolve) => setTimeout(resolve, 2200));
+  await bridge.stop();
+  await runPromise;
+
+  assert.ok(getUpdatesCalls >= 2, `multiple failing poll cycles occurred (got ${getUpdatesCalls})`);
+  assert.equal(
+    fsFn.written.filter((w) => w.path.includes("bridge-heartbeat")).length,
+    0,
+    `ZERO heartbeat writes while polling fails — wedge detection reads this staleness: ${JSON.stringify(fsFn.written.map((w) => w.path))}`,
+  );
+  assert.equal(fsFn.renames.length, 0, "zero heartbeat renames while polling fails");
+});
+
 test("a failing heartbeat write never breaks polling and logs once per failure state, not per tick", async () => {
   const { transport, getGetUpdatesCallCount } = makeStubTransport([{ ok: true, result: [] }]);
   const watchdogDir = "/fake/watchdog";
