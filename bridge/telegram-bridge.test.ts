@@ -1848,10 +1848,11 @@ test("watchdog: pid alive with 61 min progress.json silence injects a stall turn
     emit("ok", "text");
   };
 
-  const { transport } = makeStubTransport([{ ok: true, result: [] }]);
+  const { transport, calls } = makeStubTransport([{ ok: true, result: [] }]);
+  const pushSeams = basePushOpts();
 
   const bridge = createBridge({
-    ...basePushOpts(),
+    ...pushSeams,
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
@@ -1866,16 +1867,25 @@ test("watchdog: pid alive with 61 min progress.json silence injects a stall turn
   await new Promise((resolve) => setTimeout(resolve, 100));
   await bridge.stop();
 
+  // The stall ping routes through the push() chokepoint (family
+  // loop-watchdog, event loop-stall:<slug>) — not a synthetic Rachel turn.
+  const sent = calls
+    .filter((c) => c.url.includes("/sendMessage"))
+    .map((c) => String((c.body as Record<string, unknown>)["text"]));
   assert.ok(
-    capturedInputs.some((s) => /gone quiet/i.test(s)),
-    `expected a turn containing "gone quiet", got: ${JSON.stringify(capturedInputs)}`,
+    sent.some((s) => /gone quiet/i.test(s) && /Stall Loop/.test(s)),
+    `expected a delivered stall ping naming the loop, got: ${JSON.stringify(sent)}`,
   );
-  assert.ok(
-    capturedInputs.some((s) => /Stall Loop/.test(s)),
-    `expected the loop name in the turn, got: ${JSON.stringify(capturedInputs)}`,
-  );
+  assert.equal(capturedInputs.length, 0, "no synthetic turn is injected — the ping goes via push(), not runTurn");
+  const familyStore = JSON.parse(readFileSync(join(pushSeams.pushBaseDir, "loop-watchdog.json"), "utf8")) as {
+    events: Record<string, { state: string }>;
+  };
+  assert.ok(familyStore.events["loop-stall:stall-loop"], `loop-stall:<slug> recorded in the store: ${JSON.stringify(familyStore.events)}`);
 
-  // The watchdog should have been written with pinged_at set.
+  // The watchdog's own pinged_at debounce is KEPT as a layer above the
+  // chokepoint dedup: they are not behaviour-equivalent (a sleep/wake bumps
+  // the wake_floor into a fresh chokepoint state, which would re-ping a
+  // still-stalled loop that pinged_at correctly suppresses).
   const writtenForWatchdog = fsFn.written.filter((w) => w.path === watchdogPath);
   assert.ok(writtenForWatchdog.length > 0, "expected watchdog to be written");
   const lastWritten = JSON.parse(writtenForWatchdog[writtenForWatchdog.length - 1]!.content) as WatchdogEntry;
