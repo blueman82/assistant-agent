@@ -106,6 +106,7 @@ export function defaultFsFn(): FsFunctions {
     stat: (path) => statSync(path),
     mkdirSync: (path, opts) => mkdirSync(path, opts),
     existsSync: (path) => existsSync(path),
+    rename: (from, to) => renameSync(from, to),
     // glob: two-level readdir walk for the one pattern used in this feature.
     // Pattern (fully expanded, no ~): <base>/*<fragment>*/*/progress.json
     // Walk: list slug-level dirs containing <fragment>, then session-id dirs under each.
