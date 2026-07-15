@@ -446,7 +446,7 @@ async function escalateSweepFailures(
   }
   for (const [family, streak] of Object.entries(streaks)) {
     if (streak !== ESCALATION_THRESHOLD) continue;
-    const text = `${"[urgent] proactive sweep itself failing"}: ${family}: ${errors[family] ?? "unknown error"}`;
+    const text = `[urgent] proactive sweep itself failing: ${family}: ${errors[family] ?? "unknown error"}`;
     try {
       await (d.sendFn ?? defaultEscalationSend)(text);
     } catch (err) {
