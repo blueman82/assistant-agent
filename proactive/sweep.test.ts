@@ -265,7 +265,7 @@ test("integration: the same red PR across two ticks dedups through the real push
   h.deps.execFn = ghExecFn(
     h,
     { "owner/repo": { stdout: JSON.stringify([{ number: 41, headRefOid: "abc1234deadbeef" }]), exitCode: 0 } },
-    { "owner/repo#41": { stdout: JSON.stringify([{ name: "ci", state: "FAILURE" }]), exitCode: 8 } },
+    { "owner/repo#41": { stdout: JSON.stringify([{ name: "ci", state: "FAILURE", bucket: "fail" }]), exitCode: 8 } },
   );
   await sweepTick(h.deps);
   assert.deepEqual(results, ["sent"]);
