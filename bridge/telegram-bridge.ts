@@ -198,13 +198,14 @@ function readLoopStopCounts(progressPath: string, fs: FsFunctions): Record<strin
 
 async function checkWatchdogs(opts: {
   watchdogDir: string;
-  fifo: string[];
   pollPeriodMs: number;
   fs: FsFunctions;
   isPidAlive: (pid: number, expectedCmd?: string) => boolean;  // injectable for tests (stress-test fix 1)
-  drainFifo: () => void;                                       // called after any fifo.push() (stress-test fix 3)
+  // Delivers a loop-watchdog ping through the push() chokepoint (never
+  // rejects — the caller wraps push() with a direct-send fallback).
+  pushPing: (eventId: string, state: string, text: string) => Promise<void>;
 }): Promise<void> {
-  const { watchdogDir, fifo, pollPeriodMs, fs, isPidAlive: pidAliveCheck, drainFifo: triggerDrain } = opts;
+  const { watchdogDir, pollPeriodMs, fs, isPidAlive: pidAliveCheck, pushPing } = opts;
 
   if (!fs.existsSync(watchdogDir)) return;
 
