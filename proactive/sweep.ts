@@ -385,6 +385,9 @@ interface SweepState {
   // First tick (ms epoch) that saw launchctl-alive with NO heartbeat file —
   // the missing-heartbeat grace tracking. Survives the date rollover.
   heartbeat_missing_since?: number;
+  // Whether the current streak's escalation has been DELIVERED (a failed
+  // send stays false and is retried next tick). Cleared on family success.
+  escalation_sent?: Record<string, boolean>;
 }
 
 // Sweep-owned state, deliberately OUTSIDE the push store dir — that dir is
