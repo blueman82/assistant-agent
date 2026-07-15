@@ -10,12 +10,40 @@ import {
   loadConfig,
   readFamilyFile,
   writeFamilyFile,
+  push,
+  getEventState,
   DEFAULT_CONFIG,
 } from "./push.ts";
 import type { ProactiveConfig } from "./push.ts";
 
 function makeBaseDir(): string {
   return mkdtempSync(join(tmpdir(), "rachel-push-test-"));
+}
+
+function makeSendStub() {
+  const sent: string[] = [];
+  const sendFn = async (text: string): Promise<void> => {
+    sent.push(text);
+  };
+  return { sent, sendFn };
+}
+
+// Dublin 12:00 in summer — outside the default quiet window.
+const DAYTIME = () => new Date("2026-07-15T11:00:00Z");
+// Dublin 23:00 in summer — inside the default quiet window.
+const NIGHT = () => new Date("2026-07-15T22:00:00Z");
+
+interface DeferredEntry {
+  family: string;
+  event_id: string;
+  state: string;
+  text: string;
+  queued_at: number;
+  reason: string;
+}
+
+function readDeferredEntries(baseDir: string): DeferredEntry[] {
+  return (JSON.parse(readFileSync(join(baseDir, "deferred.json"), "utf8")) as { entries: DeferredEntry[] }).entries;
 }
 
 const DUBLIN = "Europe/Dublin";
