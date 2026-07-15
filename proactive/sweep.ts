@@ -127,11 +127,17 @@ function pushDepsOf(d: SweepDeps): Partial<PushDeps> {
   return { now: d.now, baseDir: d.baseDir, ...(d.sendFn ? { sendFn: d.sendFn } : {}) };
 }
 
-async function runFamily(family: string, d: SweepDeps, fn: () => Promise<void>): Promise<void> {
+export type FamilyResult = "ok" | "failed";
+
+async function runFamily(family: string, d: SweepDeps, fn: () => Promise<void>): Promise<FamilyResult> {
   try {
     await fn();
+    return "ok";
   } catch (err) {
-    d.log(`[sweep] ${family} error: ${err instanceof Error ? err.message : String(err)}`);
+    // Full stack — same convention as push.ts: launchd logs are the only
+    // debugging signal.
+    d.log(`[sweep] ${family} error: ${err instanceof Error ? (err.stack ?? String(err)) : String(err)}`);
+    return "failed";
   }
 }
 
