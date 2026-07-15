@@ -170,8 +170,9 @@ export async function runTurn(
     model: MODEL,
     maxTurns: MAX_TURNS,
     permissionMode: "auto",
-    // TEMP RED-CHECK — simulated merge-conflict revert
-    allowedTools: [...DEFAULT_ALLOWED_TOOLS],
+    // Env read here, per call, not at module load — launchd/spawn
+    // environments differ per invocation.
+    allowedTools: resolveAllowedTools(DEFAULT_ALLOWED_TOOLS, process.env["RACHEL_ALLOWED_TOOLS"]),
     mcpServers,
     extraArgs: { "chrome": null },
     abortController,
