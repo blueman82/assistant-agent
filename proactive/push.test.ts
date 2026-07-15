@@ -16,7 +16,7 @@ import {
   cliMain,
   DEFAULT_CONFIG,
 } from "./push.ts";
-import type { ProactiveConfig } from "./push.ts";
+import type { DeferredEntry, ProactiveConfig } from "./push.ts";
 
 function makeBaseDir(): string {
   return mkdtempSync(join(tmpdir(), "rachel-push-test-"));
