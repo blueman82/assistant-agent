@@ -57,6 +57,25 @@ function parseHM(hm: string): number {
   return Number(h) * 60 + Number(m);
 }
 
+// Delivery goes through the existing bridge sender path. The destination is
+// exclusively whatever loadTelegramConfig() resolves — there is no chat-id
+// parameter anywhere in this module (test-pinned security invariant).
+async function defaultSendFn(text: string): Promise<void> {
+  const config = loadTelegramConfig();
+  if (!config) {
+    throw new Error("no Telegram config (RACHEL_TELEGRAM_TOKEN/RACHEL_TELEGRAM_CHAT_ID or ~/.rachel/telegram.json) — cannot send.");
+  }
+  await sendChunked(config, text);
+}
+
+function resolveDeps(deps?: Partial<PushDeps>): PushDeps {
+  return {
+    now: deps?.now ?? (() => new Date()),
+    baseDir: deps?.baseDir ?? join(homedir(), ".rachel", "proactive"),
+    sendFn: deps?.sendFn ?? defaultSendFn,
+  };
+}
+
 export interface EventRecord {
   state: string;
   first_seen: number;
