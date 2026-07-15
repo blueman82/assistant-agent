@@ -117,8 +117,24 @@ test("launchctl exit 0 without 'state = running' in stdout is also down", async 
 test("bridge-down text carries the log mtime age when the log exists", async () => {
   const h = makeHarness();
   h.deps.execFn = async () => ({ stdout: "", stderr: "", exitCode: 1 });
+  const statPaths: string[] = [];
+  h.deps.statMtimeFn = (path) => {
+    statPaths.push(path);
+    return new Date(DAYTIME().getTime() - 23 * 60_000);
+  };
   await sweepTick(h.deps);
   assert.ok(h.pushes[0]!.text.includes("Last log 23m ago"), `text names the mtime age: ${h.pushes[0]!.text}`);
+  assert.deepEqual(statPaths, ["/repo/.rachel/telegram-bridge.log"], "the bridge log under repoDir is what gets statted");
+});
+
+test("bridge-down text names launchctl's stderr when the launchctl call itself failed", async () => {
+  const h = makeHarness();
+  h.deps.execFn = async () => ({ stdout: "", stderr: "Could not find service", exitCode: 1 });
+  await sweepTick(h.deps);
+  assert.ok(
+    h.pushes[0]!.text.includes("launchctl: Could not find service"),
+    `infra failure diagnosable from the ping text: ${h.pushes[0]!.text}`,
+  );
 });
 
 test("bridge-down text says unknown when the log file is missing", async () => {
