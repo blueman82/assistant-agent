@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { notify } from "./notify.ts";
+import { notify, parseNotifyArgv } from "./notify.ts";
 
 function makeStubTransport() {
   const calls: { url: string; body: unknown }[] = [];
