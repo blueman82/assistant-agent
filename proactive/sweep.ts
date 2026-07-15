@@ -12,6 +12,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { push, flushDeferred, getEventState, loadConfig, zonedDateString, zonedMinutesOfDay } from "./push.ts";
 import type { ProactiveConfig, PushDeps } from "./push.ts";
+import { sendChunked } from "../bridge/api.ts";
+import { loadTelegramConfig } from "../gate/surfaces/telegram.ts";
 
 export interface SweepDeps {
   now: () => Date;
