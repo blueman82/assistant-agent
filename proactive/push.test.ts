@@ -50,3 +50,19 @@ test("inQuietWindow: non-wrapping window 09:00-17:00 contains 12:00 but not 18:0
   assert.equal(inQuietWindow(new Date("2026-07-15T11:00:00Z"), cfg), true);
   assert.equal(inQuietWindow(new Date("2026-07-15T17:00:00Z"), cfg), false);
 });
+
+test("loadConfig: absent config.json yields DEFAULT_CONFIG", () => {
+  assert.deepEqual(loadConfig(makeBaseDir()), DEFAULT_CONFIG);
+});
+
+test("loadConfig: malformed config.json yields DEFAULT_CONFIG", () => {
+  const baseDir = makeBaseDir();
+  writeFileSync(join(baseDir, "config.json"), "{not json");
+  assert.deepEqual(loadConfig(baseDir), DEFAULT_CONFIG);
+});
+
+test("loadConfig: partial config.json merges over defaults", () => {
+  const baseDir = makeBaseDir();
+  writeFileSync(join(baseDir, "config.json"), JSON.stringify({ daily_budget: 3 }));
+  assert.deepEqual(loadConfig(baseDir), { ...DEFAULT_CONFIG, daily_budget: 3 });
+});
