@@ -301,24 +301,31 @@ async function runCalendarOneshot(d: SweepDeps, cfg: ProactiveConfig): Promise<v
   }
 }
 
-export async function sweepTick(overrides?: Partial<SweepDeps>): Promise<void> {
+export async function sweepTick(overrides?: Partial<SweepDeps>): Promise<Record<string, FamilyResult>> {
   const d = resolveSweepDeps(overrides);
   const pushDeps = pushDepsOf(d);
   const cfg = loadConfig(d.baseDir);
-  await runFamily("flush", d, async () => {
-    await d.flushFn(pushDeps);
-  });
-  await runFamily("bridge-liveness", d, () => checkBridgeLiveness(d, pushDeps));
-  await runFamily("pr-red", d, () => checkPrRed(d, cfg, pushDeps));
-  await runFamily("calendar", d, () => runCalendarOneshot(d, cfg));
+  return {
+    flush: await runFamily("flush", d, async () => {
+      await d.flushFn(pushDeps);
+    }),
+    "bridge-liveness": await runFamily("bridge-liveness", d, () => checkBridgeLiveness(d, pushDeps)),
+    "pr-red": await runFamily("pr-red", d, () => checkPrRed(d, cfg, pushDeps)),
+    calendar: await runFamily("calendar", d, () => runCalendarOneshot(d, cfg)),
+  };
 }
 
 // Only run as a CLI when executed directly (tsx proactive/sweep.ts), not when
 // imported by a test — same guard as push.ts/notify.ts/rachel.ts.
 if (import.meta.url === `file://${process.argv[1]}`) {
   try {
-    await sweepTick();
-    process.exit(0);
+    const results = await sweepTick();
+    // Any family failure exits 1 so the monitor's own death is machine-
+    // visible in launchctl's last-exit-status instead of a green tick over
+    // dead delivery. Self-alerting escalation (pushing about our own
+    // failures) is deliberately deferred to Loop 2 alongside the bridge
+    // heartbeat-file item.
+    process.exit(Object.values(results).some((r) => r === "failed") ? 1 : 0);
   } catch (err) {
     console.error(`[sweep] fatal: ${err instanceof Error ? (err.stack ?? String(err)) : String(err)}`);
     process.exit(1);
