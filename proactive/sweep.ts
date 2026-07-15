@@ -486,42 +486,56 @@ async function defaultEscalationSend(text: string): Promise<void> {
 }
 
 // Self-alert escalation: bump/reset per-family consecutive-failure counters
-// (persisted in the sweep state file), and on EXACTLY the 3rd consecutive
-// failure of a family send one best-effort direct alert. Recursion guard: a
-// failing send is logged and never escalated about — the counter sits above
-// the threshold until the family succeeds, so an unbroken streak attempts
-// the send exactly once. Family results are never affected by any of this.
+// (persisted in the sweep state file), and from the 3rd consecutive failure
+// of a family send one best-effort direct alert — retried on subsequent
+// ticks until a send succeeds, then never repeated for the same unbroken
+// streak (the escalation_sent flag persists the success; a family recovery
+// clears both counter and flag). Recursion guard: a failing send is logged
+// and never escalated about. Family results are never affected by this.
 async function escalateSweepFailures(
   d: SweepDeps,
   cfg: ProactiveConfig,
   results: Record<string, FamilyResult>,
   errors: Record<string, string>,
 ): Promise<void> {
-  const statePath = join(d.homeDir, ".rachel", "proactive-sweep-state.json");
+  const statePath = sweepStatePath(d);
   const today = zonedDateString(d.now(), cfg.timezone);
   const state = readSweepState(d, statePath, today);
-  const streaks: Record<string, number> = { ...(state.failure_streaks ?? {}) };
+  // Coerce persisted counters on read: valid-JSON corruption (a "2" string)
+  // must not make the threshold comparison silently unreachable.
+  const streaks: Record<string, number> = {};
+  for (const [family, value] of Object.entries(state.failure_streaks ?? {})) {
+    streaks[family] = Number(value) || 0;
+  }
+  const escalationSent: Record<string, boolean> = { ...(state.escalation_sent ?? {}) };
   for (const [family, result] of Object.entries(results)) {
     if (result === "failed") {
       streaks[family] = (streaks[family] ?? 0) + 1;
     } else {
       delete streaks[family];
+      delete escalationSent[family];
     }
   }
-  try {
-    d.writeFileFn(statePath, JSON.stringify({ ...state, date: today, failure_streaks: streaks } satisfies SweepState, null, 2));
-  } catch (err) {
-    d.log(`[sweep] escalation state write failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
+  // Sends happen BEFORE the state write so a delivered escalation is what
+  // gets persisted; a failed send stays unflagged and retries next tick.
   for (const [family, streak] of Object.entries(streaks)) {
-    if (streak !== ESCALATION_THRESHOLD) continue;
+    if (streak < ESCALATION_THRESHOLD || escalationSent[family] === true) continue;
     const text = `[urgent] proactive sweep itself failing: ${family}: ${errors[family] ?? "unknown error"}`;
     try {
       await (d.sendFn ?? defaultEscalationSend)(text);
+      escalationSent[family] = true;
     } catch (err) {
       // Recursion guard: log only. Never re-escalate about the escalation.
       d.log(`[sweep] escalation send failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+  try {
+    d.writeFileFn(
+      statePath,
+      JSON.stringify({ ...state, date: today, failure_streaks: streaks, escalation_sent: escalationSent } satisfies SweepState, null, 2),
+    );
+  } catch (err) {
+    d.log(`[sweep] escalation state write failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
