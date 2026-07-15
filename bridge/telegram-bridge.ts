@@ -246,7 +246,10 @@ async function checkWatchdogs(opts: {
 
       // Routed through the push() chokepoint (quiet-hours aware). State
       // carries spawn_time so a relaunched loop with the same slug re-arms
-      // instead of deduping against a previous run's exit.
+      // instead of deduping against a previous run's exit. The watchdog file
+      // is consumed (done + unlink below) even if delivery totally failed —
+      // a deliberate tradeoff: losing one exit ping beats a re-ping storm on
+      // every subsequent poll while the send path is down.
       await pushPing(
         `loop-exit:${entry.slug}`,
         `exited:${entry.spawn_time}`,
