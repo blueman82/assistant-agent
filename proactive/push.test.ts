@@ -12,6 +12,7 @@ import {
   writeFamilyFile,
   push,
   getEventState,
+  flushDeferred,
   DEFAULT_CONFIG,
 } from "./push.ts";
 import type { ProactiveConfig } from "./push.ts";
