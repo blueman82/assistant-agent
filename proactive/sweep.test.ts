@@ -1107,6 +1107,172 @@ test("integration: the :2h escalation dedups through the real chokepoint and a r
   assert.equal(getEventState("calendar", "cal:aaa+bbb:2h", { baseDir: h.baseDir }), HASH_RESCHEDULED);
 });
 
+test("Math.min earlier-start: the lexicographically-lower ID's event 3h out with the other event 90m out still escalates on the 90m start", async () => {
+  // Kills a startAMs-only mutant: A (lower id) starts 3h out, B starts 90m
+  // out, and they overlap — the WINDOW check must use the earlier of the two.
+  const h = makeHarness();
+  seedCache(h, [
+    {
+      idA: "aaa",
+      idB: "bbb",
+      startA: "2026-07-15T15:00:00+01:00", // 3h out
+      endA: "2026-07-15T16:00:00+01:00",
+      startB: "2026-07-15T13:30:00+01:00", // 90m out
+      endB: "2026-07-15T15:30:00+01:00",
+      title_hint: "Offsite / Standup",
+    },
+  ]);
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 1);
+  assert.ok(h.pushes[0]!.text.includes("starts in 90m"), `window keyed on the earlier start: ${h.pushes[0]!.text}`);
+});
+
+test("a conflict whose earlier start is exactly now+2h escalates (inclusive upper bound)", async () => {
+  const h = makeHarness();
+  seedCache(h, [
+    {
+      ...CONFLICT_90M,
+      startA: "2026-07-15T14:00:00+01:00", // exactly 2h after the 12:00 Dublin clock
+      endA: "2026-07-15T15:00:00+01:00",
+      startB: "2026-07-15T14:30:00+01:00",
+      endB: "2026-07-15T15:30:00+01:00",
+    },
+  ]);
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 1);
+});
+
+test("a conflict whose earlier start is exactly now pushes nothing (exclusive lower bound)", async () => {
+  const h = makeHarness();
+  seedCache(h, [
+    {
+      ...CONFLICT_90M,
+      startA: "2026-07-15T12:00:00+01:00", // exactly the 12:00 Dublin clock
+      endA: "2026-07-15T15:00:00+01:00",
+      startB: "2026-07-15T14:30:00+01:00",
+      endB: "2026-07-15T15:30:00+01:00",
+    },
+  ]);
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 0);
+});
+
+test("valid-JSON wrong-shape caches (schema_version 2, missing conflicts) are logged skips, not family failures", async () => {
+  const h = makeHarness();
+  h.files.set(CACHE_PATH(h), JSON.stringify({ schema_version: 2, fetched_at: DAYTIME().toISOString(), conflicts: [CONFLICT_90M] }));
+  let results = await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 0);
+  assert.equal(results["calendar-escalation"], "ok");
+  h.files.set(CACHE_PATH(h), JSON.stringify({ schema_version: 1, fetched_at: DAYTIME().toISOString() }));
+  results = await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 0);
+  assert.equal(results["calendar-escalation"], "ok");
+  assert.ok(
+    h.logs.filter((line) => line.includes("calendar-escalation") && line.includes("unrecognised shape")).length >= 2,
+    `both wrong shapes logged: ${JSON.stringify(h.logs)}`,
+  );
+});
+
+test("a mis-sorted producer entry is defensively re-sorted: same event-id and same hash16 as the correctly-sorted cache", async () => {
+  const h = makeHarness();
+  // CONFLICT_90M with every A/B field swapped — a producer that mis-sorted.
+  seedCache(h, [
+    {
+      idA: "bbb",
+      idB: "aaa",
+      startA: CONFLICT_90M.startB,
+      endA: CONFLICT_90M.endB,
+      startB: CONFLICT_90M.startA,
+      endB: CONFLICT_90M.endA,
+      title_hint: CONFLICT_90M.title_hint,
+    },
+  ]);
+  await sweepTick(h.deps);
+  assert.equal(h.pushes.length, 1);
+  assert.equal(h.pushes[0]!.eventId, "cal:aaa+bbb:2h", "event-id re-sorted to lexicographic order");
+  assert.equal(h.pushes[0]!.state, HASH_90M, "hash computed over the re-sorted field order");
+});
+
+// --- Calendar producer-silence detection ---
+
+// A dead one-shot producer (launchd job gone, MCP broken, bin/rachel failing)
+// otherwise degrades to an eternally-skipped stale/missing cache with every
+// tick "ok" — positive silence. Three consecutive silent ticks push one
+// normal alert.
+
+function advanceClock(h: ReturnType<typeof makeHarness>, startMs: number): () => void {
+  let tick = 0;
+  return () => {
+    h.deps.now = () => new Date(startMs + tick * 30 * 60_000);
+    tick++;
+  };
+}
+
+function producerPushes(h: ReturnType<typeof makeHarness>): PushCall[] {
+  return h.pushes.filter((p) => p.eventId === "cal:producer-silent");
+}
+
+test("three consecutive missing-cache ticks push one normal producer-silent alert; two do not", async () => {
+  const h = makeHarness();
+  const next = advanceClock(h, DAYTIME().getTime());
+  next();
+  await sweepTick(h.deps);
+  next();
+  await sweepTick(h.deps);
+  assert.equal(producerPushes(h).length, 0, "no alert before the 3rd consecutive silent tick");
+  next();
+  await sweepTick(h.deps);
+  const alerts = producerPushes(h);
+  assert.equal(alerts.length, 1);
+  const p = alerts[0]!;
+  assert.equal(p.family, "calendar");
+  assert.equal(p.severity, "normal");
+  assert.equal(p.text, "[cal] calendar producer silent — cache stale/missing for 1h");
+  assert.equal(p.state, new Date(DAYTIME().getTime()).toISOString(), "state is the first-observed-silent timestamp so a new silence episode re-arms");
+});
+
+test("stale-beyond-26h ticks count as producer silence exactly like a missing cache", async () => {
+  const h = makeHarness();
+  const staleFetch = new Date(DAYTIME().getTime() - 27 * 60 * 60 * 1000).toISOString();
+  seedCache(h, [CONFLICT_90M], staleFetch);
+  const next = advanceClock(h, DAYTIME().getTime());
+  next();
+  await sweepTick(h.deps);
+  next();
+  await sweepTick(h.deps);
+  next();
+  await sweepTick(h.deps);
+  assert.equal(producerPushes(h).length, 1);
+});
+
+test("a fresh cache resets the producer-silence streak and a new episode re-arms with a new state", async () => {
+  const h = makeHarness();
+  const start = DAYTIME().getTime();
+  const next = advanceClock(h, start);
+  next();
+  await sweepTick(h.deps); // missing 1
+  next();
+  await sweepTick(h.deps); // missing 2
+  seedCache(h, [], new Date(start + 2 * 30 * 60_000).toISOString());
+  next();
+  await sweepTick(h.deps); // fresh — resets
+  h.files.delete(CACHE_PATH(h));
+  next();
+  await sweepTick(h.deps); // missing 1 of new episode (t = start+90m)
+  next();
+  await sweepTick(h.deps); // missing 2
+  assert.equal(producerPushes(h).length, 0, "the reset means no alert until a fresh 3-streak");
+  next();
+  await sweepTick(h.deps); // missing 3 — alert
+  const alerts = producerPushes(h);
+  assert.equal(alerts.length, 1);
+  assert.equal(
+    alerts[0]!.state,
+    new Date(start + 3 * 30 * 60_000).toISOString(),
+    "the new episode's first-observed timestamp is the state — a resolved-then-rebroken producer re-arms",
+  );
+});
+
 test("grep guard for proactive/sweep.test.ts: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
   const source = await (await import("node:fs/promises")).readFile(new URL("./sweep.test.ts", import.meta.url), "utf8");
   const realFetchCall = /fetch\(\s*["'`]https:\/\/api\.telegram\.org/;
