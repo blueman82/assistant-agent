@@ -552,7 +552,14 @@ export async function sweepTick(overrides?: Partial<SweepDeps>): Promise<Record<
     "pr-red": await runFamily("pr-red", d, errors, () => checkPrRed(d, cfg, pushDeps)),
     calendar: await runFamily("calendar", d, errors, () => runCalendarOneshot(d, cfg)),
   };
-  await escalateSweepFailures(d, cfg, results, errors);
+  try {
+    await escalateSweepFailures(d, cfg, results, errors);
+  } catch (err) {
+    // A broken escalation bookkeeping path (state file unreadable, ...) must
+    // not convert a partially-successful tick into a fatal rejection — the
+    // family results still return and the CLI exits on their truth.
+    d.log(`[sweep] escalation bookkeeping failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
   return results;
 }
 
