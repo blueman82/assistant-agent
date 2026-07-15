@@ -751,11 +751,9 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
             if (health !== "conflict") {
               health = "conflict";
               console.error(`[telegram-bridge] 409 conflict (${consecutive409}/${CONFLICT_EXIT_THRESHOLD}): ${message} — backing off ${resolvedConflictBackoffMs / 1000}s, will auto-recover.`);
-              sendChunked(config,
+              void pushAlert("bridge-health", "bridge:health", "conflict", "normal",
                 `Rachel bridge: Telegram 409 conflict detected. Backing off ${resolvedConflictBackoffMs / 1000}s and retrying — will auto-recover if this is a launchd restart race.`
-              ).catch((alertErr) => {
-                console.error(`[telegram-bridge] failed to send conflict alert: ${alertErr instanceof Error ? alertErr.message : String(alertErr)}`);
-              });
+              );
             } else {
               console.error(`[telegram-bridge] 409 conflict (${consecutive409}/${CONFLICT_EXIT_THRESHOLD}): ${message}`);
             }
