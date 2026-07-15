@@ -52,8 +52,16 @@ function parseHM(hm: string): number {
   return Number(h) * 60 + Number(m);
 }
 
-export function loadConfig(_baseDir: string): ProactiveConfig {
-  throw new Error("not implemented");
+// config.json is written by the (Loop-2) installer, never by push.ts.
+// Absent or malformed => sane defaults; a partial file shallow-merges over
+// the defaults.
+export function loadConfig(baseDir: string): ProactiveConfig {
+  try {
+    const parsed = JSON.parse(readFileSync(join(baseDir, "config.json"), "utf8")) as Partial<ProactiveConfig>;
+    return { ...DEFAULT_CONFIG, ...parsed };
+  } catch {
+    return { ...DEFAULT_CONFIG };
+  }
 }
 
 // Inclusive start, exclusive end. A start later than the end means the
