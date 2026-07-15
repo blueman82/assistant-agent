@@ -402,12 +402,6 @@ export async function cliMain(argv: string[], deps?: Partial<PushDeps>): Promise
   }
 }
 
-// Only run as a CLI when executed directly (tsx proactive/push.ts ...), not
-// when imported by the sweep or a test — same guard as notify.ts/rachel.ts.
-if (import.meta.url === `file://${process.argv[1]}`) {
-  process.exit(await cliMain(process.argv));
-}
-
 const HM_RE = /^\d{2}:\d{2}$/;
 
 // Returns a description of the first problem, or undefined when valid.
