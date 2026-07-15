@@ -42,12 +42,24 @@ export async function notify(
   await sendChunked(config, text);
 }
 
+// Argv pin: EXACTLY one CLI argument (the message-file path). Extra argv —
+// whatever it is — is rejected rather than silently ignored: a stray second
+// argument is most plausibly a destination-shaped mistake (or injection
+// attempt), and the no-destination contract above only holds if the CLI
+// refuses to run rather than quietly dropping it (same pinned invariant as
+// proactive/push.ts's five-argument rule).
+export function parseNotifyArgv(argv: string[]): string | null {
+  return argv.length === 3 ? (argv[2] ?? null) : null;
+}
+
 // Only run as a CLI when executed directly (tsx bridge/notify.ts <file>),
 // not when imported by a test — same guard rachel.ts uses for its own main().
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const filePath = process.argv[2];
+  const filePath = parseNotifyArgv(process.argv);
   if (!filePath) {
-    console.error("[notify] usage: notify.ts <path-to-message-file>");
+    // The count is diagnostic; argument CONTENT is never echoed (it could be
+    // a message body or a destination-shaped injection attempt).
+    console.error(`[notify] usage: notify.ts <path-to-message-file> (exactly one argument; received ${process.argv.length - 2})`);
     process.exit(2);
   }
   try {

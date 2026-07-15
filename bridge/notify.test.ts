@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { notify } from "./notify.ts";
+import { notify, parseNotifyArgv } from "./notify.ts";
 
 function makeStubTransport() {
   const calls: { url: string; body: unknown }[] = [];
@@ -39,6 +39,18 @@ test("notify() throws when no Telegram config is available, rather than silently
     () => notify(filePath, () => undefined),
     /no Telegram config/,
   );
+});
+
+test("parseNotifyArgv returns the file path for exactly one CLI argument", () => {
+  assert.equal(parseNotifyArgv(["node", "notify.ts", "/tmp/x"]), "/tmp/x");
+});
+
+test("parseNotifyArgv returns null when the file path argument is missing", () => {
+  assert.equal(parseNotifyArgv(["node", "notify.ts"]), null);
+});
+
+test("parseNotifyArgv returns null when any extra argument is present (no-destination pin: extra argv must reject, never be silently ignored)", () => {
+  assert.equal(parseNotifyArgv(["node", "notify.ts", "/tmp/x", "@evil_chat"]), null);
 });
 
 test("grep guard: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
