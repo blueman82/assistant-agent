@@ -61,6 +61,38 @@ function makeStubTransport(updatesSequence: unknown[]) {
   return { transport, calls, getGetUpdatesCallCount: () => getUpdatesCallCount };
 }
 
+// 12:00 Dublin in summer (IST = UTC+1) — outside the 22:30-08:00 quiet
+// window, so normal-severity pushes send immediately unless a test injects
+// its own quiet clock.
+const DAYTIME = () => new Date("2026-07-15T11:00:00Z");
+// 23:30 Dublin — inside the quiet window.
+const QUIET_TIME = () => new Date("2026-07-15T22:30:00Z");
+
+// Every createBridge call in this file spreads these seams in FIRST (explicit
+// per-test values override them): the bridge's push() store and heartbeat
+// file must always land in a throwaway tmpdir, never the operator's real
+// ~/.rachel, and the clock must be pinned outside quiet hours so alert tests
+// are deterministic regardless of when the suite runs.
+function basePushOpts() {
+  const dir = mkdtempSync(join(tmpdir(), "rachel-bridge-test-"));
+  return {
+    pushBaseDir: join(dir, "proactive"),
+    heartbeatPath: join(dir, "bridge-heartbeat.json"),
+    nowFn: DAYTIME,
+  };
+}
+
+interface DeferredFileShape {
+  schema_version: number;
+  entries: Array<{ family: string; event_id: string; state: string; text: string; reason: string }>;
+}
+
+function readDeferred(pushBaseDir: string): DeferredFileShape {
+  const path = join(pushBaseDir, "deferred.json");
+  if (!realExistsSync(path)) return { schema_version: 1, entries: [] };
+  return JSON.parse(readFileSync(path, "utf8")) as DeferredFileShape;
+}
+
 function messageUpdate(updateId: number, text: string, chatId = 12345) {
   return {
     ok: true,
