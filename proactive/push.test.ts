@@ -74,3 +74,34 @@ test("loadConfig: partial config.json merges over defaults", () => {
   writeFileSync(join(baseDir, "config.json"), JSON.stringify({ daily_budget: 3 }));
   assert.deepEqual(loadConfig(baseDir), { ...DEFAULT_CONFIG, daily_budget: 3 });
 });
+
+test("readFamilyFile: absent family file yields an empty schema_version 1 store", () => {
+  assert.deepEqual(readFamilyFile(makeBaseDir(), "pr-red"), { schema_version: 1, events: {} });
+});
+
+test("family file round-trip: writeFamilyFile evicts entries with last_seen older than 14 days", () => {
+  const baseDir = makeBaseDir();
+  const now = new Date("2026-07-15T12:00:00Z");
+  const staleSeen = now.getTime() - 15 * 24 * 60 * 60 * 1000;
+  const freshSeen = now.getTime() - 60_000;
+  writeFamilyFile(
+    baseDir,
+    "pr-red",
+    {
+      schema_version: 1,
+      events: {
+        "pr:old/repo#1": { state: "aaa:failure", first_seen: staleSeen, pinged_at: staleSeen, last_seen: staleSeen },
+        "pr:new/repo#2": { state: "bbb:failure", first_seen: freshSeen, pinged_at: freshSeen, last_seen: freshSeen },
+      },
+    },
+    now,
+  );
+  const onDisk = JSON.parse(readFileSync(join(baseDir, "pr-red.json"), "utf8")) as {
+    schema_version: number;
+    events: Record<string, unknown>;
+  };
+  assert.equal(onDisk.schema_version, 1);
+  assert.equal(onDisk.events["pr:old/repo#1"], undefined);
+  assert.ok(onDisk.events["pr:new/repo#2"]);
+  assert.deepEqual(Object.keys(readFamilyFile(baseDir, "pr-red").events), ["pr:new/repo#2"]);
+});
