@@ -655,6 +655,10 @@ export async function sweepTick(overrides?: Partial<SweepDeps>): Promise<Record<
     }),
     "bridge-liveness": await runFamily("bridge-liveness", d, errors, () => checkBridgeLiveness(d, cfg, pushDeps)),
     "pr-red": await runFamily("pr-red", d, errors, () => checkPrRed(d, cfg, pushDeps)),
+    // Escalation reads the cache the one-shot below (eventually) writes; it
+    // runs first and as its OWN family so a broken cache read can never
+    // block the spawn, and vice versa.
+    "calendar-escalation": await runFamily("calendar-escalation", d, errors, () => checkCalendarEscalation(d, cfg, pushDeps)),
     calendar: await runFamily("calendar", d, errors, () => runCalendarOneshot(d, cfg)),
   };
   try {
