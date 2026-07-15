@@ -1597,6 +1597,7 @@ test("a failing heartbeat write never breaks polling and logs once per failure s
 
   try {
     const bridge = createBridge({
+      ...basePushOpts(),
       config: { token: "t", chatId: "12345", transport },
       runTurn: async () => {},
       getSessionId: () => undefined,
@@ -1606,7 +1607,6 @@ test("a failing heartbeat write never breaks polling and logs once per failure s
       fsFn,
       isPidAliveFn: () => false,
       heartbeatPath,
-      pushBaseDir: mkdtempSync(join(tmpdir(), "rachel-bridge-push-")),
     });
 
     await bridge.drainOnce();
