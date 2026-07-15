@@ -175,6 +175,75 @@ async function checkPrRed(d: SweepDeps, cfg: ProactiveConfig, pushDeps: Partial<
   }
 }
 
+interface SweepState {
+  schema_version: 1;
+  date: string; // Dublin date, YYYY-MM-DD
+  oneshot_hours_run: number[];
+}
+
+// Sweep-owned state, deliberately OUTSIDE the push store dir — that dir is
+// push.ts-only by invariant.
+function readSweepState(d: SweepDeps, statePath: string, today: string): SweepState {
+  const fresh: SweepState = { schema_version: 1, date: today, oneshot_hours_run: [] };
+  const raw = d.readFileFn(statePath);
+  if (raw === undefined) {
+    return fresh;
+  }
+  try {
+    const parsed = JSON.parse(raw) as SweepState;
+    if (parsed.schema_version !== 1 || !Array.isArray(parsed.oneshot_hours_run)) {
+      return fresh;
+    }
+    // A date rollover (Dublin midnight) resets the hours-run list.
+    return parsed.date === today ? parsed : fresh;
+  } catch {
+    return fresh;
+  }
+}
+
+const ONESHOT_TOOLS = "Read,Write,Bash,mcp__claude_ai_Google_Calendar__*";
+
+// Calendar one-shot spawn cadence: each due configured hour (h <= current
+// Dublin hour, not yet recorded today) collapses into ONE spawn — launchd
+// coalesces missed intervals into a single wake-time catch-up run, and so do
+// we. Hours are recorded as run when the spawn STARTS, so a hung or timed-out
+// one-shot cannot re-spawn-storm on every subsequent tick.
+//
+// The spawn is raced in-process against oneshotTimeoutMs: even an execFn that
+// never settles cannot wedge the tick. The real execFn additionally passes
+// timeoutMs to execFile, which kills the child on expiry.
+async function runCalendarOneshot(d: SweepDeps, cfg: ProactiveConfig): Promise<void> {
+  const now = d.now();
+  const today = zonedDateString(now, cfg.timezone);
+  const currentHour = Math.floor(zonedMinutesOfDay(now, cfg.timezone) / 60);
+  const statePath = join(d.homeDir, ".rachel", "proactive-sweep-state.json");
+  const state = readSweepState(d, statePath, today);
+  const due = cfg.calendar_oneshot_hours.filter((h) => h <= currentHour && !state.oneshot_hours_run.includes(h));
+  if (due.length === 0) {
+    return;
+  }
+  const spawn = d.execFn(join(d.repoDir, "bin", "rachel"), ["Read tasks/proactive-calendar.md and follow it."], {
+    env: { RACHEL_ALLOWED_TOOLS: ONESHOT_TOOLS },
+    stdinNull: true,
+    timeoutMs: d.oneshotTimeoutMs,
+  });
+  d.writeFileFn(
+    statePath,
+    JSON.stringify({ schema_version: 1, date: today, oneshot_hours_run: [...state.oneshot_hours_run, ...due] } satisfies SweepState, null, 2),
+  );
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), d.oneshotTimeoutMs);
+  });
+  const result = await Promise.race([spawn, timeout]);
+  clearTimeout(timer);
+  if (result === "timeout") {
+    d.log("[sweep] calendar one-shot timeout");
+  } else {
+    d.log(`[sweep] calendar one-shot exit ${result.exitCode}`);
+  }
+}
+
 export async function sweepTick(overrides?: Partial<SweepDeps>): Promise<void> {
   const d = resolveSweepDeps(overrides);
   const pushDeps = pushDepsOf(d);
@@ -184,6 +253,7 @@ export async function sweepTick(overrides?: Partial<SweepDeps>): Promise<void> {
   });
   await runFamily("bridge-liveness", d, () => checkBridgeLiveness(d, pushDeps));
   await runFamily("pr-red", d, () => checkPrRed(d, cfg, pushDeps));
+  await runFamily("calendar", d, () => runCalendarOneshot(d, cfg));
 }
 
 // Only run as a CLI when executed directly (tsx proactive/sweep.ts), not when
