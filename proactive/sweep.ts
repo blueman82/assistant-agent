@@ -322,12 +322,17 @@ interface SweepState {
   schema_version: 1;
   date: string; // Dublin date, YYYY-MM-DD
   oneshot_hours_run: number[];
+  // Consecutive-failure count per family — the self-alert escalation
+  // counter. Unlike oneshot_hours_run it survives the Dublin date rollover:
+  // "3 consecutive failures" means consecutive ticks, not consecutive ticks
+  // within one calendar day.
+  failure_streaks?: Record<string, number>;
 }
 
 // Sweep-owned state, deliberately OUTSIDE the push store dir — that dir is
 // push.ts-only by invariant.
 function readSweepState(d: SweepDeps, statePath: string, today: string): SweepState {
-  const fresh: SweepState = { schema_version: 1, date: today, oneshot_hours_run: [] };
+  const fresh: SweepState = { schema_version: 1, date: today, oneshot_hours_run: [], failure_streaks: {} };
   const raw = d.readFileFn(statePath);
   if (raw === undefined) {
     return fresh;
@@ -338,8 +343,9 @@ function readSweepState(d: SweepDeps, statePath: string, today: string): SweepSt
       d.log(`[sweep] corrupt sweep state at ${statePath} (unrecognised shape) — resetting`);
       return fresh;
     }
-    // A date rollover (Dublin midnight) resets the hours-run list.
-    return parsed.date === today ? parsed : fresh;
+    // A date rollover (Dublin midnight) resets the hours-run list but keeps
+    // the failure streaks running.
+    return parsed.date === today ? parsed : { ...fresh, failure_streaks: parsed.failure_streaks ?? {} };
   } catch {
     d.log(`[sweep] corrupt sweep state at ${statePath} (invalid JSON) — resetting`);
     return fresh;
