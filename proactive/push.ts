@@ -174,7 +174,6 @@ function interruptsSentToday(baseDir: string, today: string): number {
 }
 
 const FAMILY_RE = /^[a-z][a-z0-9-]*$/;
-const SEVERITIES: readonly string[] = ["urgent", "normal", "digest"];
 
 // No destination anywhere in this signature — delivery goes to whatever chat
 // loadTelegramConfig() resolves (Gary's own), same trust class as notify.ts.
