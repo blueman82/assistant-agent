@@ -337,11 +337,13 @@ export async function flushDeferred(deps?: Partial<PushDeps>): Promise<"sent" | 
   await d.sendFn([header, ...eligible.map((e) => e.text)].join("\n"));
 
   // Subtract-flushed-snapshot write-back: re-read at truncate time and keep
-  // every entry NOT in the flushed snapshot (matched on queued_at+event_id),
-  // so an entry a concurrent push appended mid-send survives — never a blind
-  // truncate to empty.
-  const flushedKeys = new Set(eligible.map((e) => `${e.queued_at}|${e.event_id}`));
-  const remaining = readDeferred(d.baseDir).entries.filter((e) => !flushedKeys.has(`${e.queued_at}|${e.event_id}`));
+  // every entry NOT in the flushed snapshot (matched on family+queued_at+
+  // event_id — the family qualifier stops a cross-family same-millisecond
+  // collision deleting an unflushed entry), so an entry a concurrent push
+  // appended mid-send survives — never a blind truncate to empty.
+  const flushKey = (e: DeferredEntry): string => `${e.family}|${e.queued_at}|${e.event_id}`;
+  const flushedKeys = new Set(eligible.map(flushKey));
+  const remaining = readDeferred(d.baseDir).entries.filter((e) => !flushedKeys.has(flushKey(e)));
   writeJsonAtomic(join(d.baseDir, "deferred.json"), { schema_version: 1, entries: remaining } satisfies DeferredFile);
   return "sent";
 }
