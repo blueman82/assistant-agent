@@ -19,7 +19,7 @@ npx tsx rachel.ts "..."     # run a one-shot request, then drop into interactive
 npm start                   # alias for tsx rachel.ts
 npm run bridge              # tsx bridge/telegram-bridge.ts (Telegram front-end)
 npm run typecheck           # tsc --noEmit
-npm test                    # gate/**/*.test.ts + bridge/**/*.test.ts + hooks/scripts/tests/probe_conventions.test.sh
+npm test                    # gate/**/*.test.ts + bridge/**/*.test.ts + proactive/**/*.test.ts + hooks/scripts/tests/probe_conventions.test.sh
 ```
 
 There is no build step (run directly via `tsx`) and no linter. `.claude/test_command` runs `npm run typecheck && npm test`, which the coderails `test_gate` hook enforces before commits. (Known quirk: run `npm run typecheck` and `npm test` as separate commands — the combined `&&` invocation can hang.)
