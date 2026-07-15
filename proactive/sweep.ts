@@ -146,13 +146,44 @@ async function checkBridgeLiveness(d: SweepDeps, pushDeps: Partial<PushDeps>): P
   }
 }
 
+// PR-red: pushes only on red (recovery is not pinged; the stale entry ages
+// out via the store's 14-day eviction). A new head SHA while still red
+// changes the state string, so a fresh push to the branch re-arms the ping.
+async function checkPrRed(d: SweepDeps, cfg: ProactiveConfig, pushDeps: Partial<PushDeps>): Promise<void> {
+  for (const repo of cfg.pr_watch_repos) {
+    const list = await d.execFn("gh", ["pr", "list", "--repo", repo, "--author", "@me", "--state", "open", "--json", "number,headRefOid"]);
+    if (list.exitCode !== 0) {
+      throw new Error(`gh pr list --repo ${repo} exited ${list.exitCode}: ${list.stderr.trim()}`);
+    }
+    const prs = JSON.parse(list.stdout) as Array<{ number: number; headRefOid: string }>;
+    for (const pr of prs) {
+      // gh pr checks exits non-zero when checks fail — that exit code is
+      // DATA on this call, never treated as an exec error.
+      const checks = await d.execFn("gh", ["pr", "checks", String(pr.number), "--repo", repo, "--json", "name,state"]);
+      const parsed = JSON.parse(checks.stdout) as Array<{ name: string; state: string }>;
+      if (parsed.some((check) => check.state === "FAILURE")) {
+        await d.pushFn(
+          "pr-red",
+          `pr:${repo}#${pr.number}`,
+          `${pr.headRefOid}:failure`,
+          "normal",
+          `[pr] ${repo} #${pr.number} checks failing (${pr.headRefOid.slice(0, 7)})`,
+          pushDeps,
+        );
+      }
+    }
+  }
+}
+
 export async function sweepTick(overrides?: Partial<SweepDeps>): Promise<void> {
   const d = resolveSweepDeps(overrides);
   const pushDeps = pushDepsOf(d);
+  const cfg = loadConfig(d.baseDir);
   await runFamily("flush", d, async () => {
     await d.flushFn(pushDeps);
   });
   await runFamily("bridge-liveness", d, () => checkBridgeLiveness(d, pushDeps));
+  await runFamily("pr-red", d, () => checkPrRed(d, cfg, pushDeps));
 }
 
 // Only run as a CLI when executed directly (tsx proactive/sweep.ts), not when
