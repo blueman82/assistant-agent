@@ -102,6 +102,21 @@ export function writeFamilyFile(baseDir: string, family: string, data: FamilyFil
   writeJsonAtomic(join(baseDir, `${family}.json`), { schema_version: 1, events });
 }
 
+export async function push(
+  _family: string,
+  _eventId: string,
+  _state: string,
+  _severity: Severity,
+  _text: string,
+  _deps?: Partial<PushDeps>,
+): Promise<PushResult> {
+  throw new Error("not implemented");
+}
+
+export function getEventState(_family: string, _eventId: string, _deps?: Partial<PushDeps>): string | undefined {
+  throw new Error("not implemented");
+}
+
 // config.json is written by the (Loop-2) installer, never by push.ts.
 // Absent or malformed => sane defaults; a partial file shallow-merges over
 // the defaults.
