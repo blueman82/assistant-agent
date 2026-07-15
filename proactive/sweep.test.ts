@@ -1036,7 +1036,7 @@ test("a conflict whose earlier event already started pushes nothing (the window 
   seedCache(h, [
     {
       ...CONFLICT_90M,
-      startA: "2026-07-15T12:30:00+01:00", // 30m in the past
+      startA: "2026-07-15T11:30:00+01:00", // 30m in the past (clock is 12:00 Dublin)
       endA: "2026-07-15T14:30:00+01:00",
     },
   ]);
