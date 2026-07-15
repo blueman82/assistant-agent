@@ -261,6 +261,73 @@ test("runTurn classifies its own emitted lines correctly: assistant text -> 'tex
   assert.match(recorded[2]!.line, /done turns=/);
 });
 
+test("runTurn's query options consume the RACHEL_ALLOWED_TOOLS seam: set env narrows allowedTools, unset env yields the frozen 17-entry default list", async () => {
+  // Drives the REAL runTurn (imported from rachel.ts) with a fake queryFn
+  // that captures the options object the SDK would receive. This is the
+  // regression pin for the tool-narrowing seam: a merge conflict reverting
+  // rachel.ts's allowedTools line to an inline array keeps every pure
+  // allowedTools.ts test green while one-shots silently regain the full
+  // tool surface — THIS test is what fails in that world. The frozen
+  // 17-entry literal lives HERE, deliberately not shared with rachel.ts,
+  // so it pins the real thing rather than echoing it.
+  const { runTurn: realRunTurn } = await import("../rachel.ts");
+
+  const makeCapturingQueryFn = (captured: { allowedTools?: unknown }): Parameters<typeof realRunTurn>[3] =>
+    ((params) => {
+      captured.allowedTools = (params.options as { allowedTools?: unknown } | undefined)?.allowedTools;
+      async function* generate(): AsyncGenerator<SDKMessage, void> {
+        yield { type: "result", num_turns: 1 } as unknown as SDKMessage;
+      }
+      return generate();
+    }) as Parameters<typeof realRunTurn>[3];
+
+  const originalEnv = process.env["RACHEL_ALLOWED_TOOLS"];
+  try {
+    process.env["RACHEL_ALLOWED_TOOLS"] = "Read,Bash";
+    const narrowed: { allowedTools?: unknown } = {};
+    await realRunTurn("probe", () => {}, new AbortController().signal, makeCapturingQueryFn(narrowed));
+    assert.deepEqual(narrowed.allowedTools, ["Read", "Bash"], "set env must narrow the SDK options' allowedTools to exactly the listed tools");
+
+    delete process.env["RACHEL_ALLOWED_TOOLS"];
+    const unset: { allowedTools?: unknown } = {};
+    await realRunTurn("probe", () => {}, new AbortController().signal, makeCapturingQueryFn(unset));
+    assert.deepEqual(
+      unset.allowedTools,
+      [
+        "Read", "Write", "Edit", "Glob", "Grep", "Bash",
+        "WebSearch", "WebFetch",
+        "ToolSearch", "Skill",
+        "mcp__mcp-exec__execute_code_with_wrappers",
+        "mcp__mcp-exec__list_available_mcp_servers",
+        "mcp__mcp-exec__get_mcp_tool_schema",
+        "mcp__claude-in-chrome__*",
+        "mcp__claude_ai_Gmail__*",
+        "mcp__claude_ai_Google_Calendar__*",
+        "mcp__claude_ai_Slack__*",
+      ],
+      "unset env must yield the frozen 17-entry default list, byte-identical",
+    );
+  } finally {
+    if (originalEnv === undefined) {
+      delete process.env["RACHEL_ALLOWED_TOOLS"];
+    } else {
+      process.env["RACHEL_ALLOWED_TOOLS"] = originalEnv;
+    }
+  }
+});
+
+test("the sweep's calendar one-shot narrowing set is a subset of rachel.ts's default tool list", async () => {
+  // Cross-producer pin: resolveAllowedTools silently drops entries outside
+  // the default list, so an ONESHOT_TOOLS entry that drifts out of
+  // DEFAULT_ALLOWED_TOOLS would quietly de-tool the calendar one-shot.
+  const { DEFAULT_ALLOWED_TOOLS } = await import("../rachel.ts");
+  const { ONESHOT_TOOLS } = await import("../proactive/sweep.ts");
+  const defaults = new Set<string>(DEFAULT_ALLOWED_TOOLS);
+  for (const entry of ONESHOT_TOOLS.split(",")) {
+    assert.ok(defaults.has(entry), `ONESHOT_TOOLS entry ${JSON.stringify(entry)} is not in DEFAULT_ALLOWED_TOOLS`);
+  }
+});
+
 test("a text message round-trips through the bridge's FIFO dispatch into runTurn and the reply is sent back via sendChunked", async () => {
   const { transport, calls } = makeStubTransport([
     messageUpdate(1, "hello"),
