@@ -1,7 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { zonedMinutesOfDay, zonedDateString, inQuietWindow, DEFAULT_CONFIG } from "./push.ts";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { zonedMinutesOfDay, zonedDateString, inQuietWindow, loadConfig, DEFAULT_CONFIG } from "./push.ts";
 import type { ProactiveConfig } from "./push.ts";
+
+function makeBaseDir(): string {
+  return mkdtempSync(join(tmpdir(), "rachel-push-test-"));
+}
 
 const DUBLIN = "Europe/Dublin";
 
