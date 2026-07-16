@@ -549,39 +549,13 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
       }
       return;
     }
-    // /model and /effort take an optional argument (unlike /reset, /status,
-    // /stop above, which are exact-match) — split on whitespace rather than
-    // exact- or prefix-matching the whole string so trailing/interior
-    // whitespace around the argument doesn't block parsing.
-    const parts = text.split(/\s+/).filter((p) => p.length > 0);
-    if (parts[0] === "/model") {
-      const arg = parts[1];
-      if (arg === undefined) {
-        const report = getReport();
-        await reply(`model: ${report.model}\nvalid options: ${report.validModels.join(", ")}`);
-      } else {
-        const result = setModel(arg);
-        if (result.ok) {
-          await reply(`model set to ${result.value} — takes effect on the next turn.`);
-        } else {
-          await reply(result.message);
-        }
-      }
-      return;
-    }
-    if (parts[0] === "/effort") {
-      const arg = parts[1];
-      if (arg === undefined) {
-        const report = getReport();
-        await reply(`effort: ${report.effort}\nvalid options: ${report.validEfforts.join(", ")}`);
-      } else {
-        const result = setEffort(arg);
-        if (result.ok) {
-          await reply(`effort set to ${result.value} — takes effect on the next turn.`);
-        } else {
-          await reply(result.message);
-        }
-      }
+    // /model and /effort dispatch through the shared, surface-agnostic
+    // handleConfigCommand (proactive/modelConfig.ts) — it owns parsing and
+    // state, and returns undefined for anything else so control falls
+    // through to the message handling below.
+    const configReply = handleConfigCommand(text);
+    if (configReply !== undefined) {
+      await reply(configReply);
       return;
     }
 
