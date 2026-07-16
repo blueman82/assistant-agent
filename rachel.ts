@@ -11,6 +11,7 @@ import { createTerminalApprovalSurface } from "./gate/surfaces/terminal.ts";
 import { createTelegramApprovalSurface, loadTelegramConfig } from "./gate/surfaces/telegram.ts";
 import { createQueueApprovalSurface } from "./gate/surfaces/queue.ts";
 import { resolveAllowedTools } from "./proactive/allowedTools.ts";
+import { getModel, getEffort } from "./proactive/modelConfig.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -52,7 +53,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
-const MODEL = process.env["RACHEL_MODEL"] ?? "claude-sonnet-4-6";
+// Model + effort are no longer boot-time consts — proactive/modelConfig.ts
+// owns the current values (defaulted from RACHEL_MODEL at import) so a
+// /model or /effort command can change them mid-session; runTurn and the
+// startup banner below read the getters, not a captured value.
 const MAX_TURNS = parseInt(process.env["RACHEL_MAX_TURNS"] ?? "200", 10);
 
 const SYSTEM_PROMPT_PATH = join(__dirname, "prompts", "system.md");
@@ -167,7 +171,8 @@ export async function runTurn(
   signal.addEventListener("abort", () => abortController.abort(), { once: true });
 
   const options: Parameters<typeof query>[0]["options"] = {
-    model: MODEL,
+    model: getModel(),
+    effort: getEffort(),
     maxTurns: MAX_TURNS,
     permissionMode: "auto",
     // Env read here, per call, not at module load — launchd/spawn
@@ -251,7 +256,7 @@ async function main(): Promise<void> {
     output: process.stdout,
   });
 
-  console.log(`[Rachel] model=${MODEL} maxTurns=${MAX_TURNS}`);
+  console.log(`[Rachel] model=${getModel()} maxTurns=${MAX_TURNS}`);
   console.log(`[Rachel] Type your request. Ctrl+C to exit.\n`);
 
   async function runTerminalTurn(userInput: string): Promise<void> {

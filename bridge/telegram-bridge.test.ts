@@ -38,6 +38,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createBridge, type BridgeRunTurn } from "./telegram-bridge.ts";
 import { GATED_TOOL_NAMES } from "../gate/sendGate.ts";
+import { getModel, getEffort, setModel, setEffort } from "../proactive/modelConfig.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
 // Stub Telegram transport: scripts a fixed sequence of getUpdates responses
@@ -313,6 +314,52 @@ test("runTurn's query options consume the RACHEL_ALLOWED_TOOLS seam: set env nar
     } else {
       process.env["RACHEL_ALLOWED_TOOLS"] = originalEnv;
     }
+  }
+});
+
+test("runTurn's query options read model/effort from proactive/modelConfig.ts's getters on every call, not a boot-time const", async () => {
+  // Drives the REAL runTurn (imported from rachel.ts) with a fake queryFn
+  // that captures the options object the SDK would receive — same idiom as
+  // the RACHEL_ALLOWED_TOOLS pin above. This is the regression pin for the
+  // model/effort wiring: reverting rachel.ts's `model: getModel()` /
+  // `effort: getEffort()` lines back to captured consts keeps every pure
+  // modelConfig.ts test green (they only exercise the module in isolation)
+  // while runTurn silently stops picking up a /model or /effort switch —
+  // THIS test is what fails in that world.
+  const { runTurn: realRunTurn } = await import("../rachel.ts");
+
+  const makeCapturingQueryFn = (captured: { model?: unknown; effort?: unknown }): Parameters<typeof realRunTurn>[3] =>
+    ((params) => {
+      const opts = params.options as { model?: unknown; effort?: unknown } | undefined;
+      captured.model = opts?.model;
+      captured.effort = opts?.effort;
+      async function* generate(): AsyncGenerator<SDKMessage, void> {
+        yield { type: "result", num_turns: 1 } as unknown as SDKMessage;
+      }
+      return generate();
+    }) as Parameters<typeof realRunTurn>[3];
+
+  const originalModel = getModel();
+  const originalEffort = getEffort();
+  try {
+    // Switch to non-default values first: asserting against the boot
+    // default couldn't distinguish "reads the getter every turn" from
+    // "captured the default at import time" — both would produce the same
+    // value on a fresh process. A non-default switch is the only way to
+    // prove runTurn re-reads state instead of a stale const.
+    const modelSwitch = setModel("claude-opus-4-8");
+    assert.equal(modelSwitch.ok, true, "test precondition: switching to claude-opus-4-8 must succeed");
+    const effortSwitch = setEffort("xhigh");
+    assert.equal(effortSwitch.ok, true, "test precondition: switching to xhigh must succeed");
+
+    const captured: { model?: unknown; effort?: unknown } = {};
+    await realRunTurn("probe", () => {}, new AbortController().signal, makeCapturingQueryFn(captured));
+
+    assert.equal(captured.model, "claude-opus-4-8", "runTurn's options.model must reflect the NEW switched value, not a boot-time const");
+    assert.equal(captured.effort, "xhigh", "runTurn's options.effort must reflect the NEW switched value, not a boot-time const");
+  } finally {
+    setModel(originalModel);
+    setEffort(originalEffort);
   }
 });
 
