@@ -149,3 +149,40 @@ export function handleConfigCommand(input: string): string | undefined {
   }
   return undefined;
 }
+
+// isHelpFlag / renderHelp — support rachel.ts's `--help`/`-h` CLI intercept.
+// Pure and exported from here (not inline in rachel.ts) so they're covered
+// by this module's test glob; rachel.ts itself isn't tested directly. Only
+// the exact single-element argv `["--help"]`/`["-h"]` counts as the flag —
+// a one-shot prompt like `rachel "check my email"` arrives as one argv
+// element that is never exactly "--help" or "-h", and empty argv (`[]`,
+// interactive mode) is never intercepted either.
+export function isHelpFlag(args: readonly string[]): boolean {
+  return args[0] === "--help" || args[0] === "-h";
+}
+
+// Renders model/effort lists and the current default from this module's own
+// exports rather than retyping them, so a whitelist change can't drift out
+// of sync with the help text. maxTurns is passed in because MAX_TURNS is
+// owned by rachel.ts, not this module.
+export function renderHelp(maxTurns: number): string {
+  return `Rachel — Gary's AI assistant
+
+Usage:
+  rachel                    Start interactive mode
+  rachel "<prompt>"         Run one prompt as a one-shot, then continue interactively
+  rachel --help | -h        Show this help and exit
+
+Commands (at the "You:" prompt):
+  /model [name]    Show or switch the model. Valid: ${VALID_MODELS.join(", ")} (aliases: ${Object.keys(MODEL_ALIASES).join(", ")})
+  /effort [level]  Show or switch the effort. Valid: ${VALID_EFFORTS.join(", ")}
+  /reset           Start a new session
+  /exit, /quit     Exit
+  q                (mid-turn) abort the in-flight turn
+
+Environment variables:
+  RACHEL_MODEL           Boot-time model override (default: ${DEFAULT_MODEL})
+  RACHEL_MAX_TURNS       Max turns per request (default: ${maxTurns})
+  RACHEL_ALLOWED_TOOLS   Comma-separated narrowing of the tool list for headless one-shots
+`;
+}
