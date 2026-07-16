@@ -1,24 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-// Captures console.error lines emitted during fn — modelConfig logs a
-// boot-time fallback the same way allowedTools.ts logs dropped entries
-// (launchd logs are the only debugging signal for headless one-shots).
-function captureStderr(fn: () => void): string[] {
-  const lines: string[] = [];
-  const original = console.error;
-  console.error = (...args: unknown[]) => {
-    lines.push(args.map(String).join(" "));
-  };
-  try {
-    fn();
-  } finally {
-    console.error = original;
-  }
-  return lines;
-}
-
-// Async variant — the boot-fallback log happens synchronously during
+// Captures console.error lines emitted during fn — the boot-fallback log happens synchronously during
 // dynamic import's module-record evaluation, but the import() call itself
 // must be awaited, so console.error must stay overridden across the await.
 async function captureStderrAsync(fn: () => Promise<unknown>): Promise<{ lines: string[]; result: unknown }> {
