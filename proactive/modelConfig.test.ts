@@ -126,3 +126,108 @@ test("report function returns current model/effort plus valid options", async ()
   assert.deepEqual(report.validEfforts, mod.VALID_EFFORTS);
 });
 
+// ---------------------------------------------------------------------------
+// handleConfigCommand — the shared, surface-agnostic dispatch for /model and
+// /effort. Both rachel.ts (CLI) and bridge/telegram-bridge.ts (Telegram) call
+// this and render the returned string through their own sink (console.log
+// vs. reply()); it never touches I/O itself, so its state is exercised here
+// with plain save/restore rather than fresh dynamic imports per test.
+// ---------------------------------------------------------------------------
+
+test("handleConfigCommand: /model with no argument reports the current model and valid options", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-k`);
+  const result = mod.handleConfigCommand("/model");
+  assert.ok(result !== undefined);
+  assert.ok(result!.includes(mod.getModel()));
+  for (const m of mod.VALID_MODELS) {
+    assert.ok(result!.includes(m), `expected valid model ${m} listed — got: ${result}`);
+  }
+});
+
+test("handleConfigCommand: /effort with no argument reports the current effort and valid options", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-l`);
+  const result = mod.handleConfigCommand("/effort");
+  assert.ok(result !== undefined);
+  assert.ok(result!.includes(mod.getEffort()));
+  for (const e of mod.VALID_EFFORTS) {
+    assert.ok(result!.includes(e), `expected valid effort ${e} listed — got: ${result}`);
+  }
+});
+
+test("handleConfigCommand: /model <valid-name> switches the model and confirms it takes effect next turn", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-m`);
+  const original = mod.getModel();
+  try {
+    const result = mod.handleConfigCommand("/model claude-opus-4-8");
+    assert.equal(mod.getModel(), "claude-opus-4-8");
+    assert.ok(result !== undefined);
+    assert.ok(result!.includes("claude-opus-4-8"));
+    assert.ok(result!.includes("takes effect on the next turn"));
+  } finally {
+    mod.setModel(original);
+  }
+});
+
+test("handleConfigCommand: /effort <valid-level> switches the effort and confirms it takes effect next turn", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-n`);
+  const original = mod.getEffort();
+  try {
+    const result = mod.handleConfigCommand("/effort xhigh");
+    assert.equal(mod.getEffort(), "xhigh");
+    assert.ok(result !== undefined);
+    assert.ok(result!.includes("xhigh"));
+    assert.ok(result!.includes("takes effect on the next turn"));
+  } finally {
+    mod.setEffort(original);
+  }
+});
+
+test("handleConfigCommand: /model <invalid-name> returns the rejection message and leaves state unchanged", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-o`);
+  const original = mod.getModel();
+  const result = mod.handleConfigCommand("/model gpt-5-turbo");
+  assert.equal(mod.getModel(), original, "invalid /model value must not change current state");
+  assert.ok(result !== undefined);
+  assert.ok(result!.includes("gpt-5-turbo"));
+});
+
+test("handleConfigCommand: /effort <invalid-level> returns the rejection message and leaves state unchanged", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-p`);
+  const original = mod.getEffort();
+  const result = mod.handleConfigCommand("/effort ultra");
+  assert.equal(mod.getEffort(), original, "invalid /effort value must not change current state");
+  assert.ok(result !== undefined);
+  assert.ok(result!.includes("ultra"));
+});
+
+test("handleConfigCommand: /model with extra surrounding whitespace still parses the argument", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-q`);
+  const original = mod.getModel();
+  try {
+    const result = mod.handleConfigCommand("  /model   claude-haiku-4-5  ");
+    assert.equal(mod.getModel(), "claude-haiku-4-5", "whitespace around /model and its argument must not block parsing");
+    assert.ok(result !== undefined);
+  } finally {
+    mod.setModel(original);
+  }
+});
+
+test("handleConfigCommand: /modeling does not match /model (exact-match, not prefix-match)", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-r`);
+  const result = mod.handleConfigCommand("/modeling");
+  assert.equal(result, undefined);
+});
+
+test("handleConfigCommand: /efforting does not match /effort (exact-match, not prefix-match)", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-s`);
+  const result = mod.handleConfigCommand("/efforting");
+  assert.equal(result, undefined);
+});
+
+test("handleConfigCommand: a non-command input returns undefined", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-t`);
+  assert.equal(mod.handleConfigCommand("hello there"), undefined);
+  assert.equal(mod.handleConfigCommand("/reset"), undefined);
+  assert.equal(mod.handleConfigCommand("/status"), undefined);
+});
+
