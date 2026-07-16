@@ -15,6 +15,7 @@ import type { TurnEmit } from "../rachel.ts";
 import { readdirSync, readFileSync, writeFileSync, unlinkSync, statSync, mkdirSync, existsSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { execSync } from "node:child_process";
+import { getModel, getEffort, setModel, setEffort, getReport } from "../proactive/modelConfig.ts";
 
 export type BridgeRunTurn = (input: string, emit: TurnEmit, signal: AbortSignal) => Promise<void>;
 
@@ -532,7 +533,8 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         `uptime: ${Math.floor(process.uptime())}s\n` +
           `health: ${health}\n` +
           `session: ${sessionId ?? "(none)"}\n` +
-          `model: ${process.env["RACHEL_MODEL"] ?? "claude-sonnet-4-6"}\n` +
+          `model: ${getModel()}\n` +
+          `effort: ${getEffort()}\n` +
           `turn in flight: ${currentAbort ? "yes" : "no"}` +
           lastErrLine,
       );
@@ -544,6 +546,41 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         await reply("Stopped.");
       } else {
         await reply("No turn in flight.");
+      }
+      return;
+    }
+    // /model and /effort take an optional argument (unlike /reset, /status,
+    // /stop above, which are exact-match) — split on whitespace rather than
+    // exact- or prefix-matching the whole string so trailing/interior
+    // whitespace around the argument doesn't block parsing.
+    const parts = text.split(/\s+/).filter((p) => p.length > 0);
+    if (parts[0] === "/model") {
+      const arg = parts[1];
+      if (arg === undefined) {
+        const report = getReport();
+        await reply(`model: ${report.model}\nvalid options: ${report.validModels.join(", ")}`);
+      } else {
+        const result = setModel(arg);
+        if (result.ok) {
+          await reply(`model set to ${result.value} — takes effect on the next turn.`);
+        } else {
+          await reply(result.message);
+        }
+      }
+      return;
+    }
+    if (parts[0] === "/effort") {
+      const arg = parts[1];
+      if (arg === undefined) {
+        const report = getReport();
+        await reply(`effort: ${report.effort}\nvalid options: ${report.validEfforts.join(", ")}`);
+      } else {
+        const result = setEffort(arg);
+        if (result.ok) {
+          await reply(`effort set to ${result.value} — takes effect on the next turn.`);
+        } else {
+          await reply(result.message);
+        }
       }
       return;
     }
@@ -713,6 +750,8 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         { command: "reset", description: "Reset the conversation session" },
         { command: "status", description: "Show bridge status" },
         { command: "stop", description: "Abort the in-flight turn" },
+        { command: "model", description: "Show or switch the active model" },
+        { command: "effort", description: "Show or switch the active reasoning effort" },
       ]).catch((err) => {
         console.error(`[telegram-bridge] setMyCommands failed: ${err instanceof Error ? err.message : String(err)}`);
       });
