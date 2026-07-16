@@ -38,7 +38,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createBridge, type BridgeRunTurn } from "./telegram-bridge.ts";
 import { GATED_TOOL_NAMES } from "../gate/sendGate.ts";
-import { getModel, getEffort, setModel, setEffort } from "../proactive/modelConfig.ts";
+import { getModel, getEffort, setModel, setEffort, VALID_MODELS as VALID_MODELS_FOR_TEST, VALID_EFFORTS as VALID_EFFORTS_FOR_TEST } from "../proactive/modelConfig.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
 // Stub Telegram transport: scripts a fixed sequence of getUpdates responses
