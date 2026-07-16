@@ -18,6 +18,23 @@ function captureStderr(fn: () => void): string[] {
   return lines;
 }
 
+// Async variant — the boot-fallback log happens synchronously during
+// dynamic import's module-record evaluation, but the import() call itself
+// must be awaited, so console.error must stay overridden across the await.
+async function captureStderrAsync(fn: () => Promise<unknown>): Promise<{ lines: string[]; result: unknown }> {
+  const lines: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => {
+    lines.push(args.map(String).join(" "));
+  };
+  try {
+    const result = await fn();
+    return { lines, result };
+  } finally {
+    console.error = original;
+  }
+}
+
 test("boot default model is claude-sonnet-5 when RACHEL_MODEL is unset", async () => {
   const original = process.env["RACHEL_MODEL"];
   delete process.env["RACHEL_MODEL"];
