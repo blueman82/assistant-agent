@@ -58,6 +58,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 // /model or /effort command can change them mid-session; runTurn and the
 // startup banner below read the getters, not a captured value.
 const MAX_TURNS = parseInt(process.env["RACHEL_MAX_TURNS"] ?? "200", 10);
+// TEMPORARY, for regression-proof only — simulates reverting the getter
+// wiring back to a boot-time captured const.
+const REGRESSION_TEST_BOOT_MODEL = getModel();
+const REGRESSION_TEST_BOOT_EFFORT = getEffort();
 
 const SYSTEM_PROMPT_PATH = join(__dirname, "prompts", "system.md");
 if (!existsSync(SYSTEM_PROMPT_PATH)) {
