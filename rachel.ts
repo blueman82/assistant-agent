@@ -314,39 +314,13 @@ async function main(): Promise<void> {
       continue;
     }
 
-    // /model and /effort take an optional argument (unlike /reset above,
-    // which is exact-match) — split on whitespace rather than exact- or
-    // prefix-matching the whole string so trailing/interior whitespace
-    // around the argument doesn't block parsing.
-    const parts = input.trim().split(/\s+/).filter((p) => p.length > 0);
-    if (parts[0] === "/model") {
-      const arg = parts[1];
-      if (arg === undefined) {
-        const report = getReport();
-        console.log(`[Rachel] model: ${report.model}\nvalid options: ${report.validModels.join(", ")}\n`);
-      } else {
-        const result = setModel(arg);
-        if (result.ok) {
-          console.log(`[Rachel] model set to ${result.value} — takes effect on the next turn.\n`);
-        } else {
-          console.log(`[Rachel] ${result.message}\n`);
-        }
-      }
-      continue;
-    }
-    if (parts[0] === "/effort") {
-      const arg = parts[1];
-      if (arg === undefined) {
-        const report = getReport();
-        console.log(`[Rachel] effort: ${report.effort}\nvalid options: ${report.validEfforts.join(", ")}\n`);
-      } else {
-        const result = setEffort(arg);
-        if (result.ok) {
-          console.log(`[Rachel] effort set to ${result.value} — takes effect on the next turn.\n`);
-        } else {
-          console.log(`[Rachel] ${result.message}\n`);
-        }
-      }
+    // /model and /effort dispatch through the shared, surface-agnostic
+    // handleConfigCommand (proactive/modelConfig.ts) — it owns parsing and
+    // state, and returns undefined for anything else so control falls
+    // through to the turn below.
+    const configReply = handleConfigCommand(input);
+    if (configReply !== undefined) {
+      console.log(`[Rachel] ${configReply}\n`);
       continue;
     }
 
