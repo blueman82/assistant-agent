@@ -57,7 +57,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 // owns the current values (defaulted from RACHEL_MODEL at import) so a
 // /model or /effort command can change them mid-session; runTurn and the
 // startup banner below read the getters, not a captured value.
-const MAX_TURNS = parseInt(process.env["RACHEL_MAX_TURNS"] ?? "200", 10);
+const DEFAULT_MAX_TURNS = 200;
+const MAX_TURNS = parseInt(process.env["RACHEL_MAX_TURNS"] ?? String(DEFAULT_MAX_TURNS), 10);
 
 const SYSTEM_PROMPT_PATH = join(__dirname, "prompts", "system.md");
 if (!existsSync(SYSTEM_PROMPT_PATH)) {
