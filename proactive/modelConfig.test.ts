@@ -231,3 +231,154 @@ test("handleConfigCommand: a non-command input returns undefined", async () => {
   assert.equal(mod.handleConfigCommand("/status"), undefined);
 });
 
+// ---------------------------------------------------------------------------
+// Model aliases — short names (opus/sonnet/haiku/fable) resolve to full IDs
+// before the VALID_MODELS whitelist check, so the whitelist stays the sole
+// validation gate; an alias map is never a second unvalidated path to the
+// SDK's model field.
+// ---------------------------------------------------------------------------
+
+test("setModel: each alias resolves to its full whitelisted model ID", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-u`);
+  const cases: Array<[string, string]> = [
+    ["opus", "claude-opus-4-8"],
+    ["sonnet", "claude-sonnet-5"],
+    ["haiku", "claude-haiku-4-5"],
+    ["fable", "claude-fable-5"],
+  ];
+  for (const [alias, fullId] of cases) {
+    const result = mod.setModel(alias);
+    assert.deepEqual(result, { ok: true, value: fullId }, `alias ${alias} should resolve to ${fullId}`);
+    assert.equal(mod.getModel(), fullId);
+  }
+});
+
+test("setModel: full model IDs still work exactly as before (unaffected by alias resolution)", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-v`);
+  for (const fullId of mod.VALID_MODELS) {
+    const result = mod.setModel(fullId);
+    assert.deepEqual(result, { ok: true, value: fullId });
+  }
+});
+
+test("setModel: a mixed-case full ID is still rejected (proves aliasing did not widen the full-ID path by lowercasing)", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-w`);
+  const original = mod.getModel();
+  const result = mod.setModel("Claude-Sonnet-5");
+  assert.equal(result.ok, false, "a mixed-case full ID must not be silently accepted");
+  assert.equal(mod.getModel(), original);
+});
+
+test("setModel: aliases are case-insensitive (OPUS, Opus, opus all resolve)", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-x`);
+  for (const spelling of ["OPUS", "Opus", "opus"]) {
+    const result = mod.setModel(spelling);
+    assert.deepEqual(result, { ok: true, value: "claude-opus-4-8" }, `${spelling} should resolve`);
+  }
+});
+
+test("setModel: an unknown alias falls through to the existing rejection, state unchanged", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-y`);
+  mod.setModel("claude-haiku-4-5");
+  const result = mod.setModel("gpt5");
+  assert.equal(result.ok, false);
+  assert.match(result.message, /gpt5/);
+  assert.equal(mod.getModel(), "claude-haiku-4-5");
+});
+
+test("setModel rejection message surfaces the aliases so they're discoverable", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-z`);
+  const result = mod.setModel("not-a-real-model");
+  assert.equal(result.ok, false);
+  for (const alias of ["opus", "sonnet", "haiku", "fable"]) {
+    assert.ok(result.message.includes(alias), `expected alias ${alias} in rejection message: ${result.message}`);
+  }
+});
+
+test("getReport / no-arg /model surfaces the aliases so a user can discover them", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-aa`);
+  const result = mod.handleConfigCommand("/model");
+  assert.ok(result !== undefined);
+  for (const alias of ["opus", "sonnet", "haiku", "fable"]) {
+    assert.ok(result!.includes(alias), `expected alias ${alias} in /model report: ${result}`);
+  }
+});
+
+test("RACHEL_MODEL env var also accepts an alias at boot (consistent surface with /model)", async () => {
+  const original = process.env["RACHEL_MODEL"];
+  process.env["RACHEL_MODEL"] = "opus";
+  try {
+    const mod = await import(`./modelConfig.ts?t=${Date.now()}-ab`);
+    assert.equal(mod.getModel(), "claude-opus-4-8");
+  } finally {
+    if (original !== undefined) process.env["RACHEL_MODEL"] = original;
+    else delete process.env["RACHEL_MODEL"];
+  }
+});
+
+// ---------------------------------------------------------------------------
+// --help / -h — pure, testable arg-parsing and help-text rendering. rachel.ts
+// intercepts before the initialPrompt join so a real "--help" argv never
+// reaches the agent as a prompt. isHelpFlag/renderHelp live here (not inline
+// in rachel.ts) because rachel.ts is outside the npm test glob.
+// ---------------------------------------------------------------------------
+
+test("isHelpFlag: --help is intercepted", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-ac`);
+  assert.equal(mod.isHelpFlag(["--help"]), true);
+});
+
+test("isHelpFlag: -h is intercepted", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-ad`);
+  assert.equal(mod.isHelpFlag(["-h"]), true);
+});
+
+test("isHelpFlag: a normal quoted prompt is NOT intercepted", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-ae`);
+  assert.equal(mod.isHelpFlag(["check my email"]), false);
+});
+
+test("isHelpFlag: empty argv is NOT intercepted (interactive mode)", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-af`);
+  assert.equal(mod.isHelpFlag([]), false);
+});
+
+test("renderHelp: covers /model, /effort, /reset, /exit, /quit, and q-to-abort", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-ag`);
+  const help = mod.renderHelp(200);
+  for (const token of ["/model", "/effort", "/reset", "/exit", "/quit", "q"]) {
+    assert.ok(help.includes(token), `expected ${token} in help text`);
+  }
+});
+
+test("renderHelp: covers the env vars RACHEL_MODEL, RACHEL_MAX_TURNS, RACHEL_ALLOWED_TOOLS", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-ah`);
+  const help = mod.renderHelp(200);
+  for (const envVar of ["RACHEL_MODEL", "RACHEL_MAX_TURNS", "RACHEL_ALLOWED_TOOLS"]) {
+    assert.ok(help.includes(envVar), `expected ${envVar} in help text`);
+  }
+});
+
+test("renderHelp: renders model/effort lists and default from modelConfig's own exports, not retyped literals", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-ai`);
+  const help = mod.renderHelp(200);
+  for (const m of mod.VALID_MODELS) {
+    assert.ok(help.includes(m), `expected model ${m} listed in help`);
+  }
+  for (const e of mod.VALID_EFFORTS) {
+    assert.ok(help.includes(e), `expected effort ${e} listed in help`);
+  }
+});
+
+test("renderHelp: renders the passed-in default, not a hardcoded 200", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-aj`);
+  const help = mod.renderHelp(42);
+  assert.ok(help.includes("42"), "expected the passed-in default value in help text");
+});
+
+test("renderHelp: labels whatever value it's given as the default verbatim — the caller (rachel.ts) is responsible for passing the STATIC default, not an env-overridden effective value", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-ak`);
+  const help = mod.renderHelp(200);
+  assert.ok(help.includes("default: 200"), "expected the given value labelled as the default");
+});
+

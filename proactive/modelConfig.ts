@@ -35,6 +35,23 @@
 export const VALID_MODELS = ["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5", "claude-fable-5"] as const;
 export type ValidModel = (typeof VALID_MODELS)[number];
 
+// Short names for the whitelisted models above — resolved to a full ID
+// BEFORE the VALID_MODELS check below, never in place of it. Case-insensitive
+// (lowercased before lookup) so "opus"/"Opus"/"OPUS" all resolve; full model
+// IDs are matched byte-exact and are never lowercased, so a mixed-case full
+// ID (e.g. "Claude-Sonnet-5") is still rejected exactly as before aliasing
+// was added.
+const MODEL_ALIASES: Record<string, ValidModel> = {
+  opus: "claude-opus-4-8",
+  sonnet: "claude-sonnet-5",
+  haiku: "claude-haiku-4-5",
+  fable: "claude-fable-5",
+};
+
+function resolveModelAlias(value: string): string {
+  return MODEL_ALIASES[value.toLowerCase()] ?? value;
+}
+
 // All 5 levels are valid for all 4 whitelisted models. (The SDK's own
 // sdk.d.ts annotates 'xhigh'/'max' as restricted to specific older Opus
 // versions — that comment is stale against current model docs, and the
@@ -51,11 +68,12 @@ function resolveBootModel(): ValidModel {
   if (envValue === undefined) {
     return DEFAULT_MODEL;
   }
-  if ((VALID_MODELS as readonly string[]).includes(envValue)) {
-    return envValue as ValidModel;
+  const resolved = resolveModelAlias(envValue);
+  if ((VALID_MODELS as readonly string[]).includes(resolved)) {
+    return resolved as ValidModel;
   }
   console.error(
-    `[modelConfig] RACHEL_MODEL=${JSON.stringify(envValue)} is not on the whitelist (${VALID_MODELS.join(", ")}) — falling back to ${DEFAULT_MODEL}`,
+    `[modelConfig] RACHEL_MODEL=${JSON.stringify(envValue)} is not on the whitelist (${VALID_MODELS.join(", ")}; aliases: ${Object.keys(MODEL_ALIASES).join(", ")}) — falling back to ${DEFAULT_MODEL}`,
   );
   return DEFAULT_MODEL;
 }
@@ -74,10 +92,14 @@ export function getEffort(): ValidEffort {
 }
 
 export function setModel(value: string): SetResult<ValidModel> {
-  if (!(VALID_MODELS as readonly string[]).includes(value)) {
-    return { ok: false, message: `unknown model ${JSON.stringify(value)} — valid options: ${VALID_MODELS.join(", ")}` };
+  const resolved = resolveModelAlias(value);
+  if (!(VALID_MODELS as readonly string[]).includes(resolved)) {
+    return {
+      ok: false,
+      message: `unknown model ${JSON.stringify(value)} — valid options: ${VALID_MODELS.join(", ")} (aliases: ${Object.keys(MODEL_ALIASES).join(", ")})`,
+    };
   }
-  currentModel = value as ValidModel;
+  currentModel = resolved as ValidModel;
   return { ok: true, value: currentModel };
 }
 
@@ -111,7 +133,7 @@ export function handleConfigCommand(input: string): string | undefined {
     const arg = parts[1];
     if (arg === undefined) {
       const report = getReport();
-      return `model: ${report.model}\nvalid options: ${report.validModels.join(", ")}`;
+      return `model: ${report.model}\nvalid options: ${report.validModels.join(", ")} (aliases: ${Object.keys(MODEL_ALIASES).join(", ")})`;
     }
     const result = setModel(arg);
     return result.ok ? `model set to ${result.value} — takes effect on the next turn.` : result.message;
@@ -126,4 +148,44 @@ export function handleConfigCommand(input: string): string | undefined {
     return result.ok ? `effort set to ${result.value} — takes effect on the next turn.` : result.message;
   }
   return undefined;
+}
+
+// isHelpFlag / renderHelp — support rachel.ts's `--help`/`-h` CLI intercept.
+// Pure and exported from here (not inline in rachel.ts) so they're covered
+// by this module's test glob; rachel.ts itself isn't tested directly. Only
+// the exact single-element argv `["--help"]`/`["-h"]` counts as the flag —
+// a one-shot prompt like `rachel "check my email"` arrives as one argv
+// element that is never exactly "--help" or "-h", and empty argv (`[]`,
+// interactive mode) is never intercepted either.
+export function isHelpFlag(args: readonly string[]): boolean {
+  return args[0] === "--help" || args[0] === "-h";
+}
+
+// Renders model/effort lists and the current default from this module's own
+// exports rather than retyping them, so a whitelist change can't drift out
+// of sync with the help text. defaultMaxTurns is passed in because
+// MAX_TURNS's default is owned by rachel.ts, not this module — the caller
+// must pass the STATIC default, not the effective (possibly
+// RACHEL_MAX_TURNS-overridden) value, or the help page would misreport an
+// override as the default.
+export function renderHelp(defaultMaxTurns: number): string {
+  return `Rachel — Gary's AI assistant
+
+Usage:
+  rachel                    Start interactive mode
+  rachel "<prompt>"         Run one prompt as a one-shot, then continue interactively
+  rachel --help | -h        Show this help and exit
+
+Commands (at the "You:" prompt):
+  /model [name]    Show or switch the model. Valid: ${VALID_MODELS.join(", ")} (aliases: ${Object.keys(MODEL_ALIASES).join(", ")})
+  /effort [level]  Show or switch the effort. Valid: ${VALID_EFFORTS.join(", ")}
+  /reset           Start a new session
+  /exit, /quit     Exit
+  q                (mid-turn) abort the in-flight turn
+
+Environment variables:
+  RACHEL_MODEL           Boot-time model override (default: ${DEFAULT_MODEL})
+  RACHEL_MAX_TURNS       Max turns per request (default: ${defaultMaxTurns})
+  RACHEL_ALLOWED_TOOLS   Comma-separated narrowing of the tool list for headless one-shots
+`;
 }

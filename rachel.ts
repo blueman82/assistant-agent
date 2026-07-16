@@ -11,7 +11,7 @@ import { createTerminalApprovalSurface } from "./gate/surfaces/terminal.ts";
 import { createTelegramApprovalSurface, loadTelegramConfig } from "./gate/surfaces/telegram.ts";
 import { createQueueApprovalSurface } from "./gate/surfaces/queue.ts";
 import { resolveAllowedTools } from "./proactive/allowedTools.ts";
-import { getModel, getEffort, handleConfigCommand } from "./proactive/modelConfig.ts";
+import { getModel, getEffort, handleConfigCommand, isHelpFlag, renderHelp } from "./proactive/modelConfig.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -57,7 +57,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 // owns the current values (defaulted from RACHEL_MODEL at import) so a
 // /model or /effort command can change them mid-session; runTurn and the
 // startup banner below read the getters, not a captured value.
-const MAX_TURNS = parseInt(process.env["RACHEL_MAX_TURNS"] ?? "200", 10);
+const DEFAULT_MAX_TURNS = 200;
+const MAX_TURNS = parseInt(process.env["RACHEL_MAX_TURNS"] ?? String(DEFAULT_MAX_TURNS), 10);
 
 const SYSTEM_PROMPT_PATH = join(__dirname, "prompts", "system.md");
 if (!existsSync(SYSTEM_PROMPT_PATH)) {
@@ -251,6 +252,17 @@ export async function runTurn(
 // bridge, which calls runTurn directly) never starts the CLI loop.
 // ---------------------------------------------------------------------------
 async function main(): Promise<void> {
+  // --help/-h: print and exit BEFORE the initialPrompt join below, so the
+  // literal flag is never sent to the agent as a prompt (that would burn a
+  // real API turn on Rachel guessing what "--help" means).
+  if (isHelpFlag(process.argv.slice(2))) {
+    // Pass the STATIC default, not MAX_TURNS (the effective value) — a
+    // RACHEL_MAX_TURNS override must not make the help page claim the
+    // override is the default.
+    console.log(renderHelp(DEFAULT_MAX_TURNS));
+    process.exit(0);
+  }
+
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
