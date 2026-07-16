@@ -313,16 +313,8 @@ async function main(): Promise<void> {
   }
 
   // Handle initial prompt from CLI args: rachel "check my email"
-  // /model and /effort commands passed as argv (rachel /model opus /effort
-  // xhigh) must apply as config, not be joined into the prompt and sent to
-  // the agent — parseArgvConfig (proactive/modelConfig.ts) walks argv,
-  // applies every config command it finds via the same handleConfigCommand
-  // the REPL uses below, and returns whatever's left as the one-shot prompt.
-  const { configReplies, remainingPrompt: initialPrompt } = parseArgvConfig(process.argv.slice(2));
-  for (const reply of configReplies) {
-    console.log(`[Rachel] ${reply}\n`);
-  }
-
+  // (initialPrompt/configReplies were already computed above, before the
+  // banner, so the banner reflects any /model or /effort switch.)
   if (initialPrompt) {
     try {
       await runTerminalTurn(initialPrompt);
