@@ -750,6 +750,8 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         { command: "reset", description: "Reset the conversation session" },
         { command: "status", description: "Show bridge status" },
         { command: "stop", description: "Abort the in-flight turn" },
+        { command: "model", description: "Show or switch the active model" },
+        { command: "effort", description: "Show or switch the active reasoning effort" },
       ]).catch((err) => {
         console.error(`[telegram-bridge] setMyCommands failed: ${err instanceof Error ? err.message : String(err)}`);
       });
