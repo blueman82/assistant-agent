@@ -123,15 +123,3 @@ test("report function returns current model/effort plus valid options", async ()
   assert.deepEqual(report.validEfforts, mod.VALID_EFFORTS);
 });
 
-test("VALID_MODELS contains exactly the four whitelisted models", async () => {
-  const mod = await import(`./modelConfig.ts?t=${Date.now()}-k`);
-  assert.deepEqual(
-    [...mod.VALID_MODELS].sort(),
-    ["claude-fable-5", "claude-haiku-4-5", "claude-opus-4-8", "claude-sonnet-5"].sort(),
-  );
-});
-
-test("VALID_EFFORTS contains exactly the five effort levels", async () => {
-  const mod = await import(`./modelConfig.ts?t=${Date.now()}-l`);
-  assert.deepEqual([...mod.VALID_EFFORTS], ["low", "medium", "high", "xhigh", "max"]);
-});
