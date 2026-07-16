@@ -79,22 +79,25 @@ test("valid effort switch updates current effort", async () => {
   assert.equal(mod.getEffort(), "low");
 });
 
-test("invalid model is rejected and state is unchanged", async () => {
+test("invalid model is rejected and state is unchanged (not silently reset to default)", async () => {
   const mod = await import(`./modelConfig.ts?t=${Date.now()}-g`);
-  const before = mod.getModel();
+  // Start from a non-default value: a bug that resets to default on bad
+  // input would still pass an assertion pinned to the boot default, so the
+  // "before" value must not be the default for this test to have teeth.
+  mod.setModel("claude-haiku-4-5");
   const result = mod.setModel("gpt-5-turbo");
   assert.equal(result.ok, false);
   assert.match(result.message, /gpt-5-turbo/);
-  assert.equal(mod.getModel(), before);
+  assert.equal(mod.getModel(), "claude-haiku-4-5");
 });
 
-test("invalid effort is rejected and state is unchanged", async () => {
+test("invalid effort is rejected and state is unchanged (not silently reset to default)", async () => {
   const mod = await import(`./modelConfig.ts?t=${Date.now()}-h`);
-  const before = mod.getEffort();
+  mod.setEffort("low");
   const result = mod.setEffort("ultra");
   assert.equal(result.ok, false);
   assert.match(result.message, /ultra/);
-  assert.equal(mod.getEffort(), before);
+  assert.equal(mod.getEffort(), "low");
 });
 
 test("all 5 effort levels are accepted for every whitelisted model (pins the stale SDK annotation trap)", async () => {
