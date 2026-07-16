@@ -11,7 +11,7 @@ import { createTerminalApprovalSurface } from "./gate/surfaces/terminal.ts";
 import { createTelegramApprovalSurface, loadTelegramConfig } from "./gate/surfaces/telegram.ts";
 import { createQueueApprovalSurface } from "./gate/surfaces/queue.ts";
 import { resolveAllowedTools } from "./proactive/allowedTools.ts";
-import { getModel, getEffort, handleConfigCommand, isHelpFlag, renderHelp } from "./proactive/modelConfig.ts";
+import { getModel, getEffort, handleConfigCommand, isHelpFlag, renderHelp, parseArgvConfig } from "./proactive/modelConfig.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -268,8 +268,21 @@ async function main(): Promise<void> {
     output: process.stdout,
   });
 
+  // /model and /effort commands passed as argv (rachel /model opus /effort
+  // xhigh) must apply as config, not be joined into the prompt and sent to
+  // the agent — parseArgvConfig (proactive/modelConfig.ts) walks argv,
+  // applies every config command it finds via the same handleConfigCommand
+  // the REPL uses below, and returns whatever's left as the one-shot prompt.
+  // This runs BEFORE the banner below so `rachel /model opus` reports the
+  // switched model, not the pre-switch default.
+  const { configReplies, remainingPrompt: initialPrompt } = parseArgvConfig(process.argv.slice(2));
+
   console.log(`[Rachel] model=${getModel()} maxTurns=${MAX_TURNS}`);
   console.log(`[Rachel] Type your request. Ctrl+C to exit.\n`);
+
+  for (const reply of configReplies) {
+    console.log(`[Rachel] ${reply}\n`);
+  }
 
   async function runTerminalTurn(userInput: string): Promise<void> {
     const abortController = new AbortController();
@@ -300,8 +313,8 @@ async function main(): Promise<void> {
   }
 
   // Handle initial prompt from CLI args: rachel "check my email"
-  const initialPrompt = process.argv.slice(2).join(" ").trim();
-
+  // (initialPrompt/configReplies were already computed above, before the
+  // banner, so the banner reflects any /model or /effort switch.)
   if (initialPrompt) {
     try {
       await runTerminalTurn(initialPrompt);
