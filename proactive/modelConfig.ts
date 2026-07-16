@@ -97,3 +97,33 @@ export function getReport(): { model: ValidModel; effort: ValidEffort; validMode
     validEfforts: VALID_EFFORTS,
   };
 }
+
+// handleConfigCommand — shared /model and /effort dispatch for every surface
+// (the terminal REPL and the Telegram bridge). Pure and synchronous: it
+// returns the message body for the caller to render, or undefined when the
+// input isn't one of these two commands, so each surface keeps its own sink
+// (console.log vs. reply()) and loop control (continue vs. return) instead
+// of routing through a callback. Parsing splits on whitespace and
+// exact-matches parts[0] so "/modeling" does not match "/model".
+export function handleConfigCommand(input: string): string | undefined {
+  const parts = input.trim().split(/\s+/).filter((p) => p.length > 0);
+  if (parts[0] === "/model") {
+    const arg = parts[1];
+    if (arg === undefined) {
+      const report = getReport();
+      return `model: ${report.model}\nvalid options: ${report.validModels.join(", ")}`;
+    }
+    const result = setModel(arg);
+    return result.ok ? `model set to ${result.value} — takes effect on the next turn.` : result.message;
+  }
+  if (parts[0] === "/effort") {
+    const arg = parts[1];
+    if (arg === undefined) {
+      const report = getReport();
+      return `effort: ${report.effort}\nvalid options: ${report.validEfforts.join(", ")}`;
+    }
+    const result = setEffort(arg);
+    return result.ok ? `effort set to ${result.value} — takes effect on the next turn.` : result.message;
+  }
+  return undefined;
+}
