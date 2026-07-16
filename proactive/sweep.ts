@@ -720,6 +720,37 @@ async function escalateSweepFailures(
   }
 }
 
+// The model actually running when RACHEL_MODEL is unset or off-whitelist.
+// Mirrors modelConfig.ts's unexported DEFAULT_MODEL — duplicated here
+// deliberately rather than exported from modelConfig.ts, since this module
+// must not import that module's mutable/boot-time state (see the
+// VALID_MODELS import comment above).
+const DEFAULT_MODEL = "claude-sonnet-5";
+
+// Boot-model misconfiguration: RACHEL_MODEL is read directly from THIS
+// process's env, never through modelConfig.ts (per-process state, see
+// above). Unset or on-whitelist is normal — silence. Off-whitelist means
+// Rachel is quietly running DEFAULT_MODEL instead of what was configured,
+// which could otherwise go unnoticed for weeks in a launchd log nobody
+// reads. Severity is "normal": a static config fact, not time-critical,
+// same class as pr-red and heartbeat-missing. Dedup is push()'s own
+// same-id/same-state rule — the state IS the bad value, so an unchanged
+// misconfiguration pings once and a changed one (still bad) re-arms.
+async function checkBootModel(d: SweepDeps, pushDeps: Partial<PushDeps>): Promise<void> {
+  const envValue = process.env["RACHEL_MODEL"];
+  if (envValue === undefined || (VALID_MODELS as readonly string[]).includes(envValue)) {
+    return;
+  }
+  await d.pushFn(
+    "boot-model",
+    "model:boot-mismatch",
+    envValue,
+    "normal",
+    `[model] RACHEL_MODEL=${envValue} is not on the whitelist — running ${DEFAULT_MODEL} instead.`,
+    pushDeps,
+  );
+}
+
 export async function sweepTick(overrides?: Partial<SweepDeps>): Promise<Record<string, FamilyResult>> {
   const d = resolveSweepDeps(overrides);
   const pushDeps = pushDepsOf(d);
