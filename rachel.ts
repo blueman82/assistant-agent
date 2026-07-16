@@ -11,7 +11,7 @@ import { createTerminalApprovalSurface } from "./gate/surfaces/terminal.ts";
 import { createTelegramApprovalSurface, loadTelegramConfig } from "./gate/surfaces/telegram.ts";
 import { createQueueApprovalSurface } from "./gate/surfaces/queue.ts";
 import { resolveAllowedTools } from "./proactive/allowedTools.ts";
-import { getModel, getEffort } from "./proactive/modelConfig.ts";
+import { getModel, getEffort, setModel, setEffort, getReport } from "./proactive/modelConfig.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
