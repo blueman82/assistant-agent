@@ -1,5 +1,5 @@
 // Model/effort seam for the interactive agent — module-level mutable state
-// so a /model or /effort switch (wu2) takes effect on the very next turn:
+// so a /model or /effort command takes effect on the very next turn:
 // rachel.ts's runTurn rebuilds its options object every turn and reads the
 // getters below, rather than capturing a boot-time const.
 //
@@ -11,7 +11,7 @@
 // /effort command), so a bad value must be handled, not thrown: throwing
 // here would take down the whole bridge turn (and the launchd one-shot
 // process) over a user's typo. Setters instead return a discriminated
-// result so the two call sites (wu2) can render the rejection back to the
+// result so the command handlers can render the rejection back to the
 // user and leave current state untouched.
 //
 // The boot-time RACHEL_MODEL read is the one path that still behaves like
@@ -20,6 +20,20 @@
 // entry points, and a throw at import time would wedge all of them. An
 // off-whitelist RACHEL_MODEL logs to stderr and falls back to the default
 // instead.
+//
+// SCOPE: this state is per-process, not shared across the app. The
+// terminal REPL (npm start / tsx rachel.ts) and the Telegram bridge (npm
+// run bridge / tsx bridge/telegram-bridge.ts) are separate OS processes,
+// each importing this module independently; the four launchd one-shots
+// (inbox-brief, proactive-sweep, proactive-calendar, plus the bridge
+// itself) each get their own fresh copy at their own import too. A /model
+// or /effort switch made in one process is invisible to every other
+// process — a Telegram switch does not change what the terminal REPL is
+// running, and neither changes what a scheduled one-shot picks up. This is
+// deliberate, not a gap to close: persisting the choice to disk so it was
+// shared across processes would let an interactive switch silently change
+// which model the unattended scheduled jobs run on, which is worse than
+// the current per-process isolation.
 
 export const VALID_MODELS = ["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5", "claude-fable-5"] as const;
 export type ValidModel = (typeof VALID_MODELS)[number];
