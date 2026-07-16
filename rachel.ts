@@ -171,7 +171,8 @@ export async function runTurn(
   signal.addEventListener("abort", () => abortController.abort(), { once: true });
 
   const options: Parameters<typeof query>[0]["options"] = {
-    model: MODEL,
+    model: getModel(),
+    effort: getEffort(),
     maxTurns: MAX_TURNS,
     permissionMode: "auto",
     // Env read here, per call, not at module load — launchd/spawn
