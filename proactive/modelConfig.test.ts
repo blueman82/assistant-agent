@@ -376,17 +376,9 @@ test("renderHelp: renders the passed-in default, not a hardcoded 200", async () 
   assert.ok(help.includes("42"), "expected the passed-in default value in help text");
 });
 
-test("renderHelp: reports the STATIC default, not an env-overridden effective value — a help page must not claim an override is the default", async () => {
+test("renderHelp: labels whatever value it's given as the default verbatim — the caller (rachel.ts) is responsible for passing the STATIC default, not an env-overridden effective value", async () => {
   const mod = await import(`./modelConfig.ts?t=${Date.now()}-ak`);
-  // Simulates RACHEL_MAX_TURNS=5 overriding the effective value while the
-  // real default (200) is what renderHelp must be called with. If the
-  // caller (rachel.ts) ever passes the effective value instead of the
-  // static default, this test only catches it by contract — renderHelp
-  // itself has no way to know which one it was handed, so the real
-  // regression test is the string check below: the static default must
-  // appear and the overridden value must not.
   const help = mod.renderHelp(200);
-  assert.ok(help.includes("200"), "expected the static default 200 in help text");
-  assert.ok(!help.includes("default: 5"), "must not report an overridden value as the default");
+  assert.ok(help.includes("default: 200"), "expected the given value labelled as the default");
 });
 
