@@ -256,7 +256,10 @@ async function main(): Promise<void> {
   // literal flag is never sent to the agent as a prompt (that would burn a
   // real API turn on Rachel guessing what "--help" means).
   if (isHelpFlag(process.argv.slice(2))) {
-    console.log(renderHelp(MAX_TURNS));
+    // Pass the STATIC default, not MAX_TURNS (the effective value) — a
+    // RACHEL_MAX_TURNS override must not make the help page claim the
+    // override is the default.
+    console.log(renderHelp(DEFAULT_MAX_TURNS));
     process.exit(0);
   }
 
