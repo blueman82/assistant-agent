@@ -72,5 +72,7 @@ This is the most important behavioural contract:
 | Input | Effect |
 |-------|--------|
 | `/reset` | Start a new session (clears the resumed `sessionId`) |
+| `/model [name]` | No arg: report current model + valid options. Arg: switch model, takes effect next turn |
+| `/effort [level]` | No arg: report current effort + valid options. Arg: switch effort, takes effect next turn |
 | `/exit` or `/quit` | Exit |
 | `q` (mid-turn) | Abort the in-flight turn via the AbortController |
