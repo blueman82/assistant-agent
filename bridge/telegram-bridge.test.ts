@@ -744,6 +744,281 @@ test("/status replies without dispatching to runTurn", async () => {
   assert.ok(sendCall);
 });
 
+test("/model with no argument replies with the current model and the valid options, without dispatching to runTurn", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "/model"),
+    { ok: true, result: [] },
+  ]);
+
+  let dispatched = false;
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {
+      dispatched = true;
+    },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await bridge.stop();
+
+  assert.equal(dispatched, false);
+  const sendCall = calls.find((c) => c.url.includes("/sendMessage"));
+  const text = String((sendCall?.body as { text?: string } | undefined)?.text ?? "");
+  assert.ok(text.includes(getModel()), `expected the current model in the reply — got: ${text}`);
+  for (const m of VALID_MODELS_FOR_TEST) {
+    assert.ok(text.includes(m), `expected valid model ${m} listed in the no-arg reply — got: ${text}`);
+  }
+});
+
+test("/model <valid-name> switches the model and confirms it takes effect on the next turn", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "/model claude-opus-4-8"),
+    { ok: true, result: [] },
+  ]);
+
+  const originalModel = getModel();
+  try {
+    const bridge = createBridge({
+      ...basePushOpts(),
+      config: { token: "t", chatId: "12345", transport },
+      runTurn: async () => {},
+      getSessionId: () => undefined,
+      resetSession: () => {},
+      pollIntervalMs: 5,
+    });
+
+    await bridge.drainOnce();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await bridge.stop();
+
+    assert.equal(getModel(), "claude-opus-4-8", "setModel must have applied the switch");
+    const sendCall = calls.find((c) => c.url.includes("/sendMessage"));
+    const text = String((sendCall?.body as { text?: string } | undefined)?.text ?? "");
+    assert.ok(text.includes("claude-opus-4-8"), `expected confirmation naming the new model — got: ${text}`);
+  } finally {
+    setModel(originalModel);
+  }
+});
+
+test("/model <invalid-name> renders the rejection message and leaves the current model unchanged", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "/model not-a-real-model"),
+    { ok: true, result: [] },
+  ]);
+
+  const originalModel = getModel();
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {},
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await bridge.stop();
+
+  assert.equal(getModel(), originalModel, "an invalid /model value must not change current state");
+  const sendCall = calls.find((c) => c.url.includes("/sendMessage"));
+  const text = String((sendCall?.body as { text?: string } | undefined)?.text ?? "");
+  assert.ok(text.includes("not-a-real-model"), `expected the rejection to name the bad value — got: ${text}`);
+});
+
+test("/effort with no argument replies with the current effort and the valid options, without dispatching to runTurn", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "/effort"),
+    { ok: true, result: [] },
+  ]);
+
+  let dispatched = false;
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {
+      dispatched = true;
+    },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await bridge.stop();
+
+  assert.equal(dispatched, false);
+  const sendCall = calls.find((c) => c.url.includes("/sendMessage"));
+  const text = String((sendCall?.body as { text?: string } | undefined)?.text ?? "");
+  assert.ok(text.includes(getEffort()), `expected the current effort in the reply — got: ${text}`);
+  for (const e of VALID_EFFORTS_FOR_TEST) {
+    assert.ok(text.includes(e), `expected valid effort ${e} listed in the no-arg reply — got: ${text}`);
+  }
+});
+
+test("/effort <valid-level> switches the effort and confirms it takes effect on the next turn", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "/effort xhigh"),
+    { ok: true, result: [] },
+  ]);
+
+  const originalEffort = getEffort();
+  try {
+    const bridge = createBridge({
+      ...basePushOpts(),
+      config: { token: "t", chatId: "12345", transport },
+      runTurn: async () => {},
+      getSessionId: () => undefined,
+      resetSession: () => {},
+      pollIntervalMs: 5,
+    });
+
+    await bridge.drainOnce();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await bridge.stop();
+
+    assert.equal(getEffort(), "xhigh", "setEffort must have applied the switch");
+    const sendCall = calls.find((c) => c.url.includes("/sendMessage"));
+    const text = String((sendCall?.body as { text?: string } | undefined)?.text ?? "");
+    assert.ok(text.includes("xhigh"), `expected confirmation naming the new effort — got: ${text}`);
+  } finally {
+    setEffort(originalEffort);
+  }
+});
+
+test("/effort <invalid-level> renders the rejection message and leaves the current effort unchanged", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "/effort ultra"),
+    { ok: true, result: [] },
+  ]);
+
+  const originalEffort = getEffort();
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {},
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await bridge.stop();
+
+  assert.equal(getEffort(), originalEffort, "an invalid /effort value must not change current state");
+  const sendCall = calls.find((c) => c.url.includes("/sendMessage"));
+  const text = String((sendCall?.body as { text?: string } | undefined)?.text ?? "");
+  assert.ok(text.includes("ultra"), `expected the rejection to name the bad value — got: ${text}`);
+});
+
+test("/model with extra surrounding whitespace still parses the argument", async () => {
+  const { transport } = makeStubTransport([
+    messageUpdate(1, "  /model   claude-haiku-4-5  "),
+    { ok: true, result: [] },
+  ]);
+
+  const originalModel = getModel();
+  try {
+    const bridge = createBridge({
+      ...basePushOpts(),
+      config: { token: "t", chatId: "12345", transport },
+      runTurn: async () => {},
+      getSessionId: () => undefined,
+      resetSession: () => {},
+      pollIntervalMs: 5,
+    });
+
+    await bridge.drainOnce();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await bridge.stop();
+
+    assert.equal(getModel(), "claude-haiku-4-5", "whitespace around /model and its argument must not block parsing");
+  } finally {
+    setModel(originalModel);
+  }
+});
+
+test("/status reports the live model and effort via modelConfig's getters, reflecting a switch made through /model — not a hardcoded default or the RACHEL_MODEL env var", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "/model claude-fable-5"),
+    messageUpdate(2, "/status"),
+    { ok: true, result: [] },
+  ]);
+
+  const originalModel = getModel();
+  const originalEnv = process.env["RACHEL_MODEL"];
+  try {
+    // Prove /status doesn't fall back to the stale hardcoded default by
+    // making the env var (the OTHER wrong source) disagree with both.
+    process.env["RACHEL_MODEL"] = "claude-sonnet-4-6";
+
+    const bridge = createBridge({
+      ...basePushOpts(),
+      config: { token: "t", chatId: "12345", transport },
+      runTurn: async () => {},
+      getSessionId: () => undefined,
+      resetSession: () => {},
+      pollIntervalMs: 5,
+    });
+
+    await bridge.drainOnce();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await bridge.drainOnce();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await bridge.stop();
+
+    assert.equal(getModel(), "claude-fable-5");
+    const statusCall = calls.filter((c) => c.url.includes("/sendMessage")).at(-1);
+    const text = String((statusCall?.body as { text?: string } | undefined)?.text ?? "");
+    assert.ok(text.includes("claude-fable-5"), `expected /status to reflect the switched model — got: ${text}`);
+    assert.ok(!text.includes("claude-sonnet-4-6"), `/status must not fall back to the stale hardcoded default — got: ${text}`);
+  } finally {
+    setModel(originalModel);
+    if (originalEnv === undefined) {
+      delete process.env["RACHEL_MODEL"];
+    } else {
+      process.env["RACHEL_MODEL"] = originalEnv;
+    }
+  }
+});
+
+test("setMyCommands registers /model and /effort alongside the existing reset/status/stop commands", async () => {
+  const { transport, calls } = makeStubTransport([
+    { ok: true, result: [] },
+  ]);
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {},
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  const runPromise = bridge.run();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+  await runPromise.catch(() => {});
+
+  const setCommandsCall = calls.find((c) => c.url.includes("/setMyCommands"));
+  assert.ok(setCommandsCall, "expected a setMyCommands call");
+  const commands = (setCommandsCall?.body as { commands?: Array<{ command: string }> } | undefined)?.commands ?? [];
+  const names = commands.map((c) => c.command);
+  assert.ok(names.includes("model"), `expected 'model' registered — got: ${JSON.stringify(names)}`);
+  assert.ok(names.includes("effort"), `expected 'effort' registered — got: ${JSON.stringify(names)}`);
+  assert.ok(names.includes("reset"), `existing 'reset' command must remain registered — got: ${JSON.stringify(names)}`);
+  assert.ok(names.includes("status"), `existing 'status' command must remain registered — got: ${JSON.stringify(names)}`);
+  assert.ok(names.includes("stop"), `existing 'stop' command must remain registered — got: ${JSON.stringify(names)}`);
+});
+
 test("run() exits fatally after CONFLICT_EXIT_THRESHOLD (5) consecutive 409s — genuine second consumer", async () => {
   // Transport always 409s — bridge must NOT exit on first 409, only after 5 consecutive.
   const transport: typeof fetch = async (input) => {
