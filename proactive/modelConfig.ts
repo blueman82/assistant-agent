@@ -92,10 +92,14 @@ export function getEffort(): ValidEffort {
 }
 
 export function setModel(value: string): SetResult<ValidModel> {
-  if (!(VALID_MODELS as readonly string[]).includes(value)) {
-    return { ok: false, message: `unknown model ${JSON.stringify(value)} — valid options: ${VALID_MODELS.join(", ")}` };
+  const resolved = resolveModelAlias(value);
+  if (!(VALID_MODELS as readonly string[]).includes(resolved)) {
+    return {
+      ok: false,
+      message: `unknown model ${JSON.stringify(value)} — valid options: ${VALID_MODELS.join(", ")} (aliases: ${Object.keys(MODEL_ALIASES).join(", ")})`,
+    };
   }
-  currentModel = value as ValidModel;
+  currentModel = resolved as ValidModel;
   return { ok: true, value: currentModel };
 }
 
