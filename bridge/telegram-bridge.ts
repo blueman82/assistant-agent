@@ -15,6 +15,7 @@ import type { TurnEmit } from "../rachel.ts";
 import { readdirSync, readFileSync, writeFileSync, unlinkSync, statSync, mkdirSync, existsSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { execSync } from "node:child_process";
+import { getModel, getEffort, setModel, setEffort, getReport } from "../proactive/modelConfig.ts";
 
 export type BridgeRunTurn = (input: string, emit: TurnEmit, signal: AbortSignal) => Promise<void>;
 
