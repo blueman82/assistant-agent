@@ -977,6 +977,10 @@ test("/status reports the live model and effort via modelConfig's getters, refle
     assert.equal(getModel(), "claude-fable-5");
     const statusCall = calls.filter((c) => c.url.includes("/sendMessage")).at(-1);
     const text = String((statusCall?.body as { text?: string } | undefined)?.text ?? "");
+    // "effort:" only appears in the /status reply, not the /model
+    // confirmation — this line is what pins the assertion to the /status
+    // reply specifically, not just the last sendMessage call generally.
+    assert.ok(text.includes(`effort: ${getEffort()}`), `expected /status to include the current effort — got: ${text}`);
     assert.ok(text.includes("claude-fable-5"), `expected /status to reflect the switched model — got: ${text}`);
     assert.ok(!text.includes("claude-sonnet-4-6"), `/status must not fall back to the stale hardcoded default — got: ${text}`);
   } finally {
