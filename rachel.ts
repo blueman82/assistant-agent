@@ -251,6 +251,14 @@ export async function runTurn(
 // bridge, which calls runTurn directly) never starts the CLI loop.
 // ---------------------------------------------------------------------------
 async function main(): Promise<void> {
+  // --help/-h: print and exit BEFORE the initialPrompt join below, so the
+  // literal flag is never sent to the agent as a prompt (that would burn a
+  // real API turn on Rachel guessing what "--help" means).
+  if (isHelpFlag(process.argv.slice(2))) {
+    console.log(renderHelp(MAX_TURNS));
+    process.exit(0);
+  }
+
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
