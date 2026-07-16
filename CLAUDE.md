@@ -49,6 +49,8 @@ The agent is defined inline via the SDK's `agents.rachel` option, with:
 - `extraArgs: { chrome: null }` to enable the Chrome extension MCP.
 - No spawned MCP servers (`mcpServers = {}`) — Chrome tools come from the browser extension, not a spawned server.
 
+Model and reasoning effort are not part of that inline agent definition — they're read fresh on every call from `proactive/modelConfig.ts`'s `getModel()`/`getEffort()` and set as `model`/`effort` fields on the `options` object passed to the SDK's `query()` call, so a `/model` or `/effort` switch takes effect on the next turn rather than requiring a restart.
+
 Session continuity: `sessionId` is captured from the SDK `init` message and passed as `resume` on subsequent turns. `/reset` clears it.
 
 ### Tool routing (defined in `system.md`)
