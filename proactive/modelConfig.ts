@@ -150,6 +150,44 @@ export function handleConfigCommand(input: string): string | undefined {
   return undefined;
 }
 
+// parseArgvConfig — rachel.ts's argv path (`rachel /model opus`). Before
+// this, argv was joined straight into a prompt and sent to the agent, so
+// "/model isn't available in this environment" burned a real turn instead of
+// switching anything. This walks argv token-by-token: every /model or
+// /effort command it finds is applied by delegating to handleConfigCommand
+// above (so validation/rendering has exactly one path, not a second copy
+// here), and whatever tokens aren't part of a config command are rejoined
+// and returned as the one-shot prompt. A config token consumes the next
+// token as its argument UNLESS that next token is itself "/model" or
+// "/effort" — so `rachel /model` (end of argv) or `rachel /model /effort
+// xhigh` reports rather than trying to setModel("/effort"). Mixed
+// invocations (`rachel /model opus "check my email"`) apply-then-run: the
+// config command is consumed from the argv wherever it appears, and every
+// remaining token is joined into the prompt in its original order — this
+// composes rather than treating the mix as an error, matching what a user
+// typing that line would expect.
+export function parseArgvConfig(argv: readonly string[]): { configReplies: string[]; remainingPrompt: string } {
+  const configReplies: string[] = [];
+  const promptTokens: string[] = [];
+  let i = 0;
+  while (i < argv.length) {
+    const token = argv[i];
+    if (token === "/model" || token === "/effort") {
+      const next = argv[i + 1];
+      const hasArg = next !== undefined && next !== "/model" && next !== "/effort";
+      const reply = handleConfigCommand(hasArg ? `${token} ${next}` : token);
+      // handleConfigCommand always returns a string for "/model"/"/effort" —
+      // the undefined case is only for inputs that aren't either command.
+      configReplies.push(reply as string);
+      i += hasArg ? 2 : 1;
+      continue;
+    }
+    promptTokens.push(token);
+    i++;
+  }
+  return { configReplies, remainingPrompt: promptTokens.join(" ").trim() };
+}
+
 // isHelpFlag / renderHelp — support rachel.ts's `--help`/`-h` CLI intercept.
 // Pure and exported from here (not inline in rachel.ts) so they're covered
 // by this module's test glob; rachel.ts itself isn't tested directly. Only
