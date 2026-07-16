@@ -68,11 +68,12 @@ function resolveBootModel(): ValidModel {
   if (envValue === undefined) {
     return DEFAULT_MODEL;
   }
-  if ((VALID_MODELS as readonly string[]).includes(envValue)) {
-    return envValue as ValidModel;
+  const resolved = resolveModelAlias(envValue);
+  if ((VALID_MODELS as readonly string[]).includes(resolved)) {
+    return resolved as ValidModel;
   }
   console.error(
-    `[modelConfig] RACHEL_MODEL=${JSON.stringify(envValue)} is not on the whitelist (${VALID_MODELS.join(", ")}) — falling back to ${DEFAULT_MODEL}`,
+    `[modelConfig] RACHEL_MODEL=${JSON.stringify(envValue)} is not on the whitelist (${VALID_MODELS.join(", ")}; aliases: ${Object.keys(MODEL_ALIASES).join(", ")}) — falling back to ${DEFAULT_MODEL}`,
   );
   return DEFAULT_MODEL;
 }
