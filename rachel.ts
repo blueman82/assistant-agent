@@ -300,7 +300,15 @@ async function main(): Promise<void> {
   }
 
   // Handle initial prompt from CLI args: rachel "check my email"
-  const initialPrompt = process.argv.slice(2).join(" ").trim();
+  // /model and /effort commands passed as argv (rachel /model opus /effort
+  // xhigh) must apply as config, not be joined into the prompt and sent to
+  // the agent — parseArgvConfig (proactive/modelConfig.ts) walks argv,
+  // applies every config command it finds via the same handleConfigCommand
+  // the REPL uses below, and returns whatever's left as the one-shot prompt.
+  const { configReplies, remainingPrompt: initialPrompt } = parseArgvConfig(process.argv.slice(2));
+  for (const reply of configReplies) {
+    console.log(`[Rachel] ${reply}\n`);
+  }
 
   if (initialPrompt) {
     try {
