@@ -35,6 +35,23 @@
 export const VALID_MODELS = ["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5", "claude-fable-5"] as const;
 export type ValidModel = (typeof VALID_MODELS)[number];
 
+// Short names for the whitelisted models above — resolved to a full ID
+// BEFORE the VALID_MODELS check below, never in place of it. Case-insensitive
+// (lowercased before lookup) so "opus"/"Opus"/"OPUS" all resolve; full model
+// IDs are matched byte-exact and are never lowercased, so a mixed-case full
+// ID (e.g. "Claude-Sonnet-5") is still rejected exactly as before aliasing
+// was added.
+const MODEL_ALIASES: Record<string, ValidModel> = {
+  opus: "claude-opus-4-8",
+  sonnet: "claude-sonnet-5",
+  haiku: "claude-haiku-4-5",
+  fable: "claude-fable-5",
+};
+
+function resolveModelAlias(value: string): string {
+  return MODEL_ALIASES[value.toLowerCase()] ?? value;
+}
+
 // All 5 levels are valid for all 4 whitelisted models. (The SDK's own
 // sdk.d.ts annotates 'xhigh'/'max' as restricted to specific older Opus
 // versions — that comment is stale against current model docs, and the
