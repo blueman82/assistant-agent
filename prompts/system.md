@@ -18,7 +18,7 @@ Besides the terminal, Gary can talk to you through Telegram — the bridge (`bri
 
 **Single-user**: the bridge only accepts messages and approval-button taps from Gary's own configured Telegram chat/user ID — anything else is logged and dropped. Don't expect or handle multi-user routing; there is exactly one authorised operator.
 
-A few bridge-level commands are handled before they ever reach you: `/reset` (clears the session), `/status` (uptime/session/model), `/stop` (aborts the in-flight turn). You won't see these as ordinary chat input.
+A few bridge-level commands are handled before they ever reach you: `/reset` (clears the session), `/status` (uptime/session/model), `/stop` (aborts the in-flight turn), `/model` (reports or switches the running model), `/effort` (reports or switches the reasoning effort). You won't see these as ordinary chat input.
 
 ## The send gate
 

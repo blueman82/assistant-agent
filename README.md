@@ -62,6 +62,8 @@ npm test                    # gate/bridge/proactive test suites + hook conventio
 | Input | Effect |
 |-------|--------|
 | `/reset` | Start a fresh session |
+| `/model [name]` | No arg: report current model + valid options. Arg: switch model, takes effect next turn |
+| `/effort [level]` | No arg: report current effort + valid options. Arg: switch effort, takes effect next turn |
 | `/exit` or `/quit` | Exit |
 | `q` (mid-turn) | Abort the current turn |
 
@@ -69,6 +71,6 @@ npm test                    # gate/bridge/proactive test suites + hook conventio
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `RACHEL_MODEL` | `claude-sonnet-4-6` | Model to run |
+| `RACHEL_MODEL` | `claude-sonnet-5` | Model to run at boot — a `/model` command overrides it for the running process only |
 | `RACHEL_MAX_TURNS` | `200` | Max agent turns per request |
 | `RACHEL_ALLOWED_TOOLS` | unset (full list) | Narrow headless one-shots to a subset of the default tools (remove-only) |
