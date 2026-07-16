@@ -163,9 +163,12 @@ export function isHelpFlag(args: readonly string[]): boolean {
 
 // Renders model/effort lists and the current default from this module's own
 // exports rather than retyping them, so a whitelist change can't drift out
-// of sync with the help text. maxTurns is passed in because MAX_TURNS is
-// owned by rachel.ts, not this module.
-export function renderHelp(maxTurns: number): string {
+// of sync with the help text. defaultMaxTurns is passed in because
+// MAX_TURNS's default is owned by rachel.ts, not this module — the caller
+// must pass the STATIC default, not the effective (possibly
+// RACHEL_MAX_TURNS-overridden) value, or the help page would misreport an
+// override as the default.
+export function renderHelp(defaultMaxTurns: number): string {
   return `Rachel — Gary's AI assistant
 
 Usage:
@@ -182,7 +185,7 @@ Commands (at the "You:" prompt):
 
 Environment variables:
   RACHEL_MODEL           Boot-time model override (default: ${DEFAULT_MODEL})
-  RACHEL_MAX_TURNS       Max turns per request (default: ${maxTurns})
+  RACHEL_MAX_TURNS       Max turns per request (default: ${defaultMaxTurns})
   RACHEL_ALLOWED_TOOLS   Comma-separated narrowing of the tool list for headless one-shots
 `;
 }
