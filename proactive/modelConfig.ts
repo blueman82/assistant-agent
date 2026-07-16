@@ -133,7 +133,7 @@ export function handleConfigCommand(input: string): string | undefined {
     const arg = parts[1];
     if (arg === undefined) {
       const report = getReport();
-      return `model: ${report.model}\nvalid options: ${report.validModels.join(", ")}`;
+      return `model: ${report.model}\nvalid options: ${report.validModels.join(", ")} (aliases: ${Object.keys(MODEL_ALIASES).join(", ")})`;
     }
     const result = setModel(arg);
     return result.ok ? `model set to ${result.value} — takes effect on the next turn.` : result.message;
