@@ -67,18 +67,12 @@ test("RACHEL_MODEL set to an off-whitelist value falls back to the default and l
   const original = process.env["RACHEL_MODEL"];
   process.env["RACHEL_MODEL"] = "gpt-5-turbo";
   try {
-    let lines: string[] = [];
-    let model = "";
-    lines = captureStderr(() => {
-      // The import itself runs the module-level fallback logic; we can't
-      // await inside captureStderr's sync fn, so do the import here and
-      // read state after — the console.error call happens synchronously
-      // during module evaluation, which happens synchronously as part of
-      // dynamic import's module-record initialization step.
-    });
-    const mod = await import(`./modelConfig.ts?t=${Date.now()}-d`);
-    model = mod.getModel();
-    assert.equal(model, "claude-sonnet-5");
+    const { lines, result: mod } = await captureStderrAsync(() => import(`./modelConfig.ts?t=${Date.now()}-d`));
+    assert.equal((mod as { getModel: () => string }).getModel(), "claude-sonnet-5");
+    assert.ok(
+      lines.some((l) => l.includes("gpt-5-turbo")),
+      `off-whitelist RACHEL_MODEL value logged to stderr: ${JSON.stringify(lines)}`,
+    );
   } finally {
     if (original !== undefined) process.env["RACHEL_MODEL"] = original;
     else delete process.env["RACHEL_MODEL"];
