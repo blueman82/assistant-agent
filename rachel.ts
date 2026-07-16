@@ -53,7 +53,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
-const MODEL = process.env["RACHEL_MODEL"] ?? "claude-sonnet-4-6";
+// Model + effort are no longer boot-time consts — proactive/modelConfig.ts
+// owns the current values (defaulted from RACHEL_MODEL at import) so a
+// /model or /effort switch (wu2) can change them mid-session; runTurn and
+// the startup banner below read the getters, not a captured value.
 const MAX_TURNS = parseInt(process.env["RACHEL_MAX_TURNS"] ?? "200", 10);
 
 const SYSTEM_PROMPT_PATH = join(__dirname, "prompts", "system.md");
