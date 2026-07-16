@@ -586,6 +586,7 @@ test("sweepTick reports per-family results and a healthy tick is all ok", async 
     "pr-red": "ok",
     "calendar-escalation": "ok",
     calendar: "ok",
+    "boot-model": "ok",
   });
 });
 
@@ -1271,6 +1272,102 @@ test("a fresh cache resets the producer-silence streak and a new episode re-arms
     new Date(start + 3 * 30 * 60_000).toISOString(),
     "the new episode's first-observed timestamp is the state — a resolved-then-rebroken producer re-arms",
   );
+});
+
+// --- Boot-model misconfiguration alert ---
+//
+// RACHEL_MODEL is read directly from the sweep's OWN process env (never via
+// proactive/modelConfig.ts — that module's state is per-process and the
+// sweep runs as its own OS process, so importing it there would read a
+// meaningless, unrelated copy). Only the frozen VALID_MODELS whitelist is
+// imported for a single source of truth.
+
+test("RACHEL_MODEL unset pushes nothing", async () => {
+  const original = process.env["RACHEL_MODEL"];
+  try {
+    delete process.env["RACHEL_MODEL"];
+    const h = makeHarness();
+    await sweepTick(h.deps);
+    assert.equal(h.pushes.length, 0);
+  } finally {
+    if (original === undefined) delete process.env["RACHEL_MODEL"];
+    else process.env["RACHEL_MODEL"] = original;
+  }
+});
+
+test("RACHEL_MODEL set to a whitelisted value pushes nothing", async () => {
+  const original = process.env["RACHEL_MODEL"];
+  try {
+    process.env["RACHEL_MODEL"] = "claude-opus-4-8";
+    const h = makeHarness();
+    await sweepTick(h.deps);
+    assert.equal(h.pushes.length, 0);
+  } finally {
+    if (original === undefined) delete process.env["RACHEL_MODEL"];
+    else process.env["RACHEL_MODEL"] = original;
+  }
+});
+
+test("RACHEL_MODEL set to an off-whitelist value pushes one normal alert naming both values", async () => {
+  const original = process.env["RACHEL_MODEL"];
+  try {
+    process.env["RACHEL_MODEL"] = "claude-opus-4-5";
+    const h = makeHarness();
+    await sweepTick(h.deps);
+    assert.equal(h.pushes.length, 1);
+    const p = h.pushes[0]!;
+    assert.equal(p.family, "boot-model");
+    assert.equal(p.eventId, "model:boot-mismatch");
+    assert.equal(p.severity, "normal");
+    assert.ok(p.text.includes("claude-opus-4-5"), `text names the misconfigured value: ${p.text}`);
+    assert.ok(p.text.includes("claude-sonnet-5"), `text names the running default: ${p.text}`);
+  } finally {
+    if (original === undefined) delete process.env["RACHEL_MODEL"];
+    else process.env["RACHEL_MODEL"] = original;
+  }
+});
+
+test("integration: the same off-whitelist RACHEL_MODEL across two ticks dedups through the real push chokepoint", async () => {
+  const original = process.env["RACHEL_MODEL"];
+  try {
+    process.env["RACHEL_MODEL"] = "claude-opus-4-5";
+    const { push } = await import("./push.ts");
+    const h = makeHarness();
+    const sent: string[] = [];
+    h.deps.sendFn = async (text) => {
+      sent.push(text);
+    };
+    h.deps.pushFn = async (...args) => push(...args);
+    await sweepTick(h.deps);
+    assert.equal(sent.length, 1);
+    await sweepTick(h.deps);
+    assert.equal(sent.length, 1, "no second Telegram delivery for the same unchanged bad value");
+  } finally {
+    if (original === undefined) delete process.env["RACHEL_MODEL"];
+    else process.env["RACHEL_MODEL"] = original;
+  }
+});
+
+test("a bad value change re-arms the alert through the real push chokepoint", async () => {
+  const original = process.env["RACHEL_MODEL"];
+  try {
+    const { push } = await import("./push.ts");
+    const h = makeHarness();
+    const sent: string[] = [];
+    h.deps.sendFn = async (text) => {
+      sent.push(text);
+    };
+    h.deps.pushFn = async (...args) => push(...args);
+    process.env["RACHEL_MODEL"] = "claude-opus-4-5";
+    await sweepTick(h.deps);
+    assert.equal(sent.length, 1);
+    process.env["RACHEL_MODEL"] = "claude-opus-9-9";
+    await sweepTick(h.deps);
+    assert.equal(sent.length, 2, "a different bad value is a new state, so it re-alerts");
+  } finally {
+    if (original === undefined) delete process.env["RACHEL_MODEL"];
+    else process.env["RACHEL_MODEL"] = original;
+  }
 });
 
 test("grep guard for proactive/sweep.test.ts: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
