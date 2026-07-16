@@ -256,7 +256,7 @@ async function main(): Promise<void> {
     output: process.stdout,
   });
 
-  console.log(`[Rachel] model=${MODEL} maxTurns=${MAX_TURNS}`);
+  console.log(`[Rachel] model=${getModel()} maxTurns=${MAX_TURNS}`);
   console.log(`[Rachel] Type your request. Ctrl+C to exit.\n`);
 
   async function runTerminalTurn(userInput: string): Promise<void> {
