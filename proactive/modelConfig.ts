@@ -5,35 +5,32 @@
 //
 // Mirrors proactive/allowedTools.ts's shape (validate against a known set,
 // log rejects to stderr) with one deliberate divergence: allowedTools.ts
-// throws on a bad value because its input is operator env config read once
-// at boot — a throw there fails loud before any turn runs. This module's
-// setters are driven by per-turn USER input (a Telegram/terminal /model or
-// /effort command), so a bad value must be handled, not thrown: throwing
-// here would take down the whole bridge turn (and the launchd one-shot
-// process) over a user's typo. Setters instead return a discriminated
-// result so the command handlers can render the rejection back to the
-// user and leave current state untouched.
-//
-// The boot-time RACHEL_MODEL read is the one path that still behaves like
-// allowedTools.ts's env-seam: an operator-set env var. But even there we
-// don't throw — this module is imported at the top of 4 launchd one-shot
-// entry points, and a throw at import time would wedge all of them. An
-// off-whitelist RACHEL_MODEL logs to stderr and falls back to the default
-// instead.
+// throws on a bad value, this module never does. The distinction is not
+// about which processes import which module — it's about whether a safe
+// fallback exists. allowedTools.ts throws only when the operator SET the
+// var and it narrowed to ZERO tools: there is no safe fallback for a
+// tool-less agent, so silently running one would be worse than the throw.
+// This module always has a safe fallback — a valid, working default model
+// — so throwing here would turn an operator's typo into a dead assistant;
+// under the Telegram bridge's KeepAlive supervision that's a crash-loop,
+// not a fail-loud. Setters (driven by per-turn USER input, a Telegram or
+// terminal /model or /effort command) never throw for the same reason a
+// bad value must be handled, not thrown: it returns a discriminated result
+// so the command handlers can render the rejection back to the user and
+// leave current state untouched.
 //
 // SCOPE: this state is per-process, not shared across the app. The
 // terminal REPL (npm start / tsx rachel.ts) and the Telegram bridge (npm
-// run bridge / tsx bridge/telegram-bridge.ts) are separate OS processes,
-// each importing this module independently; the four launchd one-shots
-// (inbox-brief, proactive-sweep, proactive-calendar, plus the bridge
-// itself) each get their own fresh copy at their own import too. A /model
-// or /effort switch made in one process is invisible to every other
-// process — a Telegram switch does not change what the terminal REPL is
-// running, and neither changes what a scheduled one-shot picks up. This is
-// deliberate, not a gap to close: persisting the choice to disk so it was
-// shared across processes would let an interactive switch silently change
-// which model the unattended scheduled jobs run on, which is worse than
-// the current per-process isolation.
+// run bridge / tsx bridge/telegram-bridge.ts) are separate OS processes;
+// every launchd-run entry point that reaches this module does so
+// transitively via rachel.ts, and each gets its own fresh copy at its own
+// import. A /model or /effort switch made in one process is invisible to
+// every other process — a Telegram switch does not change what the
+// terminal REPL is running, and neither changes what a scheduled one-shot
+// picks up. This is deliberate, not a gap to close: persisting the choice
+// to disk so it was shared across processes would let an interactive
+// switch silently change which model the unattended scheduled jobs run
+// on, which is worse than the current per-process isolation.
 
 export const VALID_MODELS = ["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5", "claude-fable-5"] as const;
 export type ValidModel = (typeof VALID_MODELS)[number];
