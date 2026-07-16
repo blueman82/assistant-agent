@@ -15,6 +15,13 @@ import { push, flushDeferred, getEventState, loadConfig, zonedDateString, zonedM
 import type { ProactiveConfig, PushDeps } from "./push.ts";
 import { sendChunked } from "../bridge/api.ts";
 import { loadTelegramConfig } from "../gate/surfaces/telegram.ts";
+// Only the frozen whitelist const is imported from modelConfig.ts, never its
+// mutable getModel()/currentModel — that state is per-process and the sweep
+// runs as its own OS process, so it would read a copy meaningless to what
+// the bridge or terminal actually run on. VALID_MODELS is identical in every
+// process (an `as const` array), so importing it keeps one source of truth
+// instead of a second list that can drift out of sync with modelConfig.ts.
+import { VALID_MODELS } from "./modelConfig.ts";
 
 export interface SweepDeps {
   now: () => Date;
