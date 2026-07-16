@@ -767,6 +767,7 @@ export async function sweepTick(overrides?: Partial<SweepDeps>): Promise<Record<
     // block the spawn, and vice versa.
     "calendar-escalation": await runFamily("calendar-escalation", d, errors, () => checkCalendarEscalation(d, cfg, pushDeps)),
     calendar: await runFamily("calendar", d, errors, () => runCalendarOneshot(d, cfg)),
+    "boot-model": await runFamily("boot-model", d, errors, () => checkBootModel(d, pushDeps)),
   };
   try {
     await escalateSweepFailures(d, cfg, results, errors);
