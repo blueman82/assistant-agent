@@ -382,3 +382,128 @@ test("renderHelp: labels whatever value it's given as the default verbatim — t
   assert.ok(help.includes("default: 200"), "expected the given value labelled as the default");
 });
 
+// ---------------------------------------------------------------------------
+// parseArgvConfig — rachel.ts's argv path (`rachel /model opus`) never
+// consulted handleConfigCommand before this: process.argv was joined
+// straight into a prompt and sent to the agent, burning a real turn on
+// Rachel explaining "/model isn't available". This walks argv token-by-token,
+// applying every /model or /effort command it finds via handleConfigCommand
+// (so validation/rendering stays single-sourced there) and returns whatever
+// argv is left over as the one-shot prompt — so `rachel /model opus "check
+// my email"` applies the switch AND still runs the prompt (apply-then-run),
+// rather than rejecting the mix as ambiguous. This composes: it's what a
+// user typing that line would expect, and it costs nothing extra since
+// config application is independent of prompt dispatch.
+// ---------------------------------------------------------------------------
+
+test("parseArgvConfig: a single config command applies and reports, with no remaining prompt", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-al`);
+  const original = mod.getModel();
+  try {
+    const { configReplies, remainingPrompt } = mod.parseArgvConfig(["/model", "opus"]);
+    assert.equal(mod.getModel(), "claude-opus-4-8");
+    assert.equal(configReplies.length, 1);
+    assert.ok(configReplies[0].includes("claude-opus-4-8"));
+    assert.equal(remainingPrompt, "");
+  } finally {
+    mod.setModel(original);
+  }
+});
+
+test("parseArgvConfig: multiple config commands in one argv all apply (Gary's exact case: /model opus /effort xhigh)", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-am`);
+  const originalModel = mod.getModel();
+  const originalEffort = mod.getEffort();
+  try {
+    const { configReplies, remainingPrompt } = mod.parseArgvConfig(["/model", "opus", "/effort", "xhigh"]);
+    assert.equal(mod.getModel(), "claude-opus-4-8");
+    assert.equal(mod.getEffort(), "xhigh");
+    assert.equal(configReplies.length, 2);
+    assert.ok(configReplies[0].includes("claude-opus-4-8"));
+    assert.ok(configReplies[1].includes("xhigh"));
+    assert.equal(remainingPrompt, "");
+  } finally {
+    mod.setModel(originalModel);
+    mod.setEffort(originalEffort);
+  }
+});
+
+test("parseArgvConfig: /model with no argument produces the report form, same as the REPL", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-an`);
+  const { configReplies, remainingPrompt } = mod.parseArgvConfig(["/model"]);
+  assert.equal(configReplies.length, 1);
+  assert.ok(configReplies[0].includes(mod.getModel()));
+  assert.ok(configReplies[0].includes("valid options"));
+  assert.equal(remainingPrompt, "");
+});
+
+test("parseArgvConfig: an invalid value is rejected, reported, and leaves state unchanged", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-ao`);
+  const original = mod.getModel();
+  const { configReplies, remainingPrompt } = mod.parseArgvConfig(["/model", "nonsense"]);
+  assert.equal(mod.getModel(), original, "invalid value must not change state");
+  assert.equal(configReplies.length, 1);
+  assert.ok(configReplies[0].includes("nonsense"));
+  assert.equal(remainingPrompt, "");
+});
+
+test("parseArgvConfig: a config command immediately followed by another config command does not swallow it as an argument", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-ap`);
+  const originalModel = mod.getModel();
+  const originalEffort = mod.getEffort();
+  try {
+    const { configReplies, remainingPrompt } = mod.parseArgvConfig(["/model", "/effort", "xhigh"]);
+    // "/model" with no argument (the next token is itself a command) reports
+    // rather than trying to setModel("/effort").
+    assert.equal(mod.getModel(), originalModel, "/model must not have consumed /effort as its argument");
+    assert.equal(mod.getEffort(), "xhigh");
+    assert.equal(configReplies.length, 2);
+    assert.ok(configReplies[0].includes("valid options"), "expected the no-arg report form for /model");
+    assert.ok(configReplies[1].includes("xhigh"));
+    assert.equal(remainingPrompt, "");
+  } finally {
+    mod.setModel(originalModel);
+    mod.setEffort(originalEffort);
+  }
+});
+
+test("parseArgvConfig: a plain prompt with no config commands is returned untouched as remainingPrompt", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-aq`);
+  const { configReplies, remainingPrompt } = mod.parseArgvConfig(["check", "my", "email"]);
+  assert.deepEqual(configReplies, []);
+  assert.equal(remainingPrompt, "check my email");
+});
+
+test("parseArgvConfig: empty argv produces no replies and an empty prompt", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-ar`);
+  const { configReplies, remainingPrompt } = mod.parseArgvConfig([]);
+  assert.deepEqual(configReplies, []);
+  assert.equal(remainingPrompt, "");
+});
+
+test("parseArgvConfig: mixed invocation applies config THEN returns the rest as the prompt (apply-then-run, not rejected as ambiguous)", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-as`);
+  const original = mod.getModel();
+  try {
+    const { configReplies, remainingPrompt } = mod.parseArgvConfig(["/model", "opus", "check", "my", "email"]);
+    assert.equal(mod.getModel(), "claude-opus-4-8");
+    assert.equal(configReplies.length, 1);
+    assert.equal(remainingPrompt, "check my email");
+  } finally {
+    mod.setModel(original);
+  }
+});
+
+test("parseArgvConfig: a mixed invocation with config commands interleaved after the prompt still applies them and strips them from the prompt", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-at`);
+  const original = mod.getModel();
+  try {
+    const { configReplies, remainingPrompt } = mod.parseArgvConfig(["check", "my", "email", "/model", "opus"]);
+    assert.equal(mod.getModel(), "claude-opus-4-8");
+    assert.equal(configReplies.length, 1);
+    assert.equal(remainingPrompt, "check my email");
+  } finally {
+    mod.setModel(original);
+  }
+});
+
