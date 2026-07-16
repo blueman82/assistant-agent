@@ -62,6 +62,8 @@ npm test                    # gate/bridge/proactive test suites + hook conventio
 | Input | Effect |
 |-------|--------|
 | `/reset` | Start a fresh session |
+| `/model [name]` | No arg: report current model + valid options. Arg: switch model, takes effect next turn |
+| `/effort [level]` | No arg: report current effort + valid options. Arg: switch effort, takes effect next turn |
 | `/exit` or `/quit` | Exit |
 | `q` (mid-turn) | Abort the current turn |
 
