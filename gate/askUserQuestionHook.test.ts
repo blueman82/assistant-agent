@@ -63,15 +63,12 @@ test("non-PreToolUse hook event -> pass-through with empty object", async () => 
 
 test("hook throws exception -> deny with 'Internal hook error' reason", async () => {
   const hook = createAskUserQuestionHook();
-  // Pass input where hook_event_name is not a string, forcing an error during comparison
-  const input = {
-    hook_event_name: { toString: () => { throw new Error("boom"); } },
-    session_id: "test-session",
-    transcript_path: "/dev/null",
-    cwd: "/tmp",
-    tool_name: "AskUserQuestion",
-    tool_input: { question: "test" },
-  } as unknown as PreToolUseHookInput;
+  // Use a Proxy that throws when any property is accessed
+  const input = new Proxy({} as PreToolUseHookInput, {
+    get: () => {
+      throw new Error("input threw");
+    },
+  });
   const result = await hook(input, undefined, { signal: new AbortController().signal });
   assert.equal(permissionDecisionOf(result), "deny");
   const reason = "hookSpecificOutput" in result
