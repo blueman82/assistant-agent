@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { tg, sendChunked, sendTyping, setMyCommands, stripMarkdown, DEFAULT_REQUEST_TIMEOUT_MS } from "./api.ts";
+import { tg, sendChunked, sendTyping, setMyCommands, stripMarkdown, sendVoice, DEFAULT_REQUEST_TIMEOUT_MS } from "./api.ts";
 
 function makeStubTransport(handler: (url: string, body: unknown) => unknown) {
   const calls: { url: string; body: unknown }[] = [];
@@ -230,6 +230,59 @@ test("DEFAULT_REQUEST_TIMEOUT_MS stays comfortably above the 30s getUpdates serv
   // A value at or under 30_000 would abort every long-poll — this guards the
   // constant against a production-breaking edit.
   assert.ok(DEFAULT_REQUEST_TIMEOUT_MS > 30_000, `got ${DEFAULT_REQUEST_TIMEOUT_MS}`);
+});
+
+async function writeTempAudioFile(): Promise<string> {
+  const { writeFile, mkdtemp } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = await mkdtemp(join(tmpdir(), "sendvoice-test-"));
+  const audioPath = join(dir, "reply.ogg");
+  await writeFile(audioPath, Buffer.from([1, 2, 3, 4]));
+  return audioPath;
+}
+
+test("sendVoice posts multipart form data with chat_id and the voice file to the sendVoice endpoint", async () => {
+  const audioPath = await writeTempAudioFile();
+  let capturedUrl = "";
+  let capturedForm: FormData | undefined;
+  const transport: typeof fetch = async (input, init) => {
+    capturedUrl = String(input);
+    capturedForm = init?.body as FormData;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  await sendVoice({ token: "t", chatId: "12345", transport }, audioPath);
+
+  assert.match(capturedUrl, /\/sendVoice$/);
+  assert.ok(capturedForm, "expected a FormData body");
+  assert.equal(capturedForm!.get("chat_id"), "12345");
+  const voiceEntry = capturedForm!.get("voice");
+  assert.ok(voiceEntry instanceof Blob, "expected the voice field to be a Blob");
+});
+
+test("sendVoice throws when the HTTP response is not ok", async () => {
+  const audioPath = await writeTempAudioFile();
+  const transport: typeof fetch = async () => ({ ok: false, json: async () => ({ ok: false, description: "boom" }) } as Response);
+  await assert.rejects(() => sendVoice({ token: "t", chatId: "1", transport }, audioPath), /boom/);
+});
+
+test("sendVoice throws when the Telegram body reports ok:false", async () => {
+  const audioPath = await writeTempAudioFile();
+  const transport: typeof fetch = async () => ({ ok: true, json: async () => ({ ok: false, description: "Bad Request: nope" }) } as Response);
+  await assert.rejects(() => sendVoice({ token: "t", chatId: "1", transport }, audioPath), /Bad Request: nope/);
+});
+
+test("sendVoice redacts the bot token from any thrown error message", async () => {
+  const audioPath = await writeTempAudioFile();
+  const transport: typeof fetch = async () => ({ ok: false, json: async () => ({ ok: false, description: "fail" }) } as Response);
+  await assert.rejects(
+    () => sendVoice({ token: "SECRET-TOKEN-123", chatId: "1", transport }, audioPath),
+    (err: Error) => {
+      assert.ok(!err.message.includes("SECRET-TOKEN-123"), `error message leaked the token: ${err.message}`);
+      return true;
+    },
+  );
 });
 
 test("grep guard: no test in this file ever calls the real api.telegram.org network endpoint", async () => {

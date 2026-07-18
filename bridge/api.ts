@@ -197,3 +197,36 @@ export async function downloadFile(
     pump();
   });
 }
+
+// Uploads a local audio file as a Telegram voice note via multipart/form-data
+// to the sendVoice endpoint (OGG/Opus required for the native voice-note
+// bubble). Does not reuse tg() — tg() hardcodes a JSON content-type body,
+// incompatible with multipart upload — but mirrors its error-handling and
+// token-redaction shape directly. Uses Node's built-in global fetch/
+// FormData/Blob (Node 18+) — no new dependency.
+export async function sendVoice(config: ApiConfig, audioPath: string): Promise<void> {
+  const transport = config.transport ?? fetch;
+  const { readFile } = await import("node:fs/promises");
+  const url = `https://api.telegram.org/bot${config.token}/sendVoice`;
+
+  const buffer = await readFile(audioPath);
+  const form = new FormData();
+  form.append("chat_id", config.chatId);
+  form.append("voice", new Blob([buffer], { type: "audio/ogg" }), "voice.ogg");
+
+  let res: Response;
+  let parsed: TelegramResponseBody;
+  try {
+    res = await transport(url, {
+      method: "POST",
+      body: form,
+      signal: AbortSignal.timeout(config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS),
+    });
+    parsed = (await res.json()) as TelegramResponseBody;
+  } catch (err) {
+    throw new Error(redact(`Telegram sendVoice request failed: ${err instanceof Error ? err.message : String(err)}`));
+  }
+  if (!res.ok || !parsed.ok) {
+    throw new Error(redact(`Telegram sendVoice failed: ${parsed.description ?? "unknown error"}`));
+  }
+}
