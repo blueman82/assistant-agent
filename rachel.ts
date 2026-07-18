@@ -15,11 +15,16 @@ import { getModel, getEffort, handleConfigCommand, isHelpFlag, renderHelp, parse
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// The agent's full tool surface. Narrowable per invocation via the
-// RACHEL_ALLOWED_TOOLS env seam (resolveAllowedTools) — headless one-shots
-// run with a minimum subset; the env var can only remove entries from this
-// list, never add to it. Exported for the cross-check test that pins every
-// one-shot narrowing set as a subset of this list.
+// The agent's auto-approval list, not its tool surface — entries here skip
+// the permission prompt. It does NOT restrict which tools Rachel can reach:
+// the SDK's `tools` option (the actual availability control) is never set
+// below, so no `--tools` flag reaches the underlying `claude` process and it
+// runs with its full default toolset regardless of what's listed here.
+// Narrowable per invocation via the RACHEL_ALLOWED_TOOLS env seam
+// (resolveAllowedTools) — headless one-shots run with a minimum subset; the
+// env var can only remove entries from this list, never add to it. Exported
+// for the cross-check test that pins every one-shot narrowing set as a
+// subset of this list.
 export const DEFAULT_ALLOWED_TOOLS = [
   "Read", "Write", "Edit", "Glob", "Grep", "Bash",
   "WebSearch", "WebFetch",
