@@ -200,6 +200,26 @@ test("dry-run prints the full plan naming all four labels with zero side effects
   assert.ok(!/^(bootstrap|bootout|load|unload)/m.test(log), `dry-run must not mutate launchd: ${log}`);
 });
 
+test("prints the speech venv as not set up, non-blocking, when absent", () => {
+  const sb = makeSandbox();
+  writeTelegramJson(sb);
+  const { status, output } = runInstaller(sb, ["--dry-run"]);
+  assert.strictEqual(status, 0, output);
+  assert.match(output, /speech venv:\s+NOT SET UP/);
+});
+
+test("prints the speech venv as present when the venv python exists, and never fails the install because of it", () => {
+  const sb = makeSandbox();
+  writeTelegramJson(sb);
+  writeFreshHeartbeat(sb);
+  mkdirSync(join(sb.home, ".rachel", "venvs", "speech", "bin"), { recursive: true });
+  writeFileSync(join(sb.home, ".rachel", "venvs", "speech", "bin", "python"), "#!/bin/sh\n");
+  chmodSync(join(sb.home, ".rachel", "venvs", "speech", "bin", "python"), 0o755);
+  const { status, output } = runInstaller(sb);
+  assert.strictEqual(status, 0, output);
+  assert.match(output, /speech venv:\s+present/);
+});
+
 test("real run stamps all four templates into LaunchAgents with the repo path and no placeholder remnants", () => {
   const sb = makeSandbox();
   writeTelegramJson(sb);

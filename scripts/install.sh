@@ -152,6 +152,18 @@ Configure ONE of these two routes, then re-run:
        {\"token\": \"<bot token>\", \"chatId\": \"<chat id>\"}$tg_note"
 fi
 
+# Speech venv check (Telegram voice in/out) — NON-BLOCKING: unlike Telegram
+# credentials, a missing/incomplete speech venv must never stop the install
+# (docs/coderails/specs/telegram-voice-stt-tts.md: a missing venv falls back
+# to text at runtime rather than crashing). Run scripts/speech/setup.sh
+# yourself to provision it.
+SPEECH_VENV_PYTHON="$HOME_DIR/.rachel/venvs/speech/bin/python"
+if [ -x "$SPEECH_VENV_PYTHON" ]; then
+  SPEECH_VENV_STATUS="present ($SPEECH_VENV_PYTHON)"
+else
+  SPEECH_VENV_STATUS="NOT SET UP — run ./scripts/speech/setup.sh to enable Telegram voice in/out (falls back to text-only until then)"
+fi
+
 if [ -n "$PROBLEMS" ] && [ "$DRY_RUN" -eq 0 ]; then
   printf 'FAIL: preflight failed — nothing was changed:\n%s' "$PROBLEMS" >&2
   exit 1
@@ -162,6 +174,7 @@ echo "  repo:          $REPO_ROOT"
 echo "  LaunchAgents:  $LAUNCH_AGENTS_DIR"
 echo "  launchctl:     $LAUNCHCTL ($DOMAIN)"
 echo "  telegram:      ${TELEGRAM_ROUTE:-NOT CONFIGURED (see preflight problems below)}"
+echo "  speech venv:   $SPEECH_VENV_STATUS"
 if [ "$DRY_RUN" -eq 1 ]; then
   echo ""
   echo "DRY RUN — printing the full plan; nothing will be written and launchctl will not be called."
