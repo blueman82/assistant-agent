@@ -204,7 +204,7 @@ export async function downloadFile(
 // incompatible with multipart upload — but mirrors its error-handling and
 // token-redaction shape directly. Uses Node's built-in global fetch/
 // FormData/Blob (Node 18+) — no new dependency.
-export async function sendVoice(config: ApiConfig, audioPath: string): Promise<void> {
+export async function sendVoice(config: ApiConfig, audioPath: string, caption?: string): Promise<void> {
   const transport = config.transport ?? fetch;
   const { readFile } = await import("node:fs/promises");
   const url = `https://api.telegram.org/bot${config.token}/sendVoice`;
@@ -213,6 +213,7 @@ export async function sendVoice(config: ApiConfig, audioPath: string): Promise<v
   const form = new FormData();
   form.append("chat_id", config.chatId);
   form.append("voice", new Blob([buffer], { type: "audio/ogg" }), "voice.ogg");
+  if (caption) form.append("caption", caption);
 
   let res: Response;
   let parsed: TelegramResponseBody;

@@ -62,7 +62,7 @@ export interface CreateBridgeOptions {
   transcribeFn?: (audioPath: string) => Promise<string>;
   synthesizeFn?: (text: string, outPath: string) => Promise<void>;
   convertToOggFn?: (wavPath: string, oggPath: string) => Promise<void>;
-  sendVoiceFn?: (config: ApiConfig, audioPath: string) => Promise<void>;
+  sendVoiceFn?: (config: ApiConfig, audioPath: string, caption?: string) => Promise<void>;
   watchdogDir?: string;                              // defaults to ~/.rachel/loops (expanded, not ~)
   fsFn?: FsFunctions;                               // defaults to real node:fs wrappers
   isPidAliveFn?: (pid: number, expectedCmd?: string) => boolean;  // defaults to kill -0 check; injectable for tests
@@ -717,6 +717,8 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
           // Text is the fallback only when synthesis actually fails — never a
           // silent downgrade based on reply size.
           const spoken = stripMarkdown(replyText || "(no output)");
+          const charCount = `${spoken.length} chars`;
+          console.log(`[telegram-bridge] voice reply: ${charCount}`);
           const tmpDir = `${homedir()}/.rachel/tmp`;
           const stamp = Date.now();
           const wavPath = `${tmpDir}/reply-${stamp}.wav`;
@@ -724,7 +726,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
           try {
             await synthesizeFn(spoken, wavPath);
             await convertToOggFn(wavPath, oggPath);
-            await sendVoiceFn(config, oggPath);
+            await sendVoiceFn(config, oggPath, charCount);
           } catch (err) {
             console.error(`[telegram-bridge] voice reply synthesis failed, falling back to text: ${err instanceof Error ? err.message : String(err)}`);
             await reply(replyText || "(no output)");

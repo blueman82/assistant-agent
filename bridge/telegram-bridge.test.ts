@@ -2073,6 +2073,76 @@ test("a voice-origin turn synthesizes, converts, and sends the reply as a voice 
   assert.equal(sendMessageCalls.length, 0, "a successful voice reply must not also send a text message");
 });
 
+test("a voice-origin turn sends the spoken text's character count as the voice note's caption", async () => {
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) return { ok: true, json: async () => voiceReplyUpdate("v1b") } as Response;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  let sendVoiceArgs: [unknown, string, string | undefined] | undefined;
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (_input, emit) => emit("Nothing on today.", "text"),
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    downloadFileFn: async () => {},
+    transcribeFn: async () => "what's on today",
+    synthesizeFn: async () => {},
+    convertToOggFn: async () => {},
+    sendVoiceFn: async (cfg, audioPath, caption) => { sendVoiceArgs = [cfg, audioPath, caption]; },
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  assert.ok(sendVoiceArgs, "expected sendVoiceFn to be called");
+  assert.equal(sendVoiceArgs![2], "17 chars", `"Nothing on today." is 17 chars`);
+});
+
+test("a voice-origin turn logs the spoken text's character count server-side", async () => {
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) return { ok: true, json: async () => voiceReplyUpdate("v1c") } as Response;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  const logLines: string[] = [];
+  const originalConsoleLog = console.log;
+  console.log = (...args: unknown[]) => { logLines.push(args.map(String).join(" ")); };
+
+  try {
+    const bridge = createBridge({
+      ...basePushOpts(),
+      config: { token: "t", chatId: "12345", transport },
+      runTurn: async (_input, emit) => emit("Nothing on today.", "text"),
+      getSessionId: () => undefined,
+      resetSession: () => {},
+      pollIntervalMs: 5,
+      downloadFileFn: async () => {},
+      transcribeFn: async () => "what's on today",
+      synthesizeFn: async () => {},
+      convertToOggFn: async () => {},
+      sendVoiceFn: async () => {},
+    });
+
+    await bridge.drainOnce();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await bridge.stop();
+
+    assert.ok(
+      logLines.some((l) => l.includes("voice reply") && l.includes("17 chars")),
+      `expected a char-count log line, got: ${JSON.stringify(logLines)}`,
+    );
+  } finally {
+    console.log = originalConsoleLog;
+  }
+});
+
 test("a voice-origin turn whose synthesis fails falls back to sending the reply as text", async () => {
   const calls: { url: string; body: unknown }[] = [];
   const transport: typeof fetch = async (input, init) => {

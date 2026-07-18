@@ -261,6 +261,32 @@ test("sendVoice posts multipart form data with chat_id and the voice file to the
   assert.ok(voiceEntry instanceof Blob, "expected the voice field to be a Blob");
 });
 
+test("sendVoice includes the caption in the form when provided", async () => {
+  const audioPath = await writeTempAudioFile();
+  let capturedForm: FormData | undefined;
+  const transport: typeof fetch = async (_input, init) => {
+    capturedForm = init?.body as FormData;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  await sendVoice({ token: "t", chatId: "12345", transport }, audioPath, "1423 chars");
+
+  assert.equal(capturedForm!.get("caption"), "1423 chars");
+});
+
+test("sendVoice omits the caption field when none is given", async () => {
+  const audioPath = await writeTempAudioFile();
+  let capturedForm: FormData | undefined;
+  const transport: typeof fetch = async (_input, init) => {
+    capturedForm = init?.body as FormData;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  await sendVoice({ token: "t", chatId: "12345", transport }, audioPath);
+
+  assert.equal(capturedForm!.get("caption"), null);
+});
+
 test("sendVoice throws when the HTTP response is not ok", async () => {
   const audioPath = await writeTempAudioFile();
   const transport: typeof fetch = async () => ({ ok: false, json: async () => ({ ok: false, description: "boom" }) } as Response);
