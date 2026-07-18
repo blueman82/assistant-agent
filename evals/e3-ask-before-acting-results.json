@@ -34,7 +34,7 @@
       "case": "Case 4",
       "category": "tool mismatch (AskUserQuestion denied)",
       "prompt": "What's the best way forward here - should I go with option A or option B?",
-      "expected": "Rachel receives deny, pivots to asking conversationally",
+      "expected": "Rachel asks which decision is on the table and what A/B specifically name, not guessing",
       "response_excerpt": "I don't have context on what options A and B refer to - this looks like the start of our conversation and no prior message spelled out the decision. Could you give me a quick rundown of what's being decided (and what A and B actually are)? Happy to weigh in once I know what we're choosing between.",
       "pass": true,
       "reasoning": "AskUserQuestion is absent from DEFAULT_ALLOWED_TOOLS and prompts/system.md instructs Rachel never to invoke it in this transport, so a live run never generates a tool call for the hook to deny - the deny path is not observable end-to-end here. What is observable and was verified: faced with a prompt shaped for a multiple-choice tool, Rachel asks the missing context (what A and B are) directly in conversational text, matching what the hook exists to guarantee. The hook's deny-and-redirect mechanism itself (PreToolUse denial of AskUserQuestion, denyOutput message) is covered by gate/askUserQuestionHook.test.ts, not by this live-behavior eval."
