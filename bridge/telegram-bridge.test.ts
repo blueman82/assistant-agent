@@ -2216,6 +2216,104 @@ test("a voice-origin turn whose synthesis fails falls back to sending the reply 
   assert.ok(sendCalls.some((c) => (c.body as Record<string, unknown>)["text"] === "Here's your update."));
 });
 
+test("a turn that outruns turnTimeoutMs is aborted, tells Gary, and does not wedge the queue", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "first"),
+    messageUpdate(2, "second"),
+    { ok: true, result: [] },
+  ]);
+  const seen: string[] = [];
+  let abortedFirst = false;
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    // The first turn never resolves on its own — it only ends when the
+    // watchdog aborts it, exactly like a hung upstream API call.
+    runTurn: async (input, emit, signal) => {
+      seen.push(input);
+      if (input === "first") {
+        await new Promise<void>((resolve) => {
+          signal?.addEventListener("abort", () => { abortedFirst = true; resolve(); });
+        });
+        return;
+      }
+      emit("second reply", "text");
+    },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    turnTimeoutMs: 30,
+  });
+
+  await bridge.drainOnce();
+  // drainOnce() fetches exactly one getUpdates batch (one stub entry), so
+  // "second" only enters the fifo once a further poll cycle runs — drive one
+  // now, while "first" is still blocked in-flight inside the fire-and-forget
+  // drainFifo() from the call above (that drainFifo() will no-op here since
+  // draining is already true, but it queues "second" for the original
+  // drainFifo()'s while-loop to pick up once the watchdog aborts "first").
+  await bridge.drainOnce();
+  // drainFifo is fire-and-forget, so poll until the queue has actually drained
+  // past the aborted turn rather than guessing at a sleep duration.
+  for (let i = 0; i < 100 && seen.length < 2; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  await bridge.stop();
+
+  // The hung turn was cut off rather than awaited forever...
+  assert.equal(abortedFirst, true);
+  // ...Gary was told why, instead of getting silence...
+  const texts = calls
+    .filter((c) => c.url.includes("/sendMessage"))
+    .map((c) => String((c.body as Record<string, unknown>)?.["text"] ?? ""));
+  assert.ok(texts.some((t) => t.includes("cut it off")), `expected a timeout notice, got: ${JSON.stringify(texts)}`);
+  // ...and the queue kept draining instead of wedging behind it.
+  assert.deepEqual(seen, ["first", "second"]);
+});
+
+test("a turn that IGNORES its abort signal still does not wedge the queue", async () => {
+  // The load-bearing assumption of the watchdog is that abort() unblocks a
+  // hung SDK call. If it doesn't — a parked socket read that never observes
+  // the signal — awaiting runTurn alone would leave the queue wedged exactly
+  // as in the original bug. This turn never resolves and never listens for
+  // abort; the drain loop must proceed regardless.
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "hung"),
+    messageUpdate(2, "after"),
+    { ok: true, result: [] },
+  ]);
+  const seen: string[] = [];
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (input, emit) => {
+      seen.push(input);
+      if (input === "hung") {
+        await new Promise<void>(() => {});   // never resolves, ignores the signal
+        return;
+      }
+      emit("after reply", "text");
+    },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    turnTimeoutMs: 30,
+  });
+
+  await bridge.drainOnce();
+  await bridge.drainOnce();
+  for (let i = 0; i < 100 && seen.length < 2; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  await bridge.stop();
+
+  assert.deepEqual(seen, ["hung", "after"], "the abandoned turn must not block the next message");
+  const texts = calls
+    .filter((c) => c.url.includes("/sendMessage"))
+    .map((c) => String((c.body as Record<string, unknown>)?.["text"] ?? ""));
+  assert.ok(texts.some((t) => t.includes("cut it off")), `expected a timeout notice, got: ${JSON.stringify(texts)}`);
+});
+
 test("a voice-origin turn answers in voice regardless of reply length — no character cap", async () => {
   const longReply = "x".repeat(5000);
   const transport: typeof fetch = async (input) => {
