@@ -1911,6 +1911,49 @@ test("a voice message is downloaded, transcribed, and pushed to runTurn as plain
   assert.equal(capturedInput, "what's on my calendar today");
 });
 
+test("a successfully transcribed inbound voice note logs a success line with the transcript's character count", async () => {
+  const voiceUpdate = {
+    ok: true,
+    result: [
+      { update_id: 1, message: { message_id: 1, chat: { id: 12345 }, from: { id: 12345 }, voice: { file_id: "voice_id", duration: 3 } } },
+    ],
+  };
+
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) return { ok: true, json: async () => voiceUpdate } as Response;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  const logLines: string[] = [];
+  const originalConsoleLog = console.log;
+  console.log = (...args: unknown[]) => { logLines.push(args.map(String).join(" ")); };
+
+  try {
+    const bridge = createBridge({
+      ...basePushOpts(),
+      config: { token: "t", chatId: "12345", transport },
+      runTurn: async (_input, emit) => emit("Nothing on today.", "text"),
+      getSessionId: () => undefined,
+      resetSession: () => {},
+      pollIntervalMs: 5,
+      downloadFileFn: async () => {},
+      transcribeFn: async () => "what's on my calendar today",
+    });
+
+    await bridge.drainOnce();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await bridge.stop();
+
+    assert.ok(
+      logLines.some((l) => l.includes("voice received") && l.includes("27 chars")),
+      `expected a success log line with the transcript's char count, got: ${JSON.stringify(logLines)}`,
+    );
+  } finally {
+    console.log = originalConsoleLog;
+  }
+});
+
 test("a voice message whose downloadFileFn rejects sends a failure reply and never calls transcribeFn", async () => {
   const voiceUpdate = {
     ok: true,

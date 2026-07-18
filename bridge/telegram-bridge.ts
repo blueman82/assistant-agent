@@ -607,6 +607,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         try { resolvedFs.unlink(destPath); } catch { /* already gone or never written */ }
       }
 
+      console.log(`[telegram-bridge] voice received: ${transcript.length} chars`);
       fifo.push({ text: transcript, voice: true });
       return;
     }
