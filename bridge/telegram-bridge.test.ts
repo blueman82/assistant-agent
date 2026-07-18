@@ -2022,6 +2022,169 @@ test("a voice message's temp file is cleaned up after transcription succeeds", a
   assert.ok(unlinked.some((p) => p.includes("voice_id.ogg")));
 });
 
+function voiceReplyUpdate(fileId: string) {
+  return {
+    ok: true,
+    result: [
+      { update_id: 1, message: { message_id: 1, chat: { id: 12345 }, from: { id: 12345 }, voice: { file_id: fileId, duration: 2 } } },
+    ],
+  };
+}
+
+test("a voice-origin turn synthesizes, converts, and sends the reply as a voice note instead of text", async () => {
+  const calls: { url: string; body: unknown }[] = [];
+  const transport: typeof fetch = async (input, init) => {
+    const url = String(input);
+    const body = init?.body ? JSON.parse(init.body as string) : undefined;
+    calls.push({ url, body });
+    if (url.includes("/getUpdates")) return { ok: true, json: async () => voiceReplyUpdate("v1") } as Response;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  let synthArgs: [string, string] | undefined;
+  let convertArgs: [string, string] | undefined;
+  let sendVoiceArgs: [unknown, string] | undefined;
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (_input, emit) => emit("Nothing on today.", "text"),
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    downloadFileFn: async () => {},
+    transcribeFn: async () => "what's on today",
+    synthesizeFn: async (text, outPath) => { synthArgs = [text, outPath]; },
+    convertToOggFn: async (wavPath, oggPath) => { convertArgs = [wavPath, oggPath]; },
+    sendVoiceFn: async (cfg, audioPath) => { sendVoiceArgs = [cfg, audioPath]; },
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  assert.ok(synthArgs, "expected synthesizeFn to be called");
+  assert.equal(synthArgs![0], "Nothing on today.");
+  assert.ok(convertArgs, "expected convertToOggFn to be called");
+  assert.equal(convertArgs![0], synthArgs![1]);
+  assert.ok(sendVoiceArgs, "expected sendVoiceFn to be called");
+  assert.equal(sendVoiceArgs![1], convertArgs![1]);
+  const sendMessageCalls = calls.filter((c) => c.url.includes("/sendMessage"));
+  assert.equal(sendMessageCalls.length, 0, "a successful voice reply must not also send a text message");
+});
+
+test("a voice-origin turn whose synthesis fails falls back to sending the reply as text", async () => {
+  const calls: { url: string; body: unknown }[] = [];
+  const transport: typeof fetch = async (input, init) => {
+    const url = String(input);
+    const body = init?.body ? JSON.parse(init.body as string) : undefined;
+    calls.push({ url, body });
+    if (url.includes("/getUpdates")) return { ok: true, json: async () => voiceReplyUpdate("v2") } as Response;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (_input, emit) => emit("Here's your update.", "text"),
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    downloadFileFn: async () => {},
+    transcribeFn: async () => "give me an update",
+    synthesizeFn: async () => { throw new Error("mlx-audio crashed"); },
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  const sendCalls = calls.filter((c) => c.url.includes("/sendMessage"));
+  assert.ok(sendCalls.some((c) => (c.body as Record<string, unknown>)["text"] === "Here's your update."));
+});
+
+test("a voice-origin turn whose reply exceeds the 1000-char voice threshold sends text without attempting synthesis", async () => {
+  const longReply = "x".repeat(1001);
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) return { ok: true, json: async () => voiceReplyUpdate("v3") } as Response;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+  let synthCalled = false;
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (_input, emit) => emit(longReply, "text"),
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    downloadFileFn: async () => {},
+    transcribeFn: async () => "tell me everything",
+    synthesizeFn: async () => { synthCalled = true; },
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  assert.equal(synthCalled, false);
+});
+
+test("a text-origin turn never calls synthesizeFn/convertToOggFn/sendVoiceFn", async () => {
+  const { transport } = makeStubTransport([
+    messageUpdate(1, "hello"),
+    { ok: true, result: [] },
+  ]);
+  let called = false;
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (_input, emit) => emit("hi back", "text"),
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    synthesizeFn: async () => { called = true; },
+    convertToOggFn: async () => { called = true; },
+    sendVoiceFn: async () => { called = true; },
+  });
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+  assert.equal(called, false);
+});
+
+test("temp wav/ogg files from a voice reply are cleaned up after sendVoiceFn succeeds", async () => {
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) return { ok: true, json: async () => voiceReplyUpdate("v4") } as Response;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+  const unlinked: string[] = [];
+  const fsFn = { ...defaultFsFn(), unlink: (path: string) => { unlinked.push(path); } };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (_input, emit) => emit("ok", "text"),
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    downloadFileFn: async () => {},
+    transcribeFn: async () => "hi",
+    synthesizeFn: async () => {},
+    convertToOggFn: async () => {},
+    sendVoiceFn: async () => {},
+    fsFn,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  assert.ok(unlinked.some((p) => p.endsWith(".wav")));
+  assert.ok(unlinked.some((p) => p.endsWith(".ogg")));
+});
+
 // ---------------------------------------------------------------------------
 // Chokepoint routing — startup notice, watchdog pings, and health-transition
 // alerts go through proactive/push.ts's push() (family store + deferred.json

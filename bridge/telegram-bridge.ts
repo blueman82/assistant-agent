@@ -7,8 +7,8 @@
 // the Telegram approval surface's handleCallbackQuery — never queued behind
 // pending chat turns, since a gate decision may be blocking a turn.
 
-import { tg, sendChunked, sendTyping, setMyCommands, downloadFile, type ApiConfig } from "./api.ts";
-import { transcribe } from "./speech.ts";
+import { tg, sendChunked, sendTyping, setMyCommands, downloadFile, stripMarkdown, sendVoice, type ApiConfig } from "./api.ts";
+import { transcribe, synthesize, convertToOgg } from "./speech.ts";
 import { push, type PushDeps, type Severity } from "../proactive/push.ts";
 import { homedir } from "node:os";
 import type { TelegramApprovalSurface, TelegramCallbackQuery } from "../gate/surfaces/telegram.ts";
@@ -60,6 +60,9 @@ export interface CreateBridgeOptions {
   // Injectable for tests — avoids hitting the real filesystem/network.
   downloadFileFn?: (config: ApiConfig, fileId: string, destPath: string) => Promise<void>;
   transcribeFn?: (audioPath: string) => Promise<string>;
+  synthesizeFn?: (text: string, outPath: string) => Promise<void>;
+  convertToOggFn?: (wavPath: string, oggPath: string) => Promise<void>;
+  sendVoiceFn?: (config: ApiConfig, audioPath: string) => Promise<void>;
   watchdogDir?: string;                              // defaults to ~/.rachel/loops (expanded, not ~)
   fsFn?: FsFunctions;                               // defaults to real node:fs wrappers
   isPidAliveFn?: (pid: number, expectedCmd?: string) => boolean;  // defaults to kill -0 check; injectable for tests
@@ -407,6 +410,9 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   const { config, runTurn, getSessionId, resetSession } = options;
   const downloadFileFn = options.downloadFileFn ?? downloadFile;
   const transcribeFn = options.transcribeFn ?? transcribe;
+  const synthesizeFn = options.synthesizeFn ?? synthesize;
+  const convertToOggFn = options.convertToOggFn ?? convertToOgg;
+  const sendVoiceFn = options.sendVoiceFn ?? sendVoice;
   const pollIntervalMs = options.pollIntervalMs ?? 2000;
   const typingIntervalMs = options.typingIntervalMs ?? DEFAULT_TYPING_INTERVAL_MS;
 
@@ -706,7 +712,35 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         }
 
         const replyText = buffer.join("\n").trim();
-        await reply(replyText || "(no output)");
+        const VOICE_REPLY_CHAR_LIMIT = 1000;
+        if (voice) {
+          const spoken = stripMarkdown(replyText || "(no output)");
+          // A very long reply makes a poor voice note (synthesis time scales
+          // with text length, and Telegram voice notes are meant to be short)
+          // — over the cap, fall back to the normal text reply exactly as if
+          // synthesis had failed.
+          if (spoken.length <= VOICE_REPLY_CHAR_LIMIT) {
+            const tmpDir = `${homedir()}/.rachel/tmp`;
+            const stamp = Date.now();
+            const wavPath = `${tmpDir}/reply-${stamp}.wav`;
+            const oggPath = `${tmpDir}/reply-${stamp}.ogg`;
+            try {
+              await synthesizeFn(spoken, wavPath);
+              await convertToOggFn(wavPath, oggPath);
+              await sendVoiceFn(config, oggPath);
+            } catch (err) {
+              console.error(`[telegram-bridge] voice reply synthesis failed, falling back to text: ${err instanceof Error ? err.message : String(err)}`);
+              await reply(replyText || "(no output)");
+            } finally {
+              try { resolvedFs.unlink(wavPath); } catch { /* already gone or never written */ }
+              try { resolvedFs.unlink(oggPath); } catch { /* already gone or never written */ }
+            }
+          } else {
+            await reply(replyText || "(no output)");
+          }
+        } else {
+          await reply(replyText || "(no output)");
+        }
       }
     } finally {
       draining = false;
