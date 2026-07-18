@@ -62,15 +62,14 @@ test("non-PreToolUse hook event -> pass-through with empty object", async () => 
 });
 
 test("hook throws exception -> deny with 'Internal hook error' reason", async () => {
-  // Create a mock hook input that will be handled, then wrap to force an error
   const hook = createAskUserQuestionHook();
-  // Simulate an exception by passing a corrupted input that causes an error during processing
+  // Pass input where hook_event_name is not a string, forcing an error during comparison
   const input = {
-    hook_event_name: "PreToolUse",
+    hook_event_name: { toString: () => { throw new Error("boom"); } },
     session_id: "test-session",
     transcript_path: "/dev/null",
     cwd: "/tmp",
-    tool_name: null, // This will cause an error when we try to compare strings
+    tool_name: "AskUserQuestion",
     tool_input: { question: "test" },
   } as unknown as PreToolUseHookInput;
   const result = await hook(input, undefined, { signal: new AbortController().signal });
