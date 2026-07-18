@@ -416,7 +416,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
 
   try { resolvedFs.mkdirSync(watchdogDir, { recursive: true }); } catch { /* already exists */ }
 
-  const fifo: string[] = [];
+  const fifo: { text: string; voice: boolean }[] = [];
   let offset: number | undefined;
   let stopped = false;
   let currentAbort: AbortController | undefined;
@@ -606,12 +606,12 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
 
       const caption = (msg.caption ?? "").trim();
       const input = caption ? `[image: ${destPath}]\n${caption}` : `[image: ${destPath}]`;
-      fifo.push(input);
+      fifo.push({ text: input, voice: false });
       return;
     }
 
     if (!text) return;
-    fifo.push(text);
+    fifo.push({ text, voice: false });
   }
 
   async function handleCallbackQuery(cb: TelegramCallbackQuery): Promise<void> {
@@ -632,7 +632,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     draining = true;
     try {
       while (fifo.length > 0) {
-        const text = fifo.shift()!;
+        const { text, voice } = fifo.shift()!;
         const abortController = new AbortController();
         currentAbort = abortController;
         turnInFlightSince = nowFn();
