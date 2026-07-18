@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import * as readline from "node:readline/promises";
 import { homedir } from "node:os";
 import { createSendGateHook } from "./gate/sendGate.ts";
+import { createAskUserQuestionHook } from "./gate/askUserQuestionHook.ts";
 import { createTerminalApprovalSurface } from "./gate/surfaces/terminal.ts";
 import { createTelegramApprovalSurface, loadTelegramConfig } from "./gate/surfaces/telegram.ts";
 import { createQueueApprovalSurface } from "./gate/surfaces/queue.ts";
@@ -129,6 +130,8 @@ const sendGateHook = gateTimeoutMs !== undefined
   ? createSendGateHook(approvalSurfaces, auditLogPath, new Map(), gateTimeoutMs)
   : createSendGateHook(approvalSurfaces, auditLogPath);
 
+const askUserQuestionHook = createAskUserQuestionHook();
+
 // ---------------------------------------------------------------------------
 // Session state — module-scoped so it persists across turns within a
 // process, for both the terminal REPL and the Telegram bridge (which calls
@@ -195,7 +198,7 @@ export async function runTurn(
           // so this is set defensively to match every tool call. The gate
           // itself filters by tool_name/command internally.
           matcher: ".*",
-          hooks: [sendGateHook],
+          hooks: [sendGateHook, askUserQuestionHook],
         },
       ],
     },

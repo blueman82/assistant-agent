@@ -44,7 +44,7 @@ export const GATED_TOOL_NAMES: readonly string[] = [
 // only actual enforcement of fail-closed-on-timeout.
 const INTERNAL_DENY_TIMEOUT_MS = 60_000;
 
-function denyOutput(reason: string): SyncHookJSONOutput {
+export function denyOutput(reason: string): SyncHookJSONOutput {
   return {
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
