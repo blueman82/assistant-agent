@@ -16,7 +16,11 @@
 #      here, at setup time, instead of surfacing as a surprise later.
 #   3. Create ~/.rachel/venvs/speech with python3.12 -m venv if it doesn't
 #      already exist.
-#   4. pip install mlx-whisper mlx-audio misaki into that venv.
+#   4. pip install mlx-whisper mlx-audio "misaki[en]" into that venv — the
+#      [en] extra pulls in num2words/phonemizer-fork/espeakng-loader/spacy,
+#      which Kokoro's English G2P needs at runtime; bare `misaki` installs
+#      without them and fails with "ModuleNotFoundError: num2words" the
+#      first time synthesize.py actually runs.
 #   5. Print PASS/FAIL and exit nonzero on any step failure — a partial venv
 #      must never look like a working one.
 set -u
@@ -52,8 +56,8 @@ fi
 echo "PASS  venv present: $VENV_DIR"
 
 "$VENV_DIR/bin/pip" install --upgrade pip >/dev/null 2>&1 || die "pip upgrade failed in $VENV_DIR"
-"$VENV_DIR/bin/pip" install mlx-whisper mlx-audio misaki || die "pip install mlx-whisper mlx-audio misaki failed"
-echo "PASS  packages installed: mlx-whisper mlx-audio misaki"
+"$VENV_DIR/bin/pip" install mlx-whisper mlx-audio "misaki[en]" || die "pip install mlx-whisper mlx-audio misaki[en] failed"
+echo "PASS  packages installed: mlx-whisper mlx-audio misaki[en]"
 
 echo ""
 echo "PASS: speech venv ready at $VENV_DIR"
