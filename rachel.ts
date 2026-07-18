@@ -125,6 +125,8 @@ const sendGateHook = gateTimeoutMs !== undefined
   ? createSendGateHook(approvalSurfaces, auditLogPath, new Map(), gateTimeoutMs)
   : createSendGateHook(approvalSurfaces, auditLogPath);
 
+const askUserQuestionHook = createAskUserQuestionHook();
+
 // ---------------------------------------------------------------------------
 // Session state — module-scoped so it persists across turns within a
 // process, for both the terminal REPL and the Telegram bridge (which calls
