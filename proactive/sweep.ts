@@ -162,6 +162,20 @@ const WEDGE_THRESHOLD_MS = 10 * 60_000;
 // FIFO is starved behind it — worth a normal (not urgent) ping.
 const DRAIN_STALL_THRESHOLD_MS = 30 * 60_000;
 
+// Escalation buckets for a stalled drain, in minutes. Part of the dedup state
+// so a deepening stall re-pings instead of being collapsed into the first
+// alert. Open-ended at the top: a stall past 8h keeps the same bucket rather
+// than pinging forever.
+const STALL_BUCKETS_MIN = [30, 60, 120, 240, 480];
+function stallBucket(elapsedMs: number): number {
+  const min = elapsedMs / 60_000;
+  let bucket = STALL_BUCKETS_MIN[0];
+  for (const b of STALL_BUCKETS_MIN) {
+    if (min >= b) bucket = b;
+  }
+  return bucket;
+}
+
 // Deadline on the missing-heartbeat grace. The grace exists ONLY for the
 // deploy-ordering window (the sweep can pick up heartbeat-aware code a
 // restart cycle before the long-lived bridge does); U4 deploys within hours,
@@ -250,18 +264,22 @@ async function checkBridgeLiveness(d: SweepDeps, cfg: ProactiveConfig, pushDeps:
 
     // Drain-stall is its own event (bridge:drain-stall), checked
     // independently of the wedge — both can be true at once and neither's
-    // dedup may suppress the other. State is the turn_in_flight_since
-    // timestamp itself: a new in-flight turn (or a clear-then-restall)
-    // changes the state and re-arms the ping.
+    // dedup may suppress the other. State pairs turn_in_flight_since with the
+    // stall's escalation bucket: keying on the timestamp alone would freeze the
+    // state for the entire stall, so a turn wedged forever pings exactly once
+    // and then goes silent — the worst case reporting the least. Bucketing by
+    // duration re-arms the ping as the stall deepens, while still collapsing
+    // repeat sweeps within a bucket.
     if (typeof heartbeat.turn_in_flight_since === "string") {
       const sinceMs = Date.parse(heartbeat.turn_in_flight_since);
       if (!Number.isNaN(sinceMs) && now - sinceMs > DRAIN_STALL_THRESHOLD_MS) {
         const stallMin = Math.floor((now - sinceMs) / 60_000);
         const depth = typeof heartbeat.queue_depth === "number" ? heartbeat.queue_depth : 0;
+        const bucket = stallBucket(now - sinceMs);
         await d.pushFn(
           "bridge-liveness",
           "bridge:drain-stall",
-          heartbeat.turn_in_flight_since,
+          `${heartbeat.turn_in_flight_since}:${bucket}`,
           "normal",
           `[bridge] turn running ${stallMin}m, queue depth ${depth}`,
           pushDeps,

@@ -57,6 +57,7 @@ export interface CreateBridgeOptions {
   telegramSurface?: TelegramApprovalSurface;
   pollIntervalMs?: number;
   typingIntervalMs?: number;
+  turnTimeoutMs?: number;
   // Injectable for tests — avoids hitting the real filesystem/network.
   downloadFileFn?: (config: ApiConfig, fileId: string, destPath: string) => Promise<void>;
   transcribeFn?: (audioPath: string) => Promise<string>;
@@ -88,6 +89,11 @@ interface TelegramUpdate {
 }
 
 const DEFAULT_TYPING_INTERVAL_MS = 5000;
+// A turn that outruns this is presumed wedged (a hung upstream API call leaves
+// runTurn awaiting forever, with no error to catch). drainFifo is single-flight,
+// so without a deadline one stuck turn blocks every later message indefinitely.
+// Generous enough that a legitimately long turn is never cut short.
+const DEFAULT_TURN_TIMEOUT_MS = 10 * 60 * 1000;
 const CONFLICT_BACKOFF_MS = 65_000;   // Telegram releases getUpdates lock in ~30-60s; 65s gives safe margin
 const CONFLICT_EXIT_THRESHOLD = 5;    // 5 consecutive 409s (~5 min) = genuine second consumer, not launchd race
 
@@ -415,6 +421,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   const sendVoiceFn = options.sendVoiceFn ?? sendVoice;
   const pollIntervalMs = options.pollIntervalMs ?? 2000;
   const typingIntervalMs = options.typingIntervalMs ?? DEFAULT_TYPING_INTERVAL_MS;
+  const turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
 
   // Tilde expansion: watchdogDir must be an absolute path — Node's fs never expands ~.
   const watchdogDir = options.watchdogDir ?? join(homedir(), ".rachel", "loops");
@@ -700,16 +707,46 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         sendTyping(config).catch(() => {});
 
         const buffer: string[] = [];
+        // Turn-level deadline. runTurn can await a hung upstream call forever,
+        // and drainFifo is single-flight — so an unbounded turn wedges the whole
+        // queue with no error ever surfacing. Abort it and move on, so the FIFO
+        // keeps draining and Gary hears why instead of silence.
+        let timedOut = false;
+        let watchdog: ReturnType<typeof setTimeout> | undefined;
+        // Race the turn against the deadline rather than only aborting it.
+        // abort() asks the SDK to stop, but if it doesn't tear down a parked
+        // socket read, `await runTurn` never returns — and awaiting it alone
+        // would leave the queue wedged exactly as before. Racing guarantees
+        // the drain loop proceeds either way; an abandoned turn's late emits
+        // land in a buffer nobody reads.
+        const deadline = new Promise<void>((resolve) => {
+          watchdog = setTimeout(() => {
+            timedOut = true;
+            abortController.abort();
+            resolve();
+          }, turnTimeoutMs);
+        });
         try {
-          await runTurn(text, (line, kind) => {
-            if (kind === "text") buffer.push(line);
-          }, abortController.signal);
+          await Promise.race([
+            runTurn(text, (line, kind) => {
+              if (kind === "text") buffer.push(line);
+            }, abortController.signal),
+            deadline,
+          ]);
         } catch (err) {
           buffer.push(`[Rachel] error: ${err instanceof Error ? err.message : String(err)}`);
         } finally {
+          clearTimeout(watchdog);
           clearInterval(typingTimer);
           currentAbort = undefined;
           turnInFlightSince = null;
+        }
+
+        if (timedOut) {
+          // Say it plainly rather than delivering a truncated turn as if it
+          // were a complete answer.
+          console.error(`[telegram-bridge] turn exceeded ${turnTimeoutMs}ms — aborted, draining next message.`);
+          buffer.push(`[Rachel] That turn ran past ${Math.round(turnTimeoutMs / 60000)} minutes and I cut it off. Ask again if you still need it.`);
         }
 
         const replyText = buffer.join("\n").trim();

@@ -689,9 +689,46 @@ test("turn_in_flight_since 31min old with a fresh poll pushes one normal drain-s
   const p = h.pushes[0]!;
   assert.equal(p.family, "bridge-liveness");
   assert.equal(p.eventId, "bridge:drain-stall");
-  assert.equal(p.state, turnInFlightSince, "state is the turn_in_flight_since timestamp so a new turn re-arms the ping");
+  assert.equal(p.state, `${turnInFlightSince}:30`, "state pairs the timestamp with the escalation bucket so a new turn AND a deepening stall both re-arm the ping");
   assert.equal(p.severity, "normal");
   assert.equal(p.text, "[bridge] turn running 31m, queue depth 3");
+});
+
+test("a deepening stall re-arms the drain-stall ping as it crosses each escalation bucket", async () => {
+  // The same wedged turn never changes turn_in_flight_since. Keying dedup on
+  // that alone means one ping and then permanent silence — the worst case
+  // reporting the least. Each bucket crossing must produce a distinct state.
+  // Assert on the bucket SUFFIX, never the whole state: seedHeartbeat anchors
+  // turn_in_flight_since to DAYTIME() - ago, so each iteration gets a different
+  // timestamp prefix. Comparing whole states would pass even if stallBucket
+  // returned a constant — the prefix alone would make them distinct.
+  const buckets: string[] = [];
+  for (const minutes of [31, 65, 130, 260, 500]) {
+    const h = makeHarness();
+    seedHeartbeat(h, { lastPollAgoMs: 60_000, turnInFlightAgoMs: minutes * 60_000, queueDepth: 1 });
+    await sweepTick(h.deps);
+    assert.equal(h.pushes.length, 1, `expected a push at ${minutes}m`);
+    buckets.push(h.pushes[0]!.state.split(":").pop()!);
+  }
+  assert.deepEqual(buckets, ["30", "60", "120", "240", "480"], `each threshold must land in its own bucket, got: ${JSON.stringify(buckets)}`);
+});
+
+test("two sweeps inside the same escalation bucket dedup to one ping", async () => {
+  // Escalation must not become a ping every 30 minutes forever. The SAME
+  // wedged turn (one fixed turn_in_flight_since) observed at 35m and 50m is
+  // still inside the 30m bucket, so both sweeps must produce identical state
+  // for the chokepoint to collapse them.
+  const h1 = makeHarness();
+  const { turnInFlightSince } = seedHeartbeat(h1, { lastPollAgoMs: 60_000, turnInFlightAgoMs: 35 * 60_000, queueDepth: 1 });
+  await sweepTick(h1.deps);
+  const h2 = makeHarness();
+  seedHeartbeat(h2, { lastPollAgoMs: 60_000, turnInFlightAgoMs: 50 * 60_000, queueDepth: 1 });
+  await sweepTick(h2.deps);
+  // Compare the bucket suffix, not the whole state — the harness derives a
+  // different base timestamp per seed, but the real bridge holds one fixed.
+  const bucketOf = (s: string) => s.split(":").pop();
+  assert.equal(bucketOf(h1.pushes[0]!.state), bucketOf(h2.pushes[0]!.state), "35m and 50m are both in the 30m bucket");
+  assert.equal(h1.pushes[0]!.state, `${turnInFlightSince}:30`, "state is the turn timestamp paired with its bucket");
 });
 
 test("turn_in_flight_since 20min old pushes nothing (under the 30min threshold)", async () => {
