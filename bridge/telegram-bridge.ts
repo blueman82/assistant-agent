@@ -712,31 +712,25 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         }
 
         const replyText = buffer.join("\n").trim();
-        const VOICE_REPLY_CHAR_LIMIT = 1000;
         if (voice) {
+          // A voice-origin turn always answers in voice, whatever the length.
+          // Text is the fallback only when synthesis actually fails — never a
+          // silent downgrade based on reply size.
           const spoken = stripMarkdown(replyText || "(no output)");
-          // A very long reply makes a poor voice note (synthesis time scales
-          // with text length, and Telegram voice notes are meant to be short)
-          // — over the cap, fall back to the normal text reply exactly as if
-          // synthesis had failed.
-          if (spoken.length <= VOICE_REPLY_CHAR_LIMIT) {
-            const tmpDir = `${homedir()}/.rachel/tmp`;
-            const stamp = Date.now();
-            const wavPath = `${tmpDir}/reply-${stamp}.wav`;
-            const oggPath = `${tmpDir}/reply-${stamp}.ogg`;
-            try {
-              await synthesizeFn(spoken, wavPath);
-              await convertToOggFn(wavPath, oggPath);
-              await sendVoiceFn(config, oggPath);
-            } catch (err) {
-              console.error(`[telegram-bridge] voice reply synthesis failed, falling back to text: ${err instanceof Error ? err.message : String(err)}`);
-              await reply(replyText || "(no output)");
-            } finally {
-              try { resolvedFs.unlink(wavPath); } catch { /* already gone or never written */ }
-              try { resolvedFs.unlink(oggPath); } catch { /* already gone or never written */ }
-            }
-          } else {
+          const tmpDir = `${homedir()}/.rachel/tmp`;
+          const stamp = Date.now();
+          const wavPath = `${tmpDir}/reply-${stamp}.wav`;
+          const oggPath = `${tmpDir}/reply-${stamp}.ogg`;
+          try {
+            await synthesizeFn(spoken, wavPath);
+            await convertToOggFn(wavPath, oggPath);
+            await sendVoiceFn(config, oggPath);
+          } catch (err) {
+            console.error(`[telegram-bridge] voice reply synthesis failed, falling back to text: ${err instanceof Error ? err.message : String(err)}`);
             await reply(replyText || "(no output)");
+          } finally {
+            try { resolvedFs.unlink(wavPath); } catch { /* already gone or never written */ }
+            try { resolvedFs.unlink(oggPath); } catch { /* already gone or never written */ }
           }
         } else {
           await reply(replyText || "(no output)");

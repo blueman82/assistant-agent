@@ -2103,14 +2103,15 @@ test("a voice-origin turn whose synthesis fails falls back to sending the reply 
   assert.ok(sendCalls.some((c) => (c.body as Record<string, unknown>)["text"] === "Here's your update."));
 });
 
-test("a voice-origin turn whose reply exceeds the 1000-char voice threshold sends text without attempting synthesis", async () => {
-  const longReply = "x".repeat(1001);
+test("a voice-origin turn answers in voice regardless of reply length — no character cap", async () => {
+  const longReply = "x".repeat(5000);
   const transport: typeof fetch = async (input) => {
     const url = String(input);
     if (url.includes("/getUpdates")) return { ok: true, json: async () => voiceReplyUpdate("v3") } as Response;
     return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
   };
-  let synthCalled = false;
+  let synthesizedText: string | undefined;
+  let voiceSent = false;
   const bridge = createBridge({
     ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport },
@@ -2120,14 +2121,19 @@ test("a voice-origin turn whose reply exceeds the 1000-char voice threshold send
     pollIntervalMs: 5,
     downloadFileFn: async () => {},
     transcribeFn: async () => "tell me everything",
-    synthesizeFn: async () => { synthCalled = true; },
+    synthesizeFn: async (text) => { synthesizedText = text; },
+    convertToOggFn: async () => {},
+    sendVoiceFn: async () => { voiceSent = true; },
   });
 
   await bridge.drainOnce();
   await new Promise((resolve) => setTimeout(resolve, 50));
   await bridge.stop();
 
-  assert.equal(synthCalled, false);
+  // The full reply is synthesized and delivered as voice — never truncated,
+  // never silently downgraded to text on length alone.
+  assert.equal(synthesizedText, longReply);
+  assert.equal(voiceSent, true);
 });
 
 test("a text-origin turn never calls synthesizeFn/convertToOggFn/sendVoiceFn", async () => {
