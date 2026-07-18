@@ -36,7 +36,7 @@ globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createBridge, type BridgeRunTurn } from "./telegram-bridge.ts";
+import { createBridge, type BridgeRunTurn, defaultFsFn } from "./telegram-bridge.ts";
 import { GATED_TOOL_NAMES } from "../gate/sendGate.ts";
 import { getModel, getEffort, setModel, setEffort, VALID_MODELS as VALID_MODELS_FOR_TEST, VALID_EFFORTS as VALID_EFFORTS_FOR_TEST } from "../proactive/modelConfig.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -1847,6 +1847,179 @@ test("a photo whose getFile call returns ok:false sends a failure reply and does
   const sendCall = calls.find((c) => c.url.includes("/sendMessage"));
   assert.ok(sendCall, "expected a sendMessage failure reply to the user");
   assert.match(String((sendCall!.body as Record<string, unknown>)["text"]), /Failed to download image/);
+});
+
+test("a voice message is downloaded, transcribed, and pushed to runTurn as plain text", async () => {
+  const voiceUpdate = {
+    ok: true,
+    result: [
+      {
+        update_id: 1,
+        message: {
+          message_id: 1,
+          chat: { id: 12345 },
+          from: { id: 12345 },
+          voice: { file_id: "voice_id", duration: 3, mime_type: "audio/ogg" },
+        },
+      },
+    ],
+  };
+
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) return { ok: true, json: async () => voiceUpdate } as Response;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  let downloadedFileId: string | undefined;
+  let downloadedPath: string | undefined;
+  const downloadFileFnStub = async (_config: unknown, fileId: string, destPath: string): Promise<void> => {
+    downloadedFileId = fileId;
+    downloadedPath = destPath;
+  };
+
+  let transcribedPath: string | undefined;
+  const transcribeFnStub = async (audioPath: string): Promise<string> => {
+    transcribedPath = audioPath;
+    return "what's on my calendar today";
+  };
+
+  let capturedInput: string | undefined;
+  const runTurnStub: BridgeRunTurn = async (input, emit) => {
+    capturedInput = input;
+    emit("Nothing on today.", "text");
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    downloadFileFn: downloadFileFnStub,
+    transcribeFn: transcribeFnStub,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  assert.equal(downloadedFileId, "voice_id");
+  assert.match(downloadedPath!, /\.rachel\/tmp\/voice_id\.ogg$/);
+  assert.equal(transcribedPath, downloadedPath);
+  assert.equal(capturedInput, "what's on my calendar today");
+});
+
+test("a voice message whose downloadFileFn rejects sends a failure reply and never calls transcribeFn", async () => {
+  const voiceUpdate = {
+    ok: true,
+    result: [
+      { update_id: 1, message: { message_id: 1, chat: { id: 12345 }, from: { id: 12345 }, voice: { file_id: "bad_id", duration: 2 } } },
+    ],
+  };
+  const calls: { url: string; body: unknown }[] = [];
+  const transport: typeof fetch = async (input, init) => {
+    const url = String(input);
+    const body = init?.body ? JSON.parse(init.body as string) : undefined;
+    calls.push({ url, body });
+    if (url.includes("/getUpdates")) return { ok: true, json: async () => voiceUpdate } as Response;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  let transcribeCalled = false;
+  const runTurnStub: BridgeRunTurn = async () => { throw new Error("runTurn should not be called"); };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    downloadFileFn: async () => { throw new Error("download failed"); },
+    transcribeFn: async () => { transcribeCalled = true; return "should not run"; },
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  assert.equal(transcribeCalled, false);
+  const sendCalls = calls.filter((c) => c.url.includes("/sendMessage"));
+  assert.ok(sendCalls.some((c) => String((c.body as Record<string, unknown>)["text"]).includes("try again")));
+});
+
+test("a voice message whose transcribeFn rejects sends a text reply asking Gary to retry or type it, and never reaches runTurn", async () => {
+  const voiceUpdate = {
+    ok: true,
+    result: [
+      { update_id: 1, message: { message_id: 1, chat: { id: 12345 }, from: { id: 12345 }, voice: { file_id: "voice_id", duration: 2 } } },
+    ],
+  };
+  const calls: { url: string; body: unknown }[] = [];
+  const transport: typeof fetch = async (input, init) => {
+    const url = String(input);
+    const body = init?.body ? JSON.parse(init.body as string) : undefined;
+    calls.push({ url, body });
+    if (url.includes("/getUpdates")) return { ok: true, json: async () => voiceUpdate } as Response;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  const runTurnStub: BridgeRunTurn = async () => { throw new Error("runTurn should not be called"); };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    downloadFileFn: async () => {},
+    transcribeFn: async () => { throw new Error("empty transcript"); },
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  const sendCalls = calls.filter((c) => c.url.includes("/sendMessage"));
+  assert.ok(sendCalls.some((c) => /retry|type it/.test(String((c.body as Record<string, unknown>)["text"]))));
+});
+
+test("a voice message's temp file is cleaned up after transcription succeeds", async () => {
+  const voiceUpdate = {
+    ok: true,
+    result: [
+      { update_id: 1, message: { message_id: 1, chat: { id: 12345 }, from: { id: 12345 }, voice: { file_id: "voice_id", duration: 2 } } },
+    ],
+  };
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) return { ok: true, json: async () => voiceUpdate } as Response;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  const unlinked: string[] = [];
+  const fsFn = { ...defaultFsFn(), unlink: (path: string) => { unlinked.push(path); } };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (_input, emit) => emit("ok", "text"),
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    downloadFileFn: async () => {},
+    transcribeFn: async () => "hi",
+    fsFn,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  assert.ok(unlinked.some((p) => p.includes("voice_id.ogg")));
 });
 
 // ---------------------------------------------------------------------------

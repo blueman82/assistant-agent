@@ -8,6 +8,7 @@
 // pending chat turns, since a gate decision may be blocking a turn.
 
 import { tg, sendChunked, sendTyping, setMyCommands, downloadFile, type ApiConfig } from "./api.ts";
+import { transcribe } from "./speech.ts";
 import { push, type PushDeps, type Severity } from "../proactive/push.ts";
 import { homedir } from "node:os";
 import type { TelegramApprovalSurface, TelegramCallbackQuery } from "../gate/surfaces/telegram.ts";
@@ -58,6 +59,7 @@ export interface CreateBridgeOptions {
   typingIntervalMs?: number;
   // Injectable for tests — avoids hitting the real filesystem/network.
   downloadFileFn?: (config: ApiConfig, fileId: string, destPath: string) => Promise<void>;
+  transcribeFn?: (audioPath: string) => Promise<string>;
   watchdogDir?: string;                              // defaults to ~/.rachel/loops (expanded, not ~)
   fsFn?: FsFunctions;                               // defaults to real node:fs wrappers
   isPidAliveFn?: (pid: number, expectedCmd?: string) => boolean;  // defaults to kill -0 check; injectable for tests
@@ -77,6 +79,7 @@ interface TelegramUpdate {
     caption?: string;
     photo?: Array<{ file_id: string; file_size?: number; width: number; height: number }>;
     document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number };
+    voice?: { file_id: string; duration: number; mime_type?: string; file_size?: number };
   };
   callback_query?: TelegramCallbackQuery;
 }
@@ -403,6 +406,7 @@ export function checkLaunchAllowed(repo: string, opts: CheckLaunchAllowedOpts): 
 export function createBridge(options: CreateBridgeOptions): Bridge {
   const { config, runTurn, getSessionId, resetSession } = options;
   const downloadFileFn = options.downloadFileFn ?? downloadFile;
+  const transcribeFn = options.transcribeFn ?? transcribe;
   const pollIntervalMs = options.pollIntervalMs ?? 2000;
   const typingIntervalMs = options.typingIntervalMs ?? DEFAULT_TYPING_INTERVAL_MS;
 
@@ -556,6 +560,48 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     const configReply = handleConfigCommand(text);
     if (configReply !== undefined) {
       await reply(configReply);
+      return;
+    }
+
+    // Handle voice-note messages: download the .ogg, transcribe it locally,
+    // then push to the FIFO exactly like a typed message, tagged voice:true so
+    // drainFifo's reply path (Task 8) knows to speak the reply back. Transcription
+    // failure/timeout/empty result never silently drops the voice message — it
+    // always gets a text reply asking Gary to retry or type it.
+    if (msg.voice) {
+      const tmpDir = `${homedir()}/.rachel/tmp`;
+      const destPath = `${tmpDir}/${msg.voice.file_id}.ogg`;
+      try {
+        await downloadFileFn(config, msg.voice.file_id, destPath);
+      } catch (err) {
+        console.error(`[telegram-bridge] failed to download voice note: ${err instanceof Error ? err.message : String(err)}`);
+        try {
+          await reply("Failed to download your voice note — please try again.");
+        } catch (replyErr) {
+          console.error(`[telegram-bridge] also failed to send failure reply: ${replyErr instanceof Error ? replyErr.message : String(replyErr)}`);
+        }
+        return;
+      }
+
+      let transcript: string;
+      try {
+        transcript = await transcribeFn(destPath);
+      } catch (err) {
+        console.error(`[telegram-bridge] transcription failed: ${err instanceof Error ? err.message : String(err)}`);
+        try {
+          await reply("I couldn't transcribe that voice note — please try again or type it instead.");
+        } catch (replyErr) {
+          console.error(`[telegram-bridge] also failed to send failure reply: ${replyErr instanceof Error ? replyErr.message : String(replyErr)}`);
+        }
+        return;
+      } finally {
+        // Best-effort cleanup of the downloaded .ogg — a failed unlink must
+        // never break the turn. (The pre-existing image-download temp-file
+        // leak, PR #17, is separate debt and is not fixed here.)
+        try { resolvedFs.unlink(destPath); } catch { /* already gone or never written */ }
+      }
+
+      fifo.push({ text: transcript, voice: true });
       return;
     }
 
