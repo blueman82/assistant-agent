@@ -6,3 +6,5 @@ dist/
 logs/
 .playwright-mcp/
 *.log
+docs/coderails/specs/
+docs/coderails/plans/
