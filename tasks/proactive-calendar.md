@@ -38,7 +38,13 @@ Steps:
 
    Timestamps go in exactly as the calendar returned them (RFC3339 with offset). Write the cache EVEN WHEN there are no conflicts (an empty `conflicts` array) — the deterministic sweep reads this file every 30 minutes to drive its <2h urgent escalation, and a missing or stale cache blinds it. Do not skip this step.
 
-4. For each conflict, push one message through the push.ts CLI:
+4. Write a persistent calendar log to the wiki.
+
+   Read the conflict cache from `$HOME/.rachel/calendar-cache.json`. Extract the next 7–14 days of upcoming events and recent completions from the last 30 days using the fetched calendar data (from step 1). Format two markdown tables — one for "Upcoming (7-14 days)" and one for "Recent Completions (30 days)" — with columns: Date | Event | Time | Status. Write to the absolute path `$HOME/../assistant-agent-wiki/calendar-log.md` (expand `$HOME` to `/Users/harrison`; the wiki path is `/Users/harrison/Github/assistant-agent-wiki/calendar-log.md`). This is Gary's persistent calendar index, browsed in Obsidian. Each run refreshes the tables.
+
+   If the cache is empty or parsing fails, leave the tables as placeholder rows and log the issue in your turn output. Calendar data anomalies do not block the conflict push (step 5 still runs).
+
+5. For each conflict, push one message through the push.ts CLI:
    - Compute the state hash: hash16 = the first 16 hex characters of sha256 over the four timestamps joined with `|`, in sorted-id order. Exact shell line (Bash):
      ```
      printf '%s' "<startA>|<endA>|<startB>|<endB>" | shasum -a 256 | cut -c1-16
