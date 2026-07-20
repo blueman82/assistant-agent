@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import * as readline from "node:readline/promises";
 import { homedir } from "node:os";
 import { createSendGateHook } from "./gate/sendGate.ts";
+import { createAskUserQuestionHook } from "./gate/askUserQuestionHook.ts";
 import { createTerminalApprovalSurface } from "./gate/surfaces/terminal.ts";
 import { createTelegramApprovalSurface, loadTelegramConfig } from "./gate/surfaces/telegram.ts";
 import { createQueueApprovalSurface } from "./gate/surfaces/queue.ts";
@@ -15,11 +16,16 @@ import { getModel, getEffort, handleConfigCommand, isHelpFlag, renderHelp, parse
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// The agent's full tool surface. Narrowable per invocation via the
-// RACHEL_ALLOWED_TOOLS env seam (resolveAllowedTools) — headless one-shots
-// run with a minimum subset; the env var can only remove entries from this
-// list, never add to it. Exported for the cross-check test that pins every
-// one-shot narrowing set as a subset of this list.
+// The agent's auto-approval list, not its tool surface — entries here skip
+// the permission prompt. It does NOT restrict which tools Rachel can reach:
+// the SDK's `tools` option (the actual availability control) is never set
+// below, so no `--tools` flag reaches the underlying `claude` process and it
+// runs with its full default toolset regardless of what's listed here.
+// Narrowable per invocation via the RACHEL_ALLOWED_TOOLS env seam
+// (resolveAllowedTools) — headless one-shots run with a minimum subset; the
+// env var can only remove entries from this list, never add to it. Exported
+// for the cross-check test that pins every one-shot narrowing set as a
+// subset of this list.
 export const DEFAULT_ALLOWED_TOOLS = [
   "Read", "Write", "Edit", "Glob", "Grep", "Bash",
   "WebSearch", "WebFetch",
@@ -124,6 +130,8 @@ const sendGateHook = gateTimeoutMs !== undefined
   ? createSendGateHook(approvalSurfaces, auditLogPath, new Map(), gateTimeoutMs)
   : createSendGateHook(approvalSurfaces, auditLogPath);
 
+const askUserQuestionHook = createAskUserQuestionHook();
+
 // ---------------------------------------------------------------------------
 // Session state — module-scoped so it persists across turns within a
 // process, for both the terminal REPL and the Telegram bridge (which calls
@@ -190,7 +198,7 @@ export async function runTurn(
           // so this is set defensively to match every tool call. The gate
           // itself filters by tool_name/command internally.
           matcher: ".*",
-          hooks: [sendGateHook],
+          hooks: [sendGateHook, askUserQuestionHook],
         },
       ],
     },
