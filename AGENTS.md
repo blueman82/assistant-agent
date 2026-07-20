@@ -62,6 +62,9 @@ Body: concise (under 2 min to read). Use `[[wiki-links]]` for cross-references. 
 
 ### Ingest (new source added)
 Trigger: Gary says "ingest raw/" or "ingest [file]", or a new file appears in `raw/`.
+0. `Read` the file first and classify it before doing anything else:
+   - **Reference/knowledge material** (docs, articles, decisions, facts worth recording) → continue with steps 1–6 below (wiki pages).
+   - **Actionable backlog/TODO list** (imperative asks, no durable facts to record) → do NOT write to the wiki. Instead create one file per item in `assistant-agent/tasks/*.md`, following that directory's existing frontmatter schema (title/status/due/priority), tagging any item that targets a repo other than `assistant-agent` with a `Repo: <path>` line in the body. Still leave the raw file in place (step 6 applies either way).
 1. `Glob` the `raw/` directory to find unprocessed files
 2. For each file: `Read` it in full — never summarise before reading
 3. Update 5–15 existing wiki pages that relate to it (add cross-refs, update facts, correct stale claims)
