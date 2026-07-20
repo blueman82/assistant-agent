@@ -58,6 +58,6 @@ Steps:
      ```
      Exactly five arguments: family, event-id, state, severity, message-file. The message text always comes from the FILE, never from argv. The event-id is `cal:<idA>+<idB>` with the IDs sorted lexicographically, and severity is ALWAYS `normal` here — the event-id carries NO `:2h` suffix, because the deterministic sweep owns urgent escalation under its own `cal:<idA>+<idB>:2h` event-id. Never push `urgent` from this task.
 
-5. Check each push result — don't assume it worked. Exit 0 with any of `[push] sent.` / `[push] deferred.` / `[push] dedup.` counts as success (deferred and dedup are the chokepoint doing its job, not failures). A nonzero exit is a delivery failure — and exit 0 WITHOUT one of the three result lines is also a failure — treat exactly like nonzero exit. State any failure plainly in your turn output, and never report a clean sweep in that case.
+6. Check each push result — don't assume it worked. Exit 0 with any of `[push] sent.` / `[push] deferred.` / `[push] dedup.` counts as success (deferred and dedup are the chokepoint doing its job, not failures). A nonzero exit is a delivery failure — and exit 0 WITHOUT one of the three result lines is also a failure — treat exactly like nonzero exit. State any failure plainly in your turn output, and never report a clean sweep in that case.
 
-6. No conflicts → write the cache (step 3 still applies), push nothing, and end the turn quietly — no Telegram message.
+7. No conflicts → write the cache (step 3 still applies), write the wiki log (step 4 still applies), push nothing, and end the turn quietly — no Telegram message.
