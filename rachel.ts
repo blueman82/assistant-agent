@@ -13,6 +13,7 @@ import { createTelegramApprovalSurface, loadTelegramConfig } from "./gate/surfac
 import { createQueueApprovalSurface } from "./gate/surfaces/queue.ts";
 import { resolveAllowedTools } from "./proactive/allowedTools.ts";
 import { getModel, getEffort, handleConfigCommand, isHelpFlag, renderHelp, parseArgvConfig } from "./proactive/modelConfig.ts";
+import { composeSystemPrompt, resolveMemoryPath } from "./proactive/memoryIndex.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -206,7 +207,13 @@ export async function runTurn(
     agents: {
       rachel: {
         description: "Gary's AI assistant Rachel — email, calendar, and tasks.",
-        prompt: systemPrompt,
+        // Re-composed per turn (not read once at module load) — the memory
+        // index at ~/.rachel/memory/MEMORY.md can change between turns, and
+        // RACHEL_MEMORY_PATH is a per-invocation env seam like
+        // RACHEL_ALLOWED_TOOLS above. An absent index means no memories
+        // yet, not an error — composeSystemPrompt returns systemPrompt
+        // unchanged in that case.
+        prompt: composeSystemPrompt(systemPrompt, resolveMemoryPath()),
         skills: [],
       },
     },
