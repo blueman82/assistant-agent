@@ -89,3 +89,105 @@ test("unset RACHEL_MEMORY_PATH resolves to ~/.rachel/memory/MEMORY.md", () => {
     }
   }
 });
+
+// Captures the `options` object a fake queryFn receives from runTurn, so a
+// test can assert on it without hitting the network. Yields a minimal
+// init+result message pair so runTurn's stream-consuming loop completes
+// normally.
+function captureOptionsQueryFn(
+  onOptions: (options: Record<string, unknown>) => void,
+): Parameters<typeof import("../rachel.ts").runTurn>[3] {
+  return ((params: { options: Record<string, unknown> }) => {
+    onOptions(params.options);
+    async function* generate(): AsyncGenerator<SDKMessage, void> {
+      yield { type: "system", subtype: "init", session_id: "fake-session" } as unknown as SDKMessage;
+    }
+    return generate();
+  }) as Parameters<typeof import("../rachel.ts").runTurn>[3];
+}
+
+test("WIRING: runTurn passes a system prompt containing the memory index to queryFn's options", async () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
+  const memoryPath = join(memoryDir, "MEMORY.md");
+  const sentinel = "- [Sentinel fact](sentinel.md) — unique marker for this test";
+  writeFileSync(memoryPath, `${sentinel}\n`);
+
+  const original = process.env["RACHEL_MEMORY_PATH"];
+  process.env["RACHEL_MEMORY_PATH"] = memoryPath;
+  try {
+    const { runTurn } = await import("../rachel.ts");
+
+    let capturedOptions: Record<string, unknown> | undefined;
+    const fakeQueryFn = captureOptionsQueryFn((options) => {
+      capturedOptions = options;
+    });
+
+    await runTurn("hello", () => {}, new AbortController().signal, fakeQueryFn);
+
+    assert.ok(capturedOptions, "queryFn was invoked with options");
+    const agents = capturedOptions!["agents"] as { rachel?: { prompt?: string } } | undefined;
+    assert.ok(agents?.rachel?.prompt, "options.agents.rachel.prompt is set");
+    assert.ok(
+      agents!.rachel!.prompt!.includes(sentinel),
+      "the composed prompt passed to the SDK includes the memory index content",
+    );
+  } finally {
+    if (original === undefined) {
+      delete process.env["RACHEL_MEMORY_PATH"];
+    } else {
+      process.env["RACHEL_MEMORY_PATH"] = original;
+    }
+  }
+});
+
+// MANDATORY safety-critical assertion: this PR touches the same `options`
+// object where the send-approval gate is wired as a PreToolUse hook
+// (rachel.ts's hooks.PreToolUse). A silent detach of that wiring would not
+// crash anything — the first symptom would be an unapproved Slack or
+// Calendar send going out. bridge/telegram-bridge.test.ts protects this
+// only incidentally (its own comment says so); this test names the
+// invariant explicitly for this PR's change.
+test("SAFETY: the send-approval gate hook is still wired into runTurn's options after this change, and denies a gated tool call", async () => {
+  const { runTurn } = await import("../rachel.ts");
+
+  let hookDecision: string | undefined;
+
+  type FakeHookCallback = (
+    input: unknown,
+    toolUseID: string | undefined,
+    options: { signal: AbortSignal },
+  ) => Promise<{ hookSpecificOutput?: { permissionDecision?: string } }>;
+
+  const fakeQueryFn = ((params: { options: Record<string, unknown> }) => {
+    async function* generate(): AsyncGenerator<SDKMessage, void> {
+      const preToolUseHooks = (params.options["hooks"] as Record<string, { hooks: unknown[] }[]> | undefined)?.["PreToolUse"];
+      assert.ok(
+        preToolUseHooks && preToolUseHooks.length > 0,
+        "options.hooks.PreToolUse must be present — the send gate must stay wired after this change",
+      );
+      const hook = preToolUseHooks![0]!.hooks[0] as FakeHookCallback;
+
+      const result = await hook(
+        {
+          hook_event_name: "PreToolUse",
+          session_id: "test-session",
+          transcript_path: "/dev/null",
+          cwd: "/tmp",
+          tool_name: GATED_TOOL_NAMES[0]!,
+          tool_input: { channel: "#general", text: "unauthorised send" },
+        },
+        undefined,
+        { signal: new AbortController().signal },
+      );
+      hookDecision = result.hookSpecificOutput?.permissionDecision;
+
+      yield { type: "system", subtype: "init", session_id: "fake-session" } as unknown as SDKMessage;
+    }
+    return generate();
+  }) as Parameters<typeof runTurn>[3];
+
+  process.env["RACHEL_GATE_TIMEOUT_MS"] = "200";
+  await runTurn("send a slack message", () => {}, new AbortController().signal, fakeQueryFn);
+
+  assert.equal(hookDecision, "deny", "a gated tool call with no approval surface resolving must be denied, not allowed");
+});
