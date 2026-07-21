@@ -99,3 +99,122 @@ test("writeSession stores JSON with a schema_version, matching the repo's store-
   assert.equal(raw.schema_version, 1);
   assert.equal(raw.session_id, "session-shape-check");
 });
+
+// ---------------------------------------------------------------------------
+// WIRING — rachel.ts's use of the RACHEL_SESSION_FILE seam. Unset must be a
+// total no-op (byte-for-byte today's behaviour for the CLI and all 8
+// headless one-shots); set must persist on every session-id capture and
+// clear on /reset. These import the REAL runTurn/resetSession/
+// hydratePersistedSession from rachel.ts via a fake queryFn, matching
+// memoryIndex.test.ts's WIRING test harness.
+// ---------------------------------------------------------------------------
+
+function fakeInitQueryFn(sessionId: string): (params: { options: unknown }) => AsyncGenerator<SDKMessage, void> {
+  return ((_params: { options: unknown }) => {
+    async function* generate(): AsyncGenerator<SDKMessage, void> {
+      yield { type: "system", subtype: "init", session_id: sessionId } as unknown as SDKMessage;
+    }
+    return generate();
+  }) as unknown as (params: { options: unknown }) => AsyncGenerator<SDKMessage, void>;
+}
+
+test("WIRING: RACHEL_SESSION_FILE unset — runTurn never writes a session file", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "rachel-test-session-"));
+  const sessionFile = join(dir, "bridge-session.json");
+  const original = process.env["RACHEL_SESSION_FILE"];
+  delete process.env["RACHEL_SESSION_FILE"];
+  try {
+    const { runTurn } = await import("../rachel.ts");
+    await runTurn(
+      "hello",
+      () => {},
+      new AbortController().signal,
+      fakeInitQueryFn("fake-session-unset") as Parameters<typeof runTurn>[3],
+    );
+    assert.ok(!existsSync(sessionFile), "no session file must be written when the seam is unset");
+  } finally {
+    if (original === undefined) delete process.env["RACHEL_SESSION_FILE"];
+    else process.env["RACHEL_SESSION_FILE"] = original;
+  }
+});
+
+test("WIRING: RACHEL_SESSION_FILE set — runTurn persists the captured session id to that path", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "rachel-test-session-"));
+  const sessionFile = join(dir, "bridge-session.json");
+  const original = process.env["RACHEL_SESSION_FILE"];
+  process.env["RACHEL_SESSION_FILE"] = sessionFile;
+  try {
+    const { runTurn } = await import("../rachel.ts");
+    await runTurn(
+      "hello",
+      () => {},
+      new AbortController().signal,
+      fakeInitQueryFn("fake-session-set") as Parameters<typeof runTurn>[3],
+    );
+    assert.equal(readSession(sessionFile), "fake-session-set");
+  } finally {
+    if (original === undefined) delete process.env["RACHEL_SESSION_FILE"];
+    else process.env["RACHEL_SESSION_FILE"] = original;
+  }
+});
+
+test("REGRESSION: RACHEL_SESSION_FILE set — resetSession clears the persisted file so a restart does not resurrect it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "rachel-test-session-"));
+  const sessionFile = join(dir, "bridge-session.json");
+  const original = process.env["RACHEL_SESSION_FILE"];
+  process.env["RACHEL_SESSION_FILE"] = sessionFile;
+  try {
+    const { runTurn, resetSession, hydratePersistedSession, getSessionId } = await import("../rachel.ts");
+
+    // Simulate a turn that captures and persists a session.
+    await runTurn(
+      "hello",
+      () => {},
+      new AbortController().signal,
+      fakeInitQueryFn("session-to-be-reset") as Parameters<typeof runTurn>[3],
+    );
+    assert.equal(readSession(sessionFile), "session-to-be-reset", "sanity: session was persisted before reset");
+
+    resetSession();
+    assert.ok(!existsSync(sessionFile), "resetSession must unlink the persisted file, not just clear memory");
+
+    // Simulate the NEXT process starting up: it re-reads the (now absent)
+    // persisted file. It must come back clean, NOT the reset session id.
+    hydratePersistedSession();
+    assert.equal(getSessionId(), undefined, "a fresh process must not resurrect the session /reset just cleared");
+  } finally {
+    if (original === undefined) delete process.env["RACHEL_SESSION_FILE"];
+    else process.env["RACHEL_SESSION_FILE"] = original;
+  }
+});
+
+test("WIRING: RACHEL_SESSION_FILE set — hydratePersistedSession reads a previously written session on startup", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "rachel-test-session-"));
+  const sessionFile = join(dir, "bridge-session.json");
+  writeSession(sessionFile, "session-from-previous-process");
+  const original = process.env["RACHEL_SESSION_FILE"];
+  process.env["RACHEL_SESSION_FILE"] = sessionFile;
+  try {
+    const { hydratePersistedSession, getSessionId } = await import("../rachel.ts");
+    hydratePersistedSession();
+    assert.equal(getSessionId(), "session-from-previous-process");
+  } finally {
+    if (original === undefined) delete process.env["RACHEL_SESSION_FILE"];
+    else process.env["RACHEL_SESSION_FILE"] = original;
+  }
+});
+
+test("WIRING: RACHEL_SESSION_FILE set but file absent — hydratePersistedSession starts clean, does not throw", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "rachel-test-session-"));
+  const sessionFile = join(dir, "does-not-exist.json");
+  const original = process.env["RACHEL_SESSION_FILE"];
+  process.env["RACHEL_SESSION_FILE"] = sessionFile;
+  try {
+    const { hydratePersistedSession, getSessionId } = await import("../rachel.ts");
+    assert.doesNotThrow(() => hydratePersistedSession());
+    assert.equal(getSessionId(), undefined);
+  } finally {
+    if (original === undefined) delete process.env["RACHEL_SESSION_FILE"];
+    else process.env["RACHEL_SESSION_FILE"] = original;
+  }
+});
