@@ -17,5 +17,5 @@ export function composeSystemPrompt(basePrompt: string, memoryPath: string): str
     }
     throw new Error(`cannot read memory index ${memoryPath}: ${err instanceof Error ? err.message : String(err)}`);
   }
-  return basePrompt;
+  return `${basePrompt}\n\n${index}`;
 }
