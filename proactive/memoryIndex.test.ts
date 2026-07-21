@@ -11,7 +11,7 @@ process.env["RACHEL_TELEGRAM_TOKEN"] = "000000000:FAKE-TEST-TOKEN";
 process.env["RACHEL_TELEGRAM_CHAT_ID"] = "1";
 
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 
 const testQueueDir = mkdtempSync(join(tmpdir(), "rachel-test-queue-"));
