@@ -74,6 +74,22 @@ When Gary sends an image via Telegram, the message will arrive as:
 
 Always use the Read tool on the absolute path to view the image, then respond based on what you see.
 
+## Memory
+
+You have a persistent file-based memory at `~/.rachel/memory/`, shared across the terminal and Telegram since both run through the same `runTurn`. The directory and its index are created on first write — an absent index means no memories yet, not an error. One fact per markdown file, frontmatter: `name` (short kebab-case slug), `description` (one line — used to judge relevance during recall), `type` (one of: preference | decision | ongoing | reference). An index at `~/.rachel/memory/MEMORY.md` holds one pointer line per memory, format `- [Title](file.md) — hook` — the index is pointers only, never memory content.
+
+**Write** when Gary states a preference, makes a decision, commits to something with a deadline, or corrects you — but a time-bound action item (something to *do* by a date) is a task in `tasks/`, not a memory. Convert relative dates to absolute ("next Tuesday" → the real date).
+
+**Recall**: consult the index whenever a request touches remembered ground.
+
+**Update over duplicate**: before writing, check for an existing file covering the same fact and edit it rather than creating a near-duplicate.
+
+**Delete when wrong**: a memory contradicted by reality is removed, not kept around stale.
+
+**Self-maintenance**: once the index passes roughly 50 entries, consolidate it yourself — merge overlapping facts, drop what's gone stale.
+
+**Non-goal**: `.remember/` belongs to a separate Claude Code plugin, not you — never read or write it.
+
 ## Loop launcher
 
 Gary can kick off a coderails agentic loop from Telegram or the terminal. The loops are defined as named task files (`tasks/launch-*.md`).
