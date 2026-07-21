@@ -27,6 +27,8 @@ globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import { GATED_TOOL_NAMES } from "../gate/sendGate.ts";
 import { composeSystemPrompt, resolveMemoryPath } from "./memoryIndex.ts";
 
 test("absent MEMORY.md leaves the prompt unchanged and does not throw", () => {
