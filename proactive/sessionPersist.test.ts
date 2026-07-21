@@ -1,8 +1,35 @@
+// Env-safety header — matches memoryIndex.test.ts's header exactly and for
+// the same reason: the WIRING tests below import the REAL runTurn/
+// resetSession from rachel.ts, and importing rachel.ts runs its module-scope
+// side effects once (loadTelegramConfig(), createQueueApprovalSurface(),
+// createSendGateHook()). Without these redirects, a test run here could
+// touch the operator's real queue/audit files or a live Telegram token.
+// This block MUST stay ahead of every import in this file.
+process.env["RACHEL_TELEGRAM_TOKEN"] = "000000000:FAKE-TEST-TOKEN";
+process.env["RACHEL_TELEGRAM_CHAT_ID"] = "1";
+process.env["RACHEL_GATE_TIMEOUT_MS"] = "200";
+
+import { mkdtempSync as mkdtempSyncEarly } from "node:fs";
+import { tmpdir as tmpdirEarly } from "node:os";
+import { join as joinEarly } from "node:path";
+
+const testQueueDir = mkdtempSyncEarly(joinEarly(tmpdirEarly(), "rachel-test-queue-"));
+process.env["RACHEL_QUEUE_DIR"] = testQueueDir;
+process.env["RACHEL_AUDIT_LOG_PATH"] = joinEarly(testQueueDir, "audit.jsonl");
+process.env["RACHEL_MEMORY_PATH"] = joinEarly(testQueueDir, "memory", "MEMORY.md");
+
+// Defense-in-depth, same reasoning as memoryIndex.test.ts: every WIRING test
+// here injects its own fake queryFn rather than relying on global fetch.
+globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
+  throw new Error(`Unexpected real fetch() call in sessionPersist.test.ts — all transports must be stubbed. Called with: ${String(args[0])}`);
+}) as typeof fetch;
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { readSession, writeSession, clearSession } from "./sessionPersist.ts";
 
 test("readSession returns undefined when the file does not exist (ENOENT)", () => {
