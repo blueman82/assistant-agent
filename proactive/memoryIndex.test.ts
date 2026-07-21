@@ -202,43 +202,51 @@ test("WIRING: runTurn passes a system prompt containing the memory index to quer
 test("SAFETY: the send-approval gate hook is still wired into runTurn's options after this change, and denies a gated tool call", async () => {
   const { runTurn } = await import("../rachel.ts");
 
-  let hookDecision: string | undefined;
-
   type FakeHookCallback = (
     input: unknown,
     toolUseID: string | undefined,
     options: { signal: AbortSignal },
   ) => Promise<{ hookSpecificOutput?: { permissionDecision?: string } }>;
 
+  // Captured synchronously as soon as queryFn is invoked, BEFORE the
+  // generator yields anything — not asserted on here. This removes any
+  // dependency on how node:test's `for await` drives the generator relative
+  // to the test's own completion detection (the prior shape asserted
+  // inside the generator and, per review, was observed to flake once in
+  // ~26 runs on exactly that ordering). All assertions happen after
+  // `await runTurn(...)` resolves, below.
+  let capturedOptions: { hooks?: Record<string, { hooks: unknown[] }[]> } | undefined;
+
   const fakeQueryFn: Parameters<typeof runTurn>[3] = ((_params) => {
+    capturedOptions = _params.options as { hooks?: Record<string, { hooks: unknown[] }[]> } | undefined;
     async function* generate(): AsyncGenerator<SDKMessage, void> {
-      const preToolUseHooks = (_params.options as { hooks?: Record<string, { hooks: unknown[] }[]> } | undefined)?.hooks?.["PreToolUse"];
-      assert.ok(
-        preToolUseHooks && preToolUseHooks.length > 0,
-        "options.hooks.PreToolUse must be present — the send gate must stay wired after this change",
-      );
-      const hook = preToolUseHooks![0]!.hooks[0] as FakeHookCallback;
-
-      const result = await hook(
-        {
-          hook_event_name: "PreToolUse",
-          session_id: "test-session",
-          transcript_path: "/dev/null",
-          cwd: "/tmp",
-          tool_name: GATED_TOOL_NAMES[0]!,
-          tool_input: { channel: "#general", text: "unauthorised send" },
-        },
-        undefined,
-        { signal: new AbortController().signal },
-      );
-      hookDecision = result.hookSpecificOutput?.permissionDecision;
-
       yield { type: "system", subtype: "init", session_id: "fake-session" } as unknown as SDKMessage;
     }
     return generate();
   }) as Parameters<typeof runTurn>[3];
 
   await runTurn("send a slack message", () => {}, new AbortController().signal, fakeQueryFn);
+
+  const preToolUseHooks = capturedOptions?.hooks?.["PreToolUse"];
+  assert.ok(
+    preToolUseHooks && preToolUseHooks.length > 0,
+    "options.hooks.PreToolUse must be present — the send gate must stay wired after this change",
+  );
+  const hook = preToolUseHooks![0]!.hooks[0] as FakeHookCallback;
+
+  const result = await hook(
+    {
+      hook_event_name: "PreToolUse",
+      session_id: "test-session",
+      transcript_path: "/dev/null",
+      cwd: "/tmp",
+      tool_name: GATED_TOOL_NAMES[0]!,
+      tool_input: { channel: "#general", text: "unauthorised send" },
+    },
+    undefined,
+    { signal: new AbortController().signal },
+  );
+  const hookDecision = result.hookSpecificOutput?.permissionDecision;
 
   assert.equal(hookDecision, "deny", "a gated tool call with no approval surface resolving must be denied, not allowed");
 });
