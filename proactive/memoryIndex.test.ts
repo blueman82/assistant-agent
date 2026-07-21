@@ -62,6 +62,54 @@ test("a present MEMORY.md has its content appear in the composed prompt", () => 
   assert.ok(result.includes("[Some fact](some-fact.md) — a hook"), "index content is present in the composed prompt");
 });
 
+test("an index under the size threshold is included unchanged, with no truncation marker", () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
+  const memoryPath = join(memoryDir, "MEMORY.md");
+  const smallIndex = "- [Some fact](some-fact.md) — a hook\n";
+  writeFileSync(memoryPath, smallIndex);
+  const basePrompt = "You are Rachel.";
+  const result = composeSystemPrompt(basePrompt, memoryPath);
+  assert.ok(result.includes(smallIndex.trim()), "the full index content is present");
+  assert.ok(!result.includes("truncated"), "no truncation marker for an under-threshold index");
+});
+
+test("an index over the size threshold is truncated with a visible marker, never silently dropped", () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
+  const memoryPath = join(memoryDir, "MEMORY.md");
+  // One line comfortably over 32 KiB total.
+  const oversizedIndex = "- [fact](fact.md) — a hook filler text to pad out the line length\n".repeat(600);
+  assert.ok(Buffer.byteLength(oversizedIndex, "utf8") > 32 * 1024, "fixture must exceed the 32 KiB threshold");
+  writeFileSync(memoryPath, oversizedIndex);
+  const basePrompt = "You are Rachel.";
+  const result = composeSystemPrompt(basePrompt, memoryPath);
+  assert.ok(result.includes(basePrompt), "base prompt is preserved");
+  assert.ok(/truncat/i.test(result), "a visible marker must tell the agent truncation happened");
+  assert.ok(
+    Buffer.byteLength(result, "utf8") < Buffer.byteLength(basePrompt + "\n\n" + oversizedIndex, "utf8"),
+    "the composed prompt must actually be shorter than the full untruncated index",
+  );
+  // Not silently dropped — some head of the real content must still be there.
+  assert.ok(result.includes("- [fact](fact.md)"), "a truncated head of the real content is still present");
+});
+
+test("an empty MEMORY.md (zero bytes) leaves the prompt unchanged, with no trailing whitespace appended", () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
+  const memoryPath = join(memoryDir, "MEMORY.md");
+  writeFileSync(memoryPath, "");
+  const basePrompt = "You are Rachel.";
+  const result = composeSystemPrompt(basePrompt, memoryPath);
+  assert.equal(result, basePrompt);
+});
+
+test("a whitespace-only MEMORY.md leaves the prompt unchanged, with no trailing whitespace appended", () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
+  const memoryPath = join(memoryDir, "MEMORY.md");
+  writeFileSync(memoryPath, "   \n\n  \n");
+  const basePrompt = "You are Rachel.";
+  const result = composeSystemPrompt(basePrompt, memoryPath);
+  assert.equal(result, basePrompt);
+});
+
 test("a non-ENOENT read failure throws loud with the file path named", () => {
   // Point the "file" path at a directory, not a file — readFileSync throws
   // EISDIR, a non-ENOENT failure that must NOT be silently swallowed the
