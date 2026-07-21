@@ -67,6 +67,8 @@ This is the most important behavioural contract:
 - Max turns per request: `200` (override with `RACHEL_MAX_TURNS`).
 - Tool narrowing for headless one-shots: `RACHEL_ALLOWED_TOOLS` (comma-separated; remove-only subset of `DEFAULT_ALLOWED_TOOLS`, unset = full list).
 - Proactive tuning: `~/.rachel/proactive/config.json` — timezone, quiet hours (default 22:30–08:00 Europe/Dublin), daily interrupt budget (default 10), PR watch repos, calendar one-shot hours. An absent file means the defaults, not an error.
+- Persistent memory: `~/.rachel/memory/` — one fact per markdown file plus a pointer-only `MEMORY.md` index, composed into the system prompt every turn (see `proactive/memoryIndex.ts` and `system.md`'s Memory section). Override the index path with `RACHEL_MEMORY_PATH` (mirrors the `RACHEL_AUDIT_LOG_PATH` idiom; unset = the real path above).
+- Bridge session persistence: `RACHEL_SESSION_FILE` (unset by default; set only in `bridge/launchd.plist`) — persists/restores the Telegram bridge's `sessionId` across a process restart via `proactive/sessionPersist.ts`. Inert for the CLI and all headless one-shots.
 - TypeScript: ESM, `strict` mode, target ES2022.
 
 ## CLI commands (at the `You:` prompt)
