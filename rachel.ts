@@ -247,6 +247,28 @@ export async function runTurn(
         skills: [],
       },
     },
+    // Second-writer hole: RACHEL_SESSION_FILE is documented above as
+    // "exactly one writer" (the bridge), but the bridge's plist sets no
+    // RACHEL_ALLOWED_TOOLS, so bridge turns run with unrestricted Bash. A
+    // Bash-spawned child (e.g. a nested `bin/rachel "..."` one-shot, an
+    // established pattern per prompts/system.md) would otherwise inherit
+    // RACHEL_SESSION_FILE via ordinary process env inheritance and silently
+    // clobber the bridge's live session pointer. sdk.d.ts's Options.env
+    // REPLACES the subprocess env entirely rather than merging, so this
+    // spreads process.env and deletes only the one key — everything else
+    // (PATH, HOME, etc.) still reaches the SDK subprocess unchanged. Only
+    // set when the seam is active: the CLI and all headless one-shots (seam
+    // unset) must leave options.env untouched, so the SDK keeps managing
+    // subprocess env exactly as it does today.
+    ...(process.env["RACHEL_SESSION_FILE"]
+      ? {
+          env: (() => {
+            const childEnv = { ...process.env };
+            delete childEnv["RACHEL_SESSION_FILE"];
+            return childEnv;
+          })(),
+        }
+      : {}),
     ...(sessionId ? { resume: sessionId } : {}),
   };
 
