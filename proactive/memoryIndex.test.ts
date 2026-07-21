@@ -96,22 +96,6 @@ test("unset RACHEL_MEMORY_PATH resolves to ~/.rachel/memory/MEMORY.md", () => {
   }
 });
 
-// Captures the `options` object a fake queryFn receives from runTurn, so a
-// test can assert on it without hitting the network. Yields a minimal
-// init+result message pair so runTurn's stream-consuming loop completes
-// normally.
-function captureOptionsQueryFn(
-  onOptions: (options: Record<string, unknown>) => void,
-): Parameters<typeof import("../rachel.ts").runTurn>[3] {
-  return ((params: { options: Record<string, unknown> }) => {
-    onOptions(params.options);
-    async function* generate(): AsyncGenerator<SDKMessage, void> {
-      yield { type: "system", subtype: "init", session_id: "fake-session" } as unknown as SDKMessage;
-    }
-    return generate();
-  }) as Parameters<typeof import("../rachel.ts").runTurn>[3];
-}
-
 test("WIRING: runTurn passes a system prompt containing the memory index to queryFn's options", async () => {
   const memoryDir = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
   const memoryPath = join(memoryDir, "MEMORY.md");
@@ -124,9 +108,16 @@ test("WIRING: runTurn passes a system prompt containing the memory index to quer
     const { runTurn } = await import("../rachel.ts");
 
     let capturedOptions: Record<string, unknown> | undefined;
-    const fakeQueryFn = captureOptionsQueryFn((options) => {
-      capturedOptions = options;
-    });
+    // Captures the `options` object queryFn receives from runTurn, so this
+    // test can assert on it without hitting the network. Yields a minimal
+    // init message so runTurn's stream-consuming loop completes normally.
+    const fakeQueryFn: Parameters<typeof runTurn>[3] = ((_params) => {
+      capturedOptions = _params.options as Record<string, unknown>;
+      async function* generate(): AsyncGenerator<SDKMessage, void> {
+        yield { type: "system", subtype: "init", session_id: "fake-session" } as unknown as SDKMessage;
+      }
+      return generate();
+    }) as Parameters<typeof runTurn>[3];
 
     await runTurn("hello", () => {}, new AbortController().signal, fakeQueryFn);
 
