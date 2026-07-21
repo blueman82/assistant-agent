@@ -9,6 +9,12 @@
 // Telegram token. This block MUST stay ahead of every import in this file.
 process.env["RACHEL_TELEGRAM_TOKEN"] = "000000000:FAKE-TEST-TOKEN";
 process.env["RACHEL_TELEGRAM_CHAT_ID"] = "1";
+// The SAFETY test below needs a real (but short) deny-timeout race rather
+// than the 60s production default — same reasoning as
+// bridge/telegram-bridge.test.ts's own gate-integrity test, and it must be
+// set here, before rachel.ts's first import anywhere in this file, since
+// rachel.ts's module-scope createSendGateHook(...) call reads it once.
+process.env["RACHEL_GATE_TIMEOUT_MS"] = "200";
 
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
