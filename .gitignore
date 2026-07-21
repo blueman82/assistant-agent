@@ -1,5 +1,7 @@
 node_modules/
 dist/
+.DS_Store
+.obsidian/
 .env
 .env.*
 .logs/
@@ -20,3 +22,15 @@ docs/coderails/plans/
 tasks/*
 !tasks/.gitkeep
 !tasks/EXAMPLE-task.md
+
+# Local agent config and personal artifacts — same principle as tasks/ above:
+# this repo runs on one machine, so none of it is distributed. All of it is
+# still read locally at runtime; it is simply not tracked.
+#
+#   .claude/            settings.local.json, test_command (the commit test
+#                       gate reads this), eval artifacts, worktrees
+#   evals/              behavioural eval specs and their recorded results
+#   workflow.config.yaml  carries an absolute wiki_path under /Users/harrison
+.claude/
+evals/
+workflow.config.yaml
