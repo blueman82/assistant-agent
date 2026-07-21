@@ -13,6 +13,7 @@ import { createTelegramApprovalSurface, loadTelegramConfig } from "./gate/surfac
 import { createQueueApprovalSurface } from "./gate/surfaces/queue.ts";
 import { resolveAllowedTools } from "./proactive/allowedTools.ts";
 import { getModel, getEffort, handleConfigCommand, isHelpFlag, renderHelp, parseArgvConfig } from "./proactive/modelConfig.ts";
+import { composeSystemPrompt, resolveMemoryPath } from "./proactive/memoryIndex.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
