@@ -15,6 +15,7 @@ import { resolveAllowedTools } from "./proactive/allowedTools.ts";
 import { resolveSystemPromptPath } from "./proactive/systemPrompt.ts";
 import { getModel, getEffort, handleConfigCommand, isHelpFlag, renderHelp, parseArgvConfig } from "./proactive/modelConfig.ts";
 import { composeSystemPrompt, resolveMemoryPath } from "./proactive/memoryIndex.ts";
+import { readSession, writeSession, clearSession } from "./proactive/sessionPersist.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
