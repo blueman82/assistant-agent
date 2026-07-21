@@ -12,6 +12,7 @@ import { createTerminalApprovalSurface } from "./gate/surfaces/terminal.ts";
 import { createTelegramApprovalSurface, loadTelegramConfig } from "./gate/surfaces/telegram.ts";
 import { createQueueApprovalSurface } from "./gate/surfaces/queue.ts";
 import { resolveAllowedTools } from "./proactive/allowedTools.ts";
+import { resolveSystemPromptPath } from "./proactive/systemPrompt.ts";
 import { getModel, getEffort, handleConfigCommand, isHelpFlag, renderHelp, parseArgvConfig } from "./proactive/modelConfig.ts";
 import { composeSystemPrompt, resolveMemoryPath } from "./proactive/memoryIndex.ts";
 
@@ -67,7 +68,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 const DEFAULT_MAX_TURNS = 200;
 const MAX_TURNS = parseInt(process.env["RACHEL_MAX_TURNS"] ?? String(DEFAULT_MAX_TURNS), 10);
 
-const SYSTEM_PROMPT_PATH = join(__dirname, "prompts", "system.md");
+// Generic tracked prompt vs the operator's own local override — resolution
+// order and rationale live in proactive/systemPrompt.ts.
+const SYSTEM_PROMPT_PATH = resolveSystemPromptPath(__dirname);
 if (!existsSync(SYSTEM_PROMPT_PATH)) {
   console.error(`[Rachel] missing system prompt at ${SYSTEM_PROMPT_PATH}`);
   process.exit(2);
