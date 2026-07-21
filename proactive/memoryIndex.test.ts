@@ -192,7 +192,6 @@ test("SAFETY: the send-approval gate hook is still wired into runTurn's options 
     return generate();
   }) as Parameters<typeof runTurn>[3];
 
-  process.env["RACHEL_GATE_TIMEOUT_MS"] = "200";
   await runTurn("send a slack message", () => {}, new AbortController().signal, fakeQueryFn);
 
   assert.equal(hookDecision, "deny", "a gated tool call with no approval surface resolving must be denied, not allowed");
