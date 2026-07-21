@@ -109,26 +109,11 @@ test("writeSession stores JSON with a schema_version, matching the repo's store-
 // memoryIndex.test.ts's WIRING test harness.
 // ---------------------------------------------------------------------------
 
-// Builds a fake queryFn (matching memoryIndex.test.ts's WIRING test harness)
-// that yields a single init message reporting `sessionId`, letting these
-// tests exercise runTurn's real session-capture branch without hitting the
-// network. Typed via the runTurn import so callers can assign it straight
-// into Parameters<typeof runTurn>[3] with no further casting.
-async function importRunTurn(): Promise<typeof import("../rachel.ts")["runTurn"]> {
-  return (await import("../rachel.ts")).runTurn;
-}
-
-function makeFakeQueryFn(
-  runTurnRef: Awaited<ReturnType<typeof importRunTurn>>,
-  sessionId: string,
-): Parameters<typeof runTurnRef>[3] {
-  const fakeQueryFn: Parameters<typeof runTurnRef>[3] = ((_params) => {
-    async function* generate(): AsyncGenerator<SDKMessage, void> {
-      yield { type: "system", subtype: "init", session_id: sessionId } as unknown as SDKMessage;
-    }
-    return generate();
-  }) as Parameters<typeof runTurnRef>[3];
-  return fakeQueryFn;
+// Yields a single init message reporting `sessionId`, letting these tests
+// exercise runTurn's real session-capture branch without hitting the
+// network — matching memoryIndex.test.ts's WIRING test harness pattern.
+function initMessage(sessionId: string): SDKMessage {
+  return { type: "system", subtype: "init", session_id: sessionId } as unknown as SDKMessage;
 }
 
 // rachel.ts's sessionId is module-scoped and shared across every test in
