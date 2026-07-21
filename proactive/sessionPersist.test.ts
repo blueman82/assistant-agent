@@ -133,12 +133,13 @@ test("WIRING: RACHEL_SESSION_FILE unset — runTurn never writes a session file"
   const sessionFile = join(dir, "bridge-session.json");
   // Seam stays unset (beforeEach already cleared it).
   const { runTurn } = await import("../rachel.ts");
-  await runTurn(
-    "hello",
-    () => {},
-    new AbortController().signal,
-    fakeInitQueryFn("fake-session-unset") as Parameters<typeof runTurn>[3],
-  );
+  const fakeQueryFn: Parameters<typeof runTurn>[3] = ((_params) => {
+    async function* generate(): AsyncGenerator<SDKMessage, void> {
+      yield initMessage("fake-session-unset");
+    }
+    return generate();
+  }) as Parameters<typeof runTurn>[3];
+  await runTurn("hello", () => {}, new AbortController().signal, fakeQueryFn);
   assert.ok(!existsSync(sessionFile), "no session file must be written when the seam is unset");
 });
 
@@ -147,12 +148,13 @@ test("WIRING: RACHEL_SESSION_FILE set — runTurn persists the captured session 
   const sessionFile = join(dir, "bridge-session.json");
   process.env["RACHEL_SESSION_FILE"] = sessionFile;
   const { runTurn } = await import("../rachel.ts");
-  await runTurn(
-    "hello",
-    () => {},
-    new AbortController().signal,
-    fakeInitQueryFn("fake-session-set") as Parameters<typeof runTurn>[3],
-  );
+  const fakeQueryFn: Parameters<typeof runTurn>[3] = ((_params) => {
+    async function* generate(): AsyncGenerator<SDKMessage, void> {
+      yield initMessage("fake-session-set");
+    }
+    return generate();
+  }) as Parameters<typeof runTurn>[3];
+  await runTurn("hello", () => {}, new AbortController().signal, fakeQueryFn);
   assert.equal(readSession(sessionFile), "fake-session-set");
 });
 
@@ -163,12 +165,13 @@ test("REGRESSION: RACHEL_SESSION_FILE set — resetSession clears the persisted 
   const { runTurn, resetSession, hydratePersistedSession, getSessionId } = await import("../rachel.ts");
 
   // Simulate a turn that captures and persists a session.
-  await runTurn(
-    "hello",
-    () => {},
-    new AbortController().signal,
-    fakeInitQueryFn("session-to-be-reset") as Parameters<typeof runTurn>[3],
-  );
+  const fakeQueryFn: Parameters<typeof runTurn>[3] = ((_params) => {
+    async function* generate(): AsyncGenerator<SDKMessage, void> {
+      yield initMessage("session-to-be-reset");
+    }
+    return generate();
+  }) as Parameters<typeof runTurn>[3];
+  await runTurn("hello", () => {}, new AbortController().signal, fakeQueryFn);
   assert.equal(readSession(sessionFile), "session-to-be-reset", "sanity: session was persisted before reset");
 
   resetSession();
