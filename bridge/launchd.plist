@@ -14,6 +14,11 @@
   bot token even though launchd persists them.
   EnvironmentVariables/PATH is required because launchd jobs run with no
   user PATH, so tsx's `#!/usr/bin/env node` shebang can't resolve node.
+  EnvironmentVariables/RACHEL_SESSION_FILE persists the Telegram session
+  across a bridge restart (rachel.ts's RACHEL_SESSION_FILE seam) so a
+  restart doesn't wipe the conversation thread. Set ONLY here — the CLI and
+  the headless one-shots must never set this, since two processes resuming
+  the same session id would fork the SDK's transcript chain.
 -->
 <plist version="1.0">
 <dict>
@@ -21,6 +26,8 @@
   <dict>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>RACHEL_SESSION_FILE</key>
+    <string>__REPO_PATH__/.rachel/bridge-session.json</string>
   </dict>
 
   <key>Label</key>
