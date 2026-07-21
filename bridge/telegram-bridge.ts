@@ -940,7 +940,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // send-gate hook actually races against — rather than constructing a
   // second, disconnected surface here. A callback tap must resolve the same
   // instance the gate is waiting on.
-  const { runTurn, getSessionId, resetSession, telegramSurface } = await import("../rachel.ts");
+  const { runTurn, getSessionId, resetSession, hydratePersistedSession, telegramSurface } = await import("../rachel.ts");
+  // Bridge-only session persistence: resumes the Telegram thread across a
+  // launchd restart when RACHEL_SESSION_FILE is set (bridge/launchd.plist
+  // only — see rachel.ts's session-state comment for why this stays a
+  // single-writer seam). A no-op when the seam is unset.
+  hydratePersistedSession();
 
   const telegramConfig = loadTelegramConfig();
   if (!telegramConfig) {

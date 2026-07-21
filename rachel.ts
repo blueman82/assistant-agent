@@ -15,6 +15,7 @@ import { resolveAllowedTools } from "./proactive/allowedTools.ts";
 import { resolveSystemPromptPath } from "./proactive/systemPrompt.ts";
 import { getModel, getEffort, handleConfigCommand, isHelpFlag, renderHelp, parseArgvConfig } from "./proactive/modelConfig.ts";
 import { composeSystemPrompt, resolveMemoryPath } from "./proactive/memoryIndex.ts";
+import { readSession, writeSession, clearSession } from "./proactive/sessionPersist.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -140,6 +141,16 @@ const askUserQuestionHook = createAskUserQuestionHook();
 // Session state — module-scoped so it persists across turns within a
 // process, for both the terminal REPL and the Telegram bridge (which calls
 // runTurn directly rather than going through the REPL below).
+//
+// RACHEL_SESSION_FILE — bridge-only persistence seam. A launchd bridge
+// restart otherwise wipes the Telegram thread mid-conversation, because
+// sessionId below is module-scoped and never survives a process restart.
+// Read per-call (matching resolveAllowedTools's process.env[...] idiom, not
+// a module-load default) and used as a GATE, not a path-with-fallback: unset
+// means this seam is never touched, so the CLI and all 8 headless one-shots
+// stay byte-for-byte identical to today. It must be set ONLY in the
+// bridge's plist (bridge/launchd.plist) — exactly one writer, so the
+// concurrent-resume hazard documented there never arises.
 // ---------------------------------------------------------------------------
 let sessionId: string | undefined;
 let turnCount = 0;
@@ -148,8 +159,24 @@ export function getSessionId(): string | undefined {
   return sessionId;
 }
 
+// Reads the persisted session (if the seam is set and a file exists) into
+// module state. Called explicitly by the bridge's CLI guard on startup —
+// never at module load — so importing this module (e.g. from tests, or
+// from the Telegram bridge before it's ready) never has this side effect.
+export function hydratePersistedSession(): void {
+  const path = process.env["RACHEL_SESSION_FILE"];
+  if (!path) {
+    return;
+  }
+  sessionId = readSession(path);
+}
+
 export function resetSession(): void {
   sessionId = undefined;
+  const path = process.env["RACHEL_SESSION_FILE"];
+  if (path) {
+    clearSession(path);
+  }
 }
 
 // Kind of a single emitted line — lets callers (the Telegram bridge, in
@@ -231,6 +258,10 @@ export async function runTurn(
         const raw = msg as Record<string, unknown>;
         if (typeof raw["session_id"] === "string") {
           sessionId = raw["session_id"];
+          const sessionFilePath = process.env["RACHEL_SESSION_FILE"];
+          if (sessionFilePath) {
+            writeSession(sessionFilePath, sessionId);
+          }
         }
       }
 
