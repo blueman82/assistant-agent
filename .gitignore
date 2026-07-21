@@ -13,8 +13,8 @@ docs/coderails/plans/
 
 # Personal task files — Gary's own, not for distribution. This repo runs on
 # one machine; nothing under tasks/ is shared. ONLY the generic example is
-# tracked. Everything else stays local, including anything created later and
-# anything created later. The launchd plists are the one exception (see below).
+# tracked. Everything else stays local, including anything created later.
+# The launchd plists are the one exception (see below).
 #
 # The personal task files remain runtime dependencies — read by the launchd
 # jobs and proactive/sweep.ts — so they must exist on disk here. They are
@@ -42,5 +42,5 @@ workflow.config.yaml
 
 # The operator's own system prompt. prompts/system.md (tracked) is generic and
 # names nobody; this file overrides it when present and never ships.
-# See resolveSystemPromptPath in rachel.ts for the resolution order.
+# See resolveSystemPromptPath in proactive/systemPrompt.ts for the order.
 prompts/system.local.md
