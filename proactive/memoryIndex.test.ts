@@ -27,7 +27,7 @@ globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { composeSystemPrompt } from "./memoryIndex.ts";
+import { composeSystemPrompt, resolveMemoryPath } from "./memoryIndex.ts";
 
 test("absent MEMORY.md leaves the prompt unchanged and does not throw", () => {
   const missingDir = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
