@@ -16,7 +16,7 @@ process.env["RACHEL_TELEGRAM_CHAT_ID"] = "1";
 // rachel.ts's module-scope createSendGateHook(...) call reads it once.
 process.env["RACHEL_GATE_TIMEOUT_MS"] = "200";
 
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 
