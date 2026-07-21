@@ -51,7 +51,7 @@ The agent is defined inline via the SDK's `agents.rachel` option, with:
 
 Model and reasoning effort are not part of that inline agent definition — they're read fresh on every call from `proactive/modelConfig.ts`'s `getModel()`/`getEffort()` and set as `model`/`effort` fields on the `options` object passed to the SDK's `query()` call, so a `/model` or `/effort` switch takes effect on the next turn rather than requiring a restart.
 
-Session continuity: `sessionId` is captured from the SDK `init` message and passed as `resume` on subsequent turns. `/reset` clears it.
+Session continuity: `sessionId` is captured from the SDK `init` message and passed as `resume` on subsequent turns. `/reset` clears it. For the Telegram bridge only, `sessionId` is additionally persisted to `<repo>/.rachel/bridge-session.json` behind the `RACHEL_SESSION_FILE` seam (set only in `bridge/launchd.plist`), so a bridge process restart resumes the same session rather than starting fresh; `/reset` also unlinks the persisted file. When that seam is active, `options.env` is set to a spread of `process.env` with `RACHEL_SESSION_FILE` deleted before being passed to the SDK's `query()` call — otherwise a Bash-spawned child one-shot would inherit the var and clobber the bridge's live session pointer (the SDK replaces the subprocess env entirely rather than merging, so spreading `process.env` first is mandatory). The CLI and all headless one-shots leave `options.env` untouched.
 
 ### Tool routing (defined in `system.md`)
 
