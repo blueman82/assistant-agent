@@ -23,6 +23,13 @@ import { join } from "node:path";
 const testQueueDir = mkdtempSync(join(tmpdir(), "rachel-test-queue-"));
 process.env["RACHEL_QUEUE_DIR"] = testQueueDir;
 process.env["RACHEL_AUDIT_LOG_PATH"] = join(testQueueDir, "audit.jsonl");
+// Same reasoning as the two overrides above: the SAFETY test below calls
+// the real runTurn with RACHEL_MEMORY_PATH left at whatever the WIRING test
+// restored it to (unset), and resolveMemoryPath() would otherwise fall
+// back to the operator's real ~/.rachel/memory/MEMORY.md. Redirect to a
+// path that doesn't exist in this tmpdir — an absent index is the normal
+// no-memories-yet case, so this resolves via the ENOENT path cleanly.
+process.env["RACHEL_MEMORY_PATH"] = join(testQueueDir, "memory", "MEMORY.md");
 
 // Defense-in-depth, same reasoning as telegram-bridge.test.ts: every test
 // here injects its own fake queryFn rather than relying on global fetch, so
