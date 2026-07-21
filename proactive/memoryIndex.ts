@@ -10,6 +10,15 @@ export function resolveMemoryPath(): string {
   return process.env["RACHEL_MEMORY_PATH"] ?? join(homedir(), ".rachel", "memory", "MEMORY.md");
 }
 
+// prompts/system.md's Memory contract says to consolidate at ~50 entries,
+// but that's prompt-level convention with no code backstop — if
+// self-maintenance is ever skipped, an unbounded MEMORY.md would make every
+// turn pay the full token cost. This is the code backstop: past this size,
+// the index is truncated to a head slice plus an explicit marker telling
+// the agent it was truncated and should consolidate. Never silently
+// dropped — the marker plus the head slice are both always visible.
+const MAX_INDEX_BYTES = 32 * 1024;
+
 // Absent-is-empty is a documented contract, matching proactive/push.ts's
 // readJson — only ENOENT means "no memories yet". Anything else (corrupt
 // file, EACCES, EISDIR) throws loud with the path named: silently
@@ -24,6 +33,13 @@ export function composeSystemPrompt(basePrompt: string, memoryPath: string): str
       return basePrompt;
     }
     throw new Error(`cannot read memory index ${memoryPath}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (index.trim() === "") {
+    return basePrompt;
+  }
+  if (Buffer.byteLength(index, "utf8") > MAX_INDEX_BYTES) {
+    const head = Buffer.from(index, "utf8").subarray(0, MAX_INDEX_BYTES).toString("utf8");
+    index = `${head}\n\n[MEMORY.md truncated at ${MAX_INDEX_BYTES} bytes — consolidate the index (see prompts/system.md's Memory contract).]`;
   }
   return `${basePrompt}\n\n${index}`;
 }
