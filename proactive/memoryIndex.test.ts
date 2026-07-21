@@ -155,9 +155,9 @@ test("SAFETY: the send-approval gate hook is still wired into runTurn's options 
     options: { signal: AbortSignal },
   ) => Promise<{ hookSpecificOutput?: { permissionDecision?: string } }>;
 
-  const fakeQueryFn = ((params: { options: Record<string, unknown> }) => {
+  const fakeQueryFn: Parameters<typeof runTurn>[3] = ((_params) => {
     async function* generate(): AsyncGenerator<SDKMessage, void> {
-      const preToolUseHooks = (params.options["hooks"] as Record<string, { hooks: unknown[] }[]> | undefined)?.["PreToolUse"];
+      const preToolUseHooks = (_params.options as { hooks?: Record<string, { hooks: unknown[] }[]> } | undefined)?.hooks?.["PreToolUse"];
       assert.ok(
         preToolUseHooks && preToolUseHooks.length > 0,
         "options.hooks.PreToolUse must be present — the send gate must stay wired after this change",
