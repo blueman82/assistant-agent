@@ -47,6 +47,19 @@ test("a present MEMORY.md has its content appear in the composed prompt", () => 
   assert.ok(result.includes("[Some fact](some-fact.md) — a hook"), "index content is present in the composed prompt");
 });
 
+test("a non-ENOENT read failure throws loud with the file path named", () => {
+  // Point the "file" path at a directory, not a file — readFileSync throws
+  // EISDIR, a non-ENOENT failure that must NOT be silently swallowed the
+  // way an absent file is (proactive/push.ts's readJson draws the same
+  // ENOENT-only line: a corrupt/unreadable store must fail loud, never be
+  // read as empty).
+  const dirAsFile = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
+  assert.throws(
+    () => composeSystemPrompt("You are Rachel.", dirAsFile),
+    (err: unknown) => err instanceof Error && err.message.includes(dirAsFile),
+  );
+});
+
 test("RACHEL_MEMORY_PATH overrides the default ~/.rachel/memory/MEMORY.md path", () => {
   const original = process.env["RACHEL_MEMORY_PATH"];
   try {
