@@ -46,3 +46,31 @@ test("a present MEMORY.md has its content appear in the composed prompt", () => 
   assert.ok(result.includes(basePrompt), "base prompt is preserved");
   assert.ok(result.includes("[Some fact](some-fact.md) — a hook"), "index content is present in the composed prompt");
 });
+
+test("RACHEL_MEMORY_PATH overrides the default ~/.rachel/memory/MEMORY.md path", () => {
+  const original = process.env["RACHEL_MEMORY_PATH"];
+  try {
+    process.env["RACHEL_MEMORY_PATH"] = "/tmp/some/override/MEMORY.md";
+    assert.equal(resolveMemoryPath(), "/tmp/some/override/MEMORY.md");
+  } finally {
+    if (original === undefined) {
+      delete process.env["RACHEL_MEMORY_PATH"];
+    } else {
+      process.env["RACHEL_MEMORY_PATH"] = original;
+    }
+  }
+});
+
+test("unset RACHEL_MEMORY_PATH resolves to ~/.rachel/memory/MEMORY.md", () => {
+  const original = process.env["RACHEL_MEMORY_PATH"];
+  try {
+    delete process.env["RACHEL_MEMORY_PATH"];
+    assert.equal(resolveMemoryPath(), join(homedir(), ".rachel", "memory", "MEMORY.md"));
+  } finally {
+    if (original === undefined) {
+      delete process.env["RACHEL_MEMORY_PATH"];
+    } else {
+      process.env["RACHEL_MEMORY_PATH"] = original;
+    }
+  }
+});
