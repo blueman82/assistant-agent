@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template launchd job for the Inbox Brief sweep (tasks/inbox-brief.md).
+  Copy to ~/Library/LaunchAgents/com.rachel.inbox-brief.plist, replace
+  __REPO_PATH__ with the absolute path to this repo checkout, then:
+    launchctl load ~/Library/LaunchAgents/com.rachel.inbox-brief.plist
+
+  Runs bin/rachel headlessly with stdin closed, so the one-shot turn
+  completes and the process exits on its own (confirmed: rl.question hits
+  EOF on closed stdin and the REPL calls exitClean rather than hanging) —
+  no KeepAlive needed, each StartCalendarInterval entry fires a fresh run.
+
+  Cadence: 4x/day during the operator's waking hours (local time) — 08:05, 11:00,
+  14:00, 17:00. The first run sits at 08:05, not 08:00, to clear the
+  proactive sweep's 08:00 deferred-digest flush (overnight items should land
+  before the fresh brief, not after it). Adjust the StartCalendarInterval
+  entries to change cadence.
+  The task file itself (tasks/inbox-brief.md) tells Rachel to send nothing
+  if there's nothing new since the last sweep, so an extra scheduled run
+  costs nothing when the inbox is quiet.
+
+  EnvironmentVariables/PATH is required because launchd jobs run with no
+  user PATH, so tsx's `#!/usr/bin/env node` shebang can't resolve node
+  (same requirement as bridge/launchd.plist).
+
+  RACHEL_ALLOWED_TOOLS narrows the headless agent to the minimum set this
+  task needs — Read, Write, Bash, and the Gmail MCP tools (a one-shot that
+  reads hostile email must not carry Chrome, WebFetch, or mcp-exec). The env
+  var can only REMOVE tools from rachel.ts's default list, never add
+  (injection hardening in proactive/allowedTools.ts).
+-->
+<plist version="1.0">
+<dict>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>RACHEL_ALLOWED_TOOLS</key>
+    <string>Read,Write,Bash,mcp__claude_ai_Gmail__*</string>
+  </dict>
+
+  <key>Label</key>
+  <string>com.rachel.inbox-brief</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__REPO_PATH__/bin/rachel</string>
+    <string>Read tasks/inbox-brief.md and follow it.</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__REPO_PATH__</string>
+
+  <key>StandardInPath</key>
+  <string>/dev/null</string>
+
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict>
+      <key>Hour</key>
+      <integer>8</integer>
+      <key>Minute</key>
+      <integer>5</integer>
+    </dict>
+    <dict>
+      <key>Hour</key>
+      <integer>11</integer>
+      <key>Minute</key>
+      <integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key>
+      <integer>14</integer>
+      <key>Minute</key>
+      <integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key>
+      <integer>17</integer>
+      <key>Minute</key>
+      <integer>0</integer>
+    </dict>
+  </array>
+
+  <key>StandardOutPath</key>
+  <string>__REPO_PATH__/.rachel/inbox-brief.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>__REPO_PATH__/.rachel/inbox-brief.log</string>
+</dict>
+</plist>

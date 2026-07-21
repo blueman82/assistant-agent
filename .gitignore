@@ -22,6 +22,11 @@ docs/coderails/plans/
 tasks/*
 !tasks/.gitkeep
 !tasks/EXAMPLE-task.md
+# The launchd plists are install machinery, not personal content: they carry no
+# operator name and no absolute path — scripts/install.sh stamps __REPO_PATH__
+# at install time. scripts/install.test.ts reads them from the checkout, so
+# untracking them fails 26 tests on any clean clone.
+!tasks/*-launchd.plist
 
 # Local agent config and personal artifacts — same principle as tasks/ above:
 # this repo runs on one machine, so none of it is distributed. All of it is
