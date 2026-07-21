@@ -24,7 +24,7 @@ globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
   throw new Error(`Unexpected real fetch() call in sessionPersist.test.ts — all transports must be stubbed. Called with: ${String(args[0])}`);
 }) as typeof fetch;
 
-import { test } from "node:test";
+import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
