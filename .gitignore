@@ -9,11 +9,11 @@ logs/
 docs/coderails/specs/
 docs/coderails/plans/
 
-# Personal task files — local to each machine, not shared.
-# The two task files below are runtime dependencies (read by the launchd
-# jobs and proactive/sweep.ts), so they stay tracked, as do the plist
-# templates install.sh deploys from.
+# Personal task files — local to each machine, never shared. Only the
+# example template is tracked; every other task file, including any new
+# one, stays local. Note that tasks/inbox-brief.md and
+# tasks/proactive-calendar.md are runtime dependencies (read by the
+# launchd jobs and proactive/sweep.ts) — they must exist locally on any
+# machine running those jobs, but they are no longer distributed here.
 tasks/*.md
 !tasks/EXAMPLE-task.md
-!tasks/inbox-brief.md
-!tasks/proactive-calendar.md
