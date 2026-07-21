@@ -45,7 +45,7 @@ export function composeSystemPrompt(basePrompt: string, memoryPath: string): str
     // character. Back up over any continuation bytes (10xxxxxx) at the cut
     // point so the slice always ends on a character boundary.
     let cut = MAX_INDEX_BYTES;
-    while (cut > 0 && (buf[cut]! & 0xc0) === 0x80) {
+    while (cut > 0 && (buf[cut] & 0xc0) === 0x80) {
       cut--;
     }
     const head = buf.subarray(0, cut).toString("utf8");
