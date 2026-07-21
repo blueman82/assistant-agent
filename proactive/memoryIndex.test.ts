@@ -36,3 +36,13 @@ test("absent MEMORY.md leaves the prompt unchanged and does not throw", () => {
   const result = composeSystemPrompt(basePrompt, missingPath);
   assert.equal(result, basePrompt);
 });
+
+test("a present MEMORY.md has its content appear in the composed prompt", () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
+  const memoryPath = join(memoryDir, "MEMORY.md");
+  writeFileSync(memoryPath, "- [Some fact](some-fact.md) — a hook\n");
+  const basePrompt = "You are Rachel.";
+  const result = composeSystemPrompt(basePrompt, memoryPath);
+  assert.ok(result.includes(basePrompt), "base prompt is preserved");
+  assert.ok(result.includes("[Some fact](some-fact.md) — a hook"), "index content is present in the composed prompt");
+});
