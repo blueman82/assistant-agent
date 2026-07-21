@@ -92,6 +92,23 @@ test("an index over the size threshold is truncated with a visible marker, never
   assert.ok(result.includes("- [fact](fact.md)"), "a truncated head of the real content is still present");
 });
 
+test("REGRESSION: a multi-byte character straddling the truncation boundary is not cut mid-character (no replacement char)", () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
+  const memoryPath = join(memoryDir, "MEMORY.md");
+  const MAX_INDEX_BYTES = 32 * 1024;
+  // "a" x (MAX-1) fills to one byte short of the cap; the 3-byte "—" (em
+  // dash, U+2014) then straddles the MAX_INDEX_BYTES boundary exactly —
+  // a naive Buffer.subarray(0, MAX) cut lands inside its multi-byte
+  // encoding and Buffer#toString("utf8") replaces the truncated bytes with
+  // U+FFFD (�).
+  const oversizedIndex = "a".repeat(MAX_INDEX_BYTES - 1) + "—tail" + "b".repeat(200);
+  writeFileSync(memoryPath, oversizedIndex);
+  const basePrompt = "You are Rachel.";
+  const result = composeSystemPrompt(basePrompt, memoryPath);
+  assert.ok(!result.includes("�"), "truncation must not produce a UTF-8 replacement character");
+  assert.ok(/truncat/i.test(result), "the truncation marker must still be present");
+});
+
 test("an empty MEMORY.md (zero bytes) leaves the prompt unchanged, with no trailing whitespace appended", () => {
   const memoryDir = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
   const memoryPath = join(memoryDir, "MEMORY.md");
