@@ -57,7 +57,7 @@ test("readSession throws loud, naming the path, on a non-ENOENT read failure", (
 test("readSession throws loud on corrupt JSON, naming the path", () => {
   const dir = mkdtempSync(join(tmpdir(), "rachel-test-session-"));
   const path = join(dir, "bridge-session.json");
-  require("node:fs").writeFileSync(path, "not valid json{{{");
+  writeFileSync(path, "not valid json{{{");
   assert.throws(
     () => readSession(path),
     (err: unknown) => err instanceof Error && err.message.includes(path),
