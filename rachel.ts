@@ -258,6 +258,10 @@ export async function runTurn(
         const raw = msg as Record<string, unknown>;
         if (typeof raw["session_id"] === "string") {
           sessionId = raw["session_id"];
+          const sessionFilePath = process.env["RACHEL_SESSION_FILE"];
+          if (sessionFilePath) {
+            writeSession(sessionFilePath, sessionId);
+          }
         }
       }
 
