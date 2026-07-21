@@ -38,7 +38,17 @@ export function composeSystemPrompt(basePrompt: string, memoryPath: string): str
     return basePrompt;
   }
   if (Buffer.byteLength(index, "utf8") > MAX_INDEX_BYTES) {
-    const head = Buffer.from(index, "utf8").subarray(0, MAX_INDEX_BYTES).toString("utf8");
+    const buf = Buffer.from(index, "utf8");
+    // A raw byte cut can land inside a multi-byte UTF-8 character (the
+    // operator's writing style uses em dashes and accented names
+    // routinely), turning the truncated tail into a U+FFFD replacement
+    // character. Back up over any continuation bytes (10xxxxxx) at the cut
+    // point so the slice always ends on a character boundary.
+    let cut = MAX_INDEX_BYTES;
+    while (cut > 0 && (buf[cut] & 0xc0) === 0x80) {
+      cut--;
+    }
+    const head = buf.subarray(0, cut).toString("utf8");
     index = `${head}\n\n[MEMORY.md truncated at ${MAX_INDEX_BYTES} bytes — consolidate the index (see prompts/system.md's Memory contract).]`;
   }
   return `${basePrompt}\n\n${index}`;

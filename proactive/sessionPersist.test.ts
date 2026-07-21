@@ -201,3 +201,66 @@ test("WIRING: RACHEL_SESSION_FILE set but file absent — hydratePersistedSessio
   assert.doesNotThrow(() => hydratePersistedSession());
   assert.equal(getSessionId(), undefined);
 });
+
+// ---------------------------------------------------------------------------
+// REGRESSION: second-writer hole. rachel.ts documents RACHEL_SESSION_FILE as
+// "exactly one writer" (the bridge), but the bridge's plist sets no
+// RACHEL_ALLOWED_TOOLS, so bridge turns run with unrestricted Bash. Any
+// Bash-spawned child (e.g. a nested `bin/rachel "..."` one-shot, an
+// established pattern per prompts/system.md) inherits RACHEL_SESSION_FILE
+// via ordinary process env inheritance unless runTurn's options.env strips
+// it from the SDK subprocess environment. Without a strip, that child
+// captures its own session id and silently clobbers the bridge's live
+// session pointer — the next bridge restart resumes the wrong session.
+// ---------------------------------------------------------------------------
+
+test("REGRESSION: RACHEL_SESSION_FILE set — runTurn strips it from the SDK subprocess env, preserving other inherited vars", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "rachel-test-session-"));
+  const sessionFile = join(dir, "bridge-session.json");
+  process.env["RACHEL_SESSION_FILE"] = sessionFile;
+  const { runTurn } = await import("../rachel.ts");
+
+  let capturedEnv: Record<string, string | undefined> | undefined;
+  const fakeQueryFn: Parameters<typeof runTurn>[3] = ((params) => {
+    capturedEnv = params.options?.env;
+    async function* generate(): AsyncGenerator<SDKMessage, void> {
+      yield initMessage("fake-session-strip-check");
+    }
+    return generate();
+  }) as Parameters<typeof runTurn>[3];
+
+  await runTurn("hello", () => {}, new AbortController().signal, fakeQueryFn);
+
+  assert.ok(capturedEnv, "options.env must be set on the query() call when the seam is active");
+  assert.equal(
+    capturedEnv!["RACHEL_SESSION_FILE"],
+    undefined,
+    "RACHEL_SESSION_FILE must not reach the SDK subprocess (and anything it spawns via Bash)",
+  );
+  // Guards against a naive fix that nukes options.env wholesale instead of
+  // stripping one key — that would pass the assertion above while breaking
+  // every tool execution in production (Bash losing PATH/HOME).
+  assert.equal(
+    capturedEnv!["PATH"],
+    process.env["PATH"],
+    "other inherited env vars (PATH) must still reach the SDK subprocess",
+  );
+});
+
+test("WIRING: RACHEL_SESSION_FILE unset — runTurn does not set options.env at all (byte-for-byte today's CLI/one-shot behaviour)", async () => {
+  delete process.env["RACHEL_SESSION_FILE"];
+  const { runTurn } = await import("../rachel.ts");
+
+  let capturedEnv: Record<string, string | undefined> | undefined;
+  const fakeQueryFn: Parameters<typeof runTurn>[3] = ((params) => {
+    capturedEnv = params.options?.env;
+    async function* generate(): AsyncGenerator<SDKMessage, void> {
+      yield initMessage("fake-session-no-seam");
+    }
+    return generate();
+  }) as Parameters<typeof runTurn>[3];
+
+  await runTurn("hello", () => {}, new AbortController().signal, fakeQueryFn);
+
+  assert.equal(capturedEnv, undefined, "options.env must stay unset when the seam is inactive, so the SDK keeps managing subprocess env itself");
+});
