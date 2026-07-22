@@ -739,6 +739,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
             deadline,
           ]);
         } catch (err) {
+          turnErrored = true;
           buffer.push(`[Rachel] error: ${err instanceof Error ? err.message : String(err)}`);
         } finally {
           clearTimeout(watchdog);
