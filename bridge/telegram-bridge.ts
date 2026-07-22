@@ -699,6 +699,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         const abortController = new AbortController();
         currentAbort = abortController;
         turnInFlightSince = nowFn();
+        const turnStartedMs = Date.now();
 
         const typingTimer = setInterval(() => {
           sendTyping(config).catch(() => {
@@ -715,6 +716,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         // queue with no error ever surfacing. Abort it and move on, so the FIFO
         // keeps draining and Gary hears why instead of silence.
         let timedOut = false;
+        let turnErrored = false;
         let watchdog: ReturnType<typeof setTimeout> | undefined;
         // Race the turn against the deadline rather than only aborting it.
         // abort() asks the SDK to stop, but if it doesn't tear down a parked
@@ -737,6 +739,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
             deadline,
           ]);
         } catch (err) {
+          turnErrored = true;
           buffer.push(`[Rachel] error: ${err instanceof Error ? err.message : String(err)}`);
         } finally {
           clearTimeout(watchdog);
@@ -749,7 +752,15 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
           // Say it plainly rather than delivering a truncated turn as if it
           // were a complete answer.
           console.error(`[telegram-bridge] turn exceeded ${turnTimeoutMs}ms — aborted, draining next message.`);
-          buffer.push(`[Rachel] That turn ran past ${Math.round(turnTimeoutMs / 60000)} minutes and I cut it off. Ask again if you still need it.`);
+          buffer.push(`[Rachel] That turn ran past ${Math.round(turnTimeoutMs / 60000)} minutes and I cut it off. Ask again if you still need it, or say "background it" and I'll run it as a detached loop and ping you when it's done.`);
+        } else if (turnErrored) {
+          // A crashed turn is not a completed one — logging it as "completed"
+          // would contaminate the duration data the line below exists to collect.
+          console.error(`[telegram-bridge] turn failed after ${Date.now() - turnStartedMs}ms`);
+        } else {
+          // Instruments the 10-minute constant with real data (rather than
+          // anecdote) so a future decision to adjust it has evidence behind it.
+          console.log(`[telegram-bridge] turn completed in ${Date.now() - turnStartedMs}ms`);
         }
 
         const replyText = buffer.join("\n").trim();

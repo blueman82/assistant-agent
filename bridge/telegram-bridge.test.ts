@@ -2497,8 +2497,53 @@ test("a turn that outruns turnTimeoutMs is aborted, tells Gary, and does not wed
     .filter((c) => c.url.includes("/sendMessage"))
     .map((c) => String((c.body as Record<string, unknown>)?.["text"] ?? ""));
   assert.ok(texts.some((t) => t.includes("cut it off")), `expected a timeout notice, got: ${JSON.stringify(texts)}`);
+  // ...with the escalation ramp offering the background-it path.
+  assert.ok(texts.some((t) => t.includes("background it")), `expected the notice to offer backgrounding, got: ${JSON.stringify(texts)}`);
   // ...and the queue kept draining instead of wedging behind it.
   assert.deepEqual(seen, ["first", "second"]);
+});
+
+test("a timed-out turn does not log 'turn completed in <ms>ms'", async () => {
+  // The mutual exclusion between "timed out" and "completed" is currently
+  // held by code structure alone (which branch of the if/else runs) — with
+  // no test coverage, a future edit that hoists the completed-log out of the
+  // else (or adds an unconditional one after the if/else) would regress
+  // silently with the suite green.
+  const { transport } = makeStubTransport([
+    messageUpdate(1, "hung"),
+    { ok: true, result: [] },
+  ]);
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    // Never resolves on its own — only ends when the watchdog aborts it.
+    runTurn: async (_input, _emit, signal) => {
+      await new Promise<void>((resolve) => {
+        signal?.addEventListener("abort", () => resolve());
+      });
+    },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    turnTimeoutMs: 30,
+  });
+
+  const logSpy: string[] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => { logSpy.push(args.map(String).join(" ")); };
+  try {
+    await bridge.drainOnce();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await bridge.stop();
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.ok(
+    logSpy.every((line) => !line.includes("turn completed")),
+    `expected no "turn completed" log line for a timed-out turn, got: ${JSON.stringify(logSpy)}`,
+  );
 });
 
 test("a turn that IGNORES its abort signal still does not wedge the queue", async () => {
@@ -2542,6 +2587,85 @@ test("a turn that IGNORES its abort signal still does not wedge the queue", asyn
     .filter((c) => c.url.includes("/sendMessage"))
     .map((c) => String((c.body as Record<string, unknown>)?.["text"] ?? ""));
   assert.ok(texts.some((t) => t.includes("cut it off")), `expected a timeout notice, got: ${JSON.stringify(texts)}`);
+});
+
+test("a normal completed turn logs its duration: 'turn completed in <ms>ms'", async () => {
+  // The timed-out path already logs its own "turn exceeded" line — this test
+  // covers the non-timed-out path, which needs its own instrument (hard
+  // problem 5 in the plan) so the 10-minute constant becomes data-backed
+  // over time instead of anecdote.
+  const { transport } = makeStubTransport([
+    messageUpdate(1, "hello"),
+    { ok: true, result: [] },
+  ]);
+
+  const runTurnStub: BridgeRunTurn = async (input, emit) => {
+    emit(`echo: ${input}`, "text");
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  const logSpy: string[] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => { logSpy.push(args.map(String).join(" ")); };
+  try {
+    await bridge.drainOnce();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await bridge.stop();
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.ok(
+    logSpy.some((line) => /\[telegram-bridge\] turn completed in \d+ms/.test(line)),
+    `expected a "turn completed in <ms>ms" log line, got: ${JSON.stringify(logSpy)}`,
+  );
+});
+
+test("a turn that throws does not log 'turn completed in <ms>ms'", async () => {
+  // A turn caught by the try/catch is not a completed turn — logging it as
+  // one would contaminate the duration data the "turn completed" instrument
+  // exists to collect (hard problem 5 in the plan).
+  const { transport } = makeStubTransport([
+    messageUpdate(1, "hello"),
+    { ok: true, result: [] },
+  ]);
+
+  const runTurnStub: BridgeRunTurn = async () => {
+    throw new Error("boom");
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  const logSpy: string[] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => { logSpy.push(args.map(String).join(" ")); };
+  try {
+    await bridge.drainOnce();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await bridge.stop();
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.ok(
+    !logSpy.some((line) => /\[telegram-bridge\] turn completed in \d+ms/.test(line)),
+    `expected no "turn completed in <ms>ms" log line for an errored turn, got: ${JSON.stringify(logSpy)}`,
+  );
 });
 
 test("a voice-origin turn answers in voice regardless of reply length — no character cap", async () => {
