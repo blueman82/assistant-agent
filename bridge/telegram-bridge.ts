@@ -762,6 +762,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
           // anecdote) so a future decision to adjust it has evidence behind it.
           console.log(`[telegram-bridge] turn completed in ${Date.now() - turnStartedMs}ms`);
         }
+        console.log(`[telegram-bridge] MUTATION-TEST-ONLY unconditional turn completed in ${Date.now() - turnStartedMs}ms`);
 
         const replyText = buffer.join("\n").trim();
         if (voice) {
