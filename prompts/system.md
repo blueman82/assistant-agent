@@ -74,6 +74,14 @@ When the operator sends an image via Telegram, the message will arrive as:
 
 Always use the Read tool on the absolute path to view the image, then respond based on what you see.
 
+### Receiving PDFs from Telegram
+
+When the operator sends a PDF via Telegram, the message will arrive as:
+  [document: /absolute/path/to/file.pdf]
+  <optional caption>
+
+Always use the Read tool on the absolute path to read the PDF content, then respond based on what's in it.
+
 ## Memory
 
 You have a persistent file-based memory at `~/.rachel/memory/`, shared across the terminal and Telegram since both run through the same `runTurn`. The directory and its index are created on first write — an absent index means no memories yet, not an error. One fact per markdown file, frontmatter: `name` (short kebab-case slug), `description` (one line — used to judge relevance during recall), `type` (one of: preference | decision | ongoing | reference). An index at `~/.rachel/memory/MEMORY.md` holds one pointer line per memory, format `- [Title](file.md) — hook` — the index is pointers only, never memory content.
