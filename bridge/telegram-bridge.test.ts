@@ -2497,6 +2497,8 @@ test("a turn that outruns turnTimeoutMs is aborted, tells Gary, and does not wed
     .filter((c) => c.url.includes("/sendMessage"))
     .map((c) => String((c.body as Record<string, unknown>)?.["text"] ?? ""));
   assert.ok(texts.some((t) => t.includes("cut it off")), `expected a timeout notice, got: ${JSON.stringify(texts)}`);
+  // ...with the escalation ramp offering the background-it path.
+  assert.ok(texts.some((t) => t.includes("background it")), `expected the notice to offer backgrounding, got: ${JSON.stringify(texts)}`);
   // ...and the queue kept draining instead of wedging behind it.
   assert.deepEqual(seen, ["first", "second"]);
 });
