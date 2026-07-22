@@ -699,6 +699,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         const abortController = new AbortController();
         currentAbort = abortController;
         turnInFlightSince = nowFn();
+        const turnStartedMs = Date.now();
 
         const typingTimer = setInterval(() => {
           sendTyping(config).catch(() => {
