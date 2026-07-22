@@ -716,6 +716,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         // queue with no error ever surfacing. Abort it and move on, so the FIFO
         // keeps draining and Gary hears why instead of silence.
         let timedOut = false;
+        let turnErrored = false;
         let watchdog: ReturnType<typeof setTimeout> | undefined;
         // Race the turn against the deadline rather than only aborting it.
         // abort() asks the SDK to stop, but if it doesn't tear down a parked
