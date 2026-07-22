@@ -2475,20 +2475,27 @@ test("a turn that outruns turnTimeoutMs is aborted, tells Gary, and does not wed
     turnTimeoutMs: 30,
   });
 
-  await bridge.drainOnce();
-  // drainOnce() fetches exactly one getUpdates batch (one stub entry), so
-  // "second" only enters the fifo once a further poll cycle runs — drive one
-  // now, while "first" is still blocked in-flight inside the fire-and-forget
-  // drainFifo() from the call above (that drainFifo() will no-op here since
-  // draining is already true, but it queues "second" for the original
-  // drainFifo()'s while-loop to pick up once the watchdog aborts "first").
-  await bridge.drainOnce();
-  // drainFifo is fire-and-forget, so poll until the queue has actually drained
-  // past the aborted turn rather than guessing at a sleep duration.
-  for (let i = 0; i < 100 && seen.length < 2; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 20));
+  const logSpy: string[] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => { logSpy.push(args.map(String).join(" ")); };
+  try {
+    await bridge.drainOnce();
+    // drainOnce() fetches exactly one getUpdates batch (one stub entry), so
+    // "second" only enters the fifo once a further poll cycle runs — drive one
+    // now, while "first" is still blocked in-flight inside the fire-and-forget
+    // drainFifo() from the call above (that drainFifo() will no-op here since
+    // draining is already true, but it queues "second" for the original
+    // drainFifo()'s while-loop to pick up once the watchdog aborts "first").
+    await bridge.drainOnce();
+    // drainFifo is fire-and-forget, so poll until the queue has actually drained
+    // past the aborted turn rather than guessing at a sleep duration.
+    for (let i = 0; i < 100 && seen.length < 2; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    await bridge.stop();
+  } finally {
+    console.log = originalLog;
   }
-  await bridge.stop();
 
   // The hung turn was cut off rather than awaited forever...
   assert.equal(abortedFirst, true);
@@ -2501,6 +2508,13 @@ test("a turn that outruns turnTimeoutMs is aborted, tells Gary, and does not wed
   assert.ok(texts.some((t) => t.includes("background it")), `expected the notice to offer backgrounding, got: ${JSON.stringify(texts)}`);
   // ...and the queue kept draining instead of wedging behind it.
   assert.deepEqual(seen, ["first", "second"]);
+  // ...and a timed-out turn must never also be logged as completed — that
+  // mutual exclusion is currently held by code structure alone (the timed-out
+  // branch vs. the completed branch), so it needs its own test coverage.
+  assert.ok(
+    logSpy.every((line) => !line.includes("turn completed")),
+    `expected no "turn completed" log line for a timed-out turn, got: ${JSON.stringify(logSpy)}`,
+  );
 });
 
 test("a turn that IGNORES its abort signal still does not wedge the queue", async () => {
