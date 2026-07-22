@@ -641,7 +641,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         fileId = msg.document.file_id;
         if (msg.document.file_name) {
           const dot = msg.document.file_name.lastIndexOf(".");
-          ext = dot >= 0 ? msg.document.file_name.slice(dot + 1) : "jpg";
+          ext = dot >= 0 ? msg.document.file_name.slice(dot + 1) : (isPdf ? "pdf" : "jpg");
         } else {
           // Derive from mime, e.g. image/png -> png, application/pdf -> pdf
           ext = mime.split("/")[1] ?? "jpg";
@@ -652,14 +652,15 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
 
       if (!fileId) return;
 
+      const tag = isPdf ? "document" : "image";
       const tmpDir = `${homedir()}/.rachel/tmp`;
       const destPath = `${tmpDir}/${fileId}.${ext}`;
       try {
         await downloadFileFn(config, fileId, destPath);
       } catch (err) {
-        console.error(`[telegram-bridge] failed to download ${isPdf ? "document" : "image"}: ${err instanceof Error ? err.message : String(err)}`);
+        console.error(`[telegram-bridge] failed to download ${tag}: ${err instanceof Error ? err.message : String(err)}`);
         try {
-          await reply(`Failed to download ${isPdf ? "document" : "image"} — please try again.`);
+          await reply(`Failed to download ${tag} — please try again.`);
         } catch (replyErr) {
           console.error(`[telegram-bridge] also failed to send failure reply: ${replyErr instanceof Error ? replyErr.message : String(replyErr)}`);
         }
@@ -667,7 +668,6 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
       }
 
       const caption = (msg.caption ?? "").trim();
-      const tag = isPdf ? "document" : "image";
       const input = caption ? `[${tag}: ${destPath}]\n${caption}` : `[${tag}: ${destPath}]`;
       fifo.push({ text: input, voice: false });
       return;

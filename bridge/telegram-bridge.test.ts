@@ -1896,6 +1896,51 @@ test("a document message with a PDF MIME type is downloaded and passed to runTur
   assert.match(downloadedPath!, /pdf_id\.pdf/);
 });
 
+test("a PDF document with a dot-less filename still saves with a .pdf extension, not the image default", async () => {
+  const docUpdate = {
+    ok: true,
+    result: [
+      {
+        update_id: 71,
+        message: {
+          message_id: 71,
+          chat: { id: 12345 },
+          from: { id: 12345 },
+          document: { file_id: "pdf_nodot_id", file_name: "invoice", mime_type: "application/pdf", file_size: 15000 },
+        },
+      },
+    ],
+  };
+
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) return { ok: true, json: async () => docUpdate } as Response;
+    if (url.includes("/getFile")) return { ok: true, json: async () => ({ ok: true, result: { file_path: "docs/pdf_nodot_id" } }) } as Response;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  let capturedInput: string | undefined;
+  let downloadedPath: string | undefined;
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (input, emit) => { capturedInput = input; emit("ok", "text"); },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    downloadFileFn: async (_config, _fileId, destPath) => { downloadedPath = destPath; },
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  assert.ok(capturedInput, "expected runTurn to have been called for the dot-less PDF document");
+  assert.match(capturedInput!, /\[document: .*pdf_nodot_id\.pdf\]/);
+  assert.ok(downloadedPath, "expected downloadFileFn to have been called");
+  assert.match(downloadedPath!, /pdf_nodot_id\.pdf$/, "dot-less PDF filename must still save with a .pdf extension, not fall back to .jpg");
+});
+
 test("a PDF document message with no caption passes '[document: /path]' (no newline/caption) to runTurn", async () => {
   const docUpdate = {
     ok: true,
