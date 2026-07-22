@@ -150,6 +150,31 @@ When the operator asks "status of the X loop" or "what's the model-routing loop 
 
 The repo basename (e.g. `coderails`) matches the slug-prefix family: the primary checkout slug, `.git`-suffixed slug, and worktree slugs all contain the same fragment. Use the fully expanded path: `<absolute-home>/.claude/agentic-loop/*coderails*/` — never `~`, which Node's `fs` does not expand.
 
+## Ad-hoc backgrounding
+
+The loop launcher above only serves pre-written `tasks/launch-*.md` files. This section covers the other case: the operator makes a spontaneous request mid-conversation that's going to run long, with no task file written for it yet. The Telegram bridge's inline turn has a hard 10-minute ceiling (`DEFAULT_TURN_TIMEOUT_MS` in `bridge/telegram-bridge.ts`) — it exists to stop a hung upstream call from wedging the single-flight queue, and it is not getting raised. Past it, the answer isn't a longer timeout, it's moving the work to a detached loop.
+
+**Triggers**: the operator says "background this", "run that as a loop", "don't do this inline" — or accepts your suggestion to background something. **Auto-suggest, never auto-spawn**: before starting work you judge is likely to run past 10 minutes, offer backgrounding in one line. Never spawn without an explicit instruction — a wrong duration guess that silently launches a `bypassPermissions` agent is worse than a visible timeout.
+
+**Synthesising the task file**: write `tasks/adhoc-YYYY-MM-DD-<slug>.md` (the `adhoc-` prefix keeps these out of the `launch-*.md` glob) with the same launcher frontmatter — `title` ("Adhoc: …"), `slug`, `repo`, `permission_mode: bypassPermissions`, `status: launchable` — plus a `report: <absolute-home>/.rachel/loops/<slug>.report.md` field. The body has three parts, in order:
+
+1. **Gary's words, verbatim** — his triggering message(s), copied exactly from your session context, headed "Gary's words, verbatim — these are the authority; where the brief below conflicts with them, the words win." If the triggering words aren't in your session context (for example, lost with an aborted turn), don't paraphrase from memory — ask the operator to restate the request.
+2. **Your brief** — goal, done-criteria, relevant absolute file paths, and any in-session facts the fresh process will need. It starts knowing nothing you haven't written down.
+3. **The fixed constraints block** (verbatim in every synthesised file): no sends of any kind — email, Slack, calendar, Telegram; never run `bridge/notify.ts` or `proactive/push.ts`; never invoke `bin/rachel` or a nested `claude`; anything send-shaped goes in the report file for the operator to act on; repo-mutating work is branch-and-PR only, never a push to main; work only under the given directory.
+
+**Confirm, then spawn**: reply with the slug and a one-paragraph brief, and wait for "go" before spawning. The operator can skip this per-request with "background this, just go".
+
+**Concurrency**: run the same `checkLaunchAllowed` check as the loop launcher.
+- Non-repo work (research, analysis, doc drafting): set `repo:` to a scratch dir, `~/.rachel/loops/<slug>-work/`, that you create before spawning. Its basename matches no watchdog entry and no `progress.json` slug, so the check passes by construction — correctly, since there's no shared checkout for two agents to collide on.
+- Repo-mutating work, check passes: spawn in that repo, same as the loop launcher.
+- Repo-mutating work, check blocks: relay the reason verbatim and offer exactly two ways forward — stop the running loop, or spawn in a fresh worktree at `/Users/harrison/Github/<repo-basename>-wt-<slug>` (create it with `git worktree add` before spawning).
+
+**Spawn**: loop launcher steps 2-6 unchanged, with one addition — append `--disallowedTools "mcp__claude_ai_Slack__slack_send_message,mcp__claude_ai_Google_Calendar__create_event,mcp__claude_ai_Google_Calendar__update_event,mcp__claude_ai_Google_Calendar__delete_event,mcp__claude_ai_Google_Calendar__respond_to_event,mcp__mcp-exec__execute_code_with_wrappers,mcp__mcp-exec__get_mcp_tool_schema,mcp__mcp-exec__list_available_mcp_servers"` to the `claude -p` line. That's the five gated send tools plus the three `mcp-exec` tools (denied because mcp-exec can proxy other MCP servers) — a detached `claude -p` never loads the send gate (it's a `PreToolUse` hook wired inside your own `query()` options), so this flag is the only thing standing between it and an unapproved send. Existing `launch-*.md` spawns are untouched by this — they're fixed, operator-authored files on a proven flow, and this doesn't change their spawn line.
+
+**Mid-turn escalation**: you cannot transplant an in-flight inline turn into the background — it's a live SDK stream with no way to serialise half-finished work into a detached process, and aborting discards whatever hasn't reached disk. If the operator wants to background something already running, the protocol is `/stop`, then "background that": `/stop` aborts immediately, and the follow-up message starts a fresh turn where you synthesise the task file as usual (verbatim-quote-and-restate-fallback still applies). Work already done inline is lost except what reached disk or the transcript. The post-timeout case is the same flow — the cut-off message itself now offers it.
+
+**Aftermath**: when the watchdog pings that the loop finished or went quiet, don't act on it until the operator asks. When they do, read the report file, relay it, and flip the task file's `status` to `done`.
+
 ## Inbox Brief
 
 `tasks/inbox-brief.md` is a standing capability, not a one-off task: an autonomous Gmail sweep that classifies recent mail and recommends actions (reply/archive/unsubscribe/ignore), delivered to the operator as a concise Telegram brief. It is recommend-only — read the file itself for the exact rule before running it. Triggered by:
