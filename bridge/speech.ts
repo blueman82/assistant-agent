@@ -14,8 +14,27 @@ const TRANSCRIBE_SCRIPT = join(REPO_DIR, "scripts", "speech", "transcribe.py");
 const SYNTHESIZE_SCRIPT = join(REPO_DIR, "scripts", "speech", "synthesize.py");
 
 const TRANSCRIBE_TIMEOUT_MS = 30_000;
-const SYNTHESIZE_TIMEOUT_MS = 20_000;
 const CONVERT_TIMEOUT_MS = 15_000;
+
+// Synthesis cost scales with text length, so a flat budget is a cliff, not a
+// limit. Measured on host against the real venv: 210 chars -> 6s (dominated by
+// cold model load), 9800 chars -> 25s, 9696 chars of prose with paths and
+// punctuation -> 30s. The old flat 20s therefore failed every long reply; the
+// 2026-07-22 incident hit it at 9696 chars.
+//
+// Floor covers cold model load with headroom. Per-char rate is ~3x the
+// measured worst case (30s/9696 chars ~= 3.1ms/char) so normal variance never
+// trips it. Ceiling bounds a runaway reply — the bridge must not hang.
+const SYNTHESIZE_FLOOR_MS = 30_000;
+const SYNTHESIZE_MS_PER_CHAR = 10;
+const SYNTHESIZE_CEILING_MS = 300_000;
+
+// Exported so callers and tests assert the budget for a given length rather
+// than pinning a constant that would have to change with every retune.
+export function synthesizeTimeoutMs(textLength: number): number {
+  const scaled = SYNTHESIZE_FLOOR_MS + Math.max(0, textLength) * SYNTHESIZE_MS_PER_CHAR;
+  return Math.min(scaled, SYNTHESIZE_CEILING_MS);
+}
 
 export type ExecFileFn = (
   cmd: string,
@@ -78,9 +97,20 @@ export async function transcribe(audioPath: string, execFileFn: ExecFileFn = def
 // callers catch and fall back to sending the reply as text instead of
 // voice.
 export async function synthesize(text: string, outPath: string, execFileFn: ExecFileFn = defaultExecFileFn): Promise<void> {
-  const { stderr, exitCode } = await execFileFn(VENV_PYTHON, [SYNTHESIZE_SCRIPT, text, outPath], SYNTHESIZE_TIMEOUT_MS);
+  const { stdout, stderr, exitCode } = await execFileFn(
+    VENV_PYTHON,
+    [SYNTHESIZE_SCRIPT, text, outPath],
+    synthesizeTimeoutMs(text.length),
+  );
   if (exitCode !== 0) {
-    throw new Error(`synthesize failed (exit ${exitCode}): ${stderr.trim() || "no stderr output"}`);
+    // stdout matters here, and is not redundant with stderr. mlx-audio's
+    // generate_audio catches every exception, prints the reason with a bare
+    // print() — stdout — and returns normally without writing a file.
+    // synthesize.py then reports the no-output condition on stderr, but the
+    // *reason* is only ever on stdout. Reading stderr alone left the
+    // 2026-07-22 failure logged as a bare progress bar and undiagnosable.
+    const detail = [stderr.trim(), stdout.trim()].filter(Boolean).join(" | ");
+    throw new Error(`synthesize failed (exit ${exitCode}): ${detail || "no output"}`);
   }
 }
 
