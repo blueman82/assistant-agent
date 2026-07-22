@@ -2586,6 +2586,45 @@ test("a normal completed turn logs its duration: 'turn completed in <ms>ms'", as
   );
 });
 
+test("a turn that throws does not log 'turn completed in <ms>ms'", async () => {
+  // A turn caught by the try/catch is not a completed turn — logging it as
+  // one would contaminate the duration data the "turn completed" instrument
+  // exists to collect (hard problem 5 in the plan).
+  const { transport } = makeStubTransport([
+    messageUpdate(1, "hello"),
+    { ok: true, result: [] },
+  ]);
+
+  const runTurnStub: BridgeRunTurn = async () => {
+    throw new Error("boom");
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  const logSpy: string[] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => { logSpy.push(args.map(String).join(" ")); };
+  try {
+    await bridge.drainOnce();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await bridge.stop();
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.ok(
+    !logSpy.some((line) => /\[telegram-bridge\] turn completed in \d+ms/.test(line)),
+    `expected no "turn completed in <ms>ms" log line for an errored turn, got: ${JSON.stringify(logSpy)}`,
+  );
+});
+
 test("a voice-origin turn answers in voice regardless of reply length — no character cap", async () => {
   const longReply = "x".repeat(5000);
   const transport: typeof fetch = async (input) => {
