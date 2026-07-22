@@ -1849,6 +1849,236 @@ test("a photo whose getFile call returns ok:false sends a failure reply and does
   assert.match(String((sendCall!.body as Record<string, unknown>)["text"]), /Failed to download image/);
 });
 
+test("a document message with a PDF MIME type is downloaded and passed to runTurn as '[document: /path]' with the caption appended", async () => {
+  const docUpdate = {
+    ok: true,
+    result: [
+      {
+        update_id: 7,
+        message: {
+          message_id: 7,
+          chat: { id: 12345 },
+          from: { id: 12345 },
+          caption: "what does this say?",
+          document: { file_id: "pdf_id", file_name: "invoice.pdf", mime_type: "application/pdf", file_size: 40000 },
+        },
+      },
+    ],
+  };
+
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) return { ok: true, json: async () => docUpdate } as Response;
+    if (url.includes("/getFile")) return { ok: true, json: async () => ({ ok: true, result: { file_path: "docs/pdf_id.pdf" } }) } as Response;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  let capturedInput: string | undefined;
+  let downloadedPath: string | undefined;
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (input, emit) => { capturedInput = input; emit("ok", "text"); },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    downloadFileFn: async (_config, _fileId, destPath) => { downloadedPath = destPath; },
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  assert.ok(capturedInput, "expected runTurn to have been called for PDF document");
+  assert.match(capturedInput!, /\[document: .*pdf_id\.pdf\]/);
+  assert.match(capturedInput!, /what does this say\?/);
+  assert.ok(downloadedPath, "expected downloadFileFn to have been called");
+  assert.match(downloadedPath!, /pdf_id\.pdf/);
+});
+
+test("a PDF document with a dot-less filename still saves with a .pdf extension, not the image default", async () => {
+  const docUpdate = {
+    ok: true,
+    result: [
+      {
+        update_id: 71,
+        message: {
+          message_id: 71,
+          chat: { id: 12345 },
+          from: { id: 12345 },
+          document: { file_id: "pdf_nodot_id", file_name: "invoice", mime_type: "application/pdf", file_size: 15000 },
+        },
+      },
+    ],
+  };
+
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) return { ok: true, json: async () => docUpdate } as Response;
+    if (url.includes("/getFile")) return { ok: true, json: async () => ({ ok: true, result: { file_path: "docs/pdf_nodot_id" } }) } as Response;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  let capturedInput: string | undefined;
+  let downloadedPath: string | undefined;
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (input, emit) => { capturedInput = input; emit("ok", "text"); },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    downloadFileFn: async (_config, _fileId, destPath) => { downloadedPath = destPath; },
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  assert.ok(capturedInput, "expected runTurn to have been called for the dot-less PDF document");
+  assert.match(capturedInput!, /\[document: .*pdf_nodot_id\.pdf\]/);
+  assert.ok(downloadedPath, "expected downloadFileFn to have been called");
+  assert.match(downloadedPath!, /pdf_nodot_id\.pdf$/, "dot-less PDF filename must still save with a .pdf extension, not fall back to .jpg");
+});
+
+test("a PDF document message with no caption passes '[document: /path]' (no newline/caption) to runTurn", async () => {
+  const docUpdate = {
+    ok: true,
+    result: [
+      {
+        update_id: 8,
+        message: {
+          message_id: 8,
+          chat: { id: 12345 },
+          from: { id: 12345 },
+          // no caption field
+          document: { file_id: "pdf_solo_id", file_name: "report.pdf", mime_type: "application/pdf", file_size: 10000 },
+        },
+      },
+    ],
+  };
+
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) return { ok: true, json: async () => docUpdate } as Response;
+    if (url.includes("/getFile")) return { ok: true, json: async () => ({ ok: true, result: { file_path: "docs/pdf_solo_id.pdf" } }) } as Response;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  let capturedInput: string | undefined;
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (input, emit) => { capturedInput = input; emit("ok", "text"); },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    downloadFileFn: async (_config, _fileId, _destPath) => {},
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  assert.ok(capturedInput, "expected runTurn to have been called");
+  assert.match(capturedInput!, /\[document: .*pdf_solo_id\.pdf\]/);
+  // No newline or caption text should follow the document tag.
+  assert.doesNotMatch(capturedInput!, /\n/);
+});
+
+test("a document message with an unsupported MIME type replies with an updated unsupported-type message — runTurn is never called", async () => {
+  const docUpdate = {
+    ok: true,
+    result: [
+      {
+        update_id: 9,
+        message: {
+          message_id: 9,
+          chat: { id: 12345 },
+          from: { id: 12345 },
+          document: { file_id: "txt_id2", file_name: "notes.txt", mime_type: "text/plain" },
+        },
+      },
+    ],
+  };
+
+  const calls: { url: string; body: unknown }[] = [];
+  const transport: typeof fetch = async (input, init) => {
+    const url = String(input);
+    const body = init?.body ? JSON.parse(init.body as string) : undefined;
+    calls.push({ url, body });
+    if (url.includes("/getUpdates")) return { ok: true, json: async () => docUpdate } as Response;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  let dispatched = false;
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => { dispatched = true; },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    downloadFileFn: async () => {},
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await bridge.stop();
+
+  assert.equal(dispatched, false, "an unsupported document must not dispatch to runTurn");
+  const sendCall = calls.find((c) => c.url.includes("/sendMessage"));
+  assert.ok(sendCall, "expected a sendMessage reply for unsupported file type");
+  assert.match(String((sendCall!.body as Record<string, unknown>)["text"]), /images or PDFs/);
+});
+
+test("a PDF document whose downloadFileFn rejects sends a failure reply to the user and does not dispatch to runTurn", async () => {
+  const docUpdate = {
+    ok: true,
+    result: [
+      {
+        update_id: 10,
+        message: {
+          message_id: 10,
+          chat: { id: 12345 },
+          from: { id: 12345 },
+          document: { file_id: "pdf_fail_id", file_name: "broken.pdf", mime_type: "application/pdf" },
+        },
+      },
+    ],
+  };
+
+  const calls: { url: string; body: unknown }[] = [];
+  const transport: typeof fetch = async (input, init) => {
+    const url = String(input);
+    const body = init?.body ? JSON.parse(init.body as string) : undefined;
+    calls.push({ url, body });
+    if (url.includes("/getUpdates")) return { ok: true, json: async () => docUpdate } as Response;
+    if (url.includes("/getFile")) return { ok: true, json: async () => ({ ok: true, result: { file_path: "docs/pdf_fail_id.pdf" } }) } as Response;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+
+  let dispatched = false;
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => { dispatched = true; },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    downloadFileFn: async (_config, _fileId, _destPath) => { throw new Error("disk full"); },
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  assert.equal(dispatched, false, "runTurn must not be called when the PDF download fails");
+  const sendCall = calls.find((c) => c.url.includes("/sendMessage"));
+  assert.ok(sendCall, "expected a sendMessage failure reply to the user");
+  assert.match(String((sendCall!.body as Record<string, unknown>)["text"]), /Failed to download/);
+});
+
 test("a voice message is downloaded, transcribed, and pushed to runTurn as plain text", async () => {
   const voiceUpdate = {
     ok: true,
