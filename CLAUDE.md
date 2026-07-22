@@ -59,6 +59,7 @@ This is the most important behavioural contract:
 - **email** → Gmail (`gjharrison01@gmail.com`) via the `mcp__claude_ai_Gmail__*` tools, by default.
 - **calendar** → Google Calendar via the `mcp__claude_ai_Google_Calendar__*` tools, by default.
 - **Tasks** → flat markdown files in `tasks/`, named `YYYY-MM-DD-slug.md` with frontmatter (title, status, due, priority).
+- **Ad-hoc backgrounding** → when a spontaneous request will outrun the bridge's 10-minute turn ceiling, Rachel synthesises `tasks/adhoc-YYYY-MM-DD-<slug>.md` and spawns it through the existing detached loop launcher, which pings back on exit. The `adhoc-` prefix keeps these out of the `launch-*.md` glob. She offers this, never spawns unasked, and confirms before spawning unless told "just go". Two facts here are load-bearing and easy to get wrong: only the task file's **body** reaches the spawned `claude -p` (frontmatter does not), so any path the agent needs — the `report:` file included — must be restated in the body; and a detached `claude -p` never loads the send gate (`gate/sendGate.ts` is a `PreToolUse` hook wired into `rachel.ts`'s own `query()`), so `gate/bashPatterns.ts` is unreachable too and the spawn's `--disallowedTools` list plus the task file's constraints block are the only restrictions — the latter being advisory, not enforced. Full protocol in `system.md`'s "Ad-hoc backgrounding" section.
 
 ## Config / environment
 
