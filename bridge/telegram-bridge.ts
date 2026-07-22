@@ -753,6 +753,10 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
           // were a complete answer.
           console.error(`[telegram-bridge] turn exceeded ${turnTimeoutMs}ms — aborted, draining next message.`);
           buffer.push(`[Rachel] That turn ran past ${Math.round(turnTimeoutMs / 60000)} minutes and I cut it off. Ask again if you still need it, or say "background it" and I'll run it as a detached loop and ping you when it's done.`);
+        } else if (turnErrored) {
+          // A crashed turn is not a completed one — logging it as "completed"
+          // would contaminate the duration data the line below exists to collect.
+          console.error(`[telegram-bridge] turn failed after ${Date.now() - turnStartedMs}ms`);
         } else {
           // Instruments the 10-minute constant with real data (rather than
           // anecdote) so a future decision to adjust it has evidence behind it.
