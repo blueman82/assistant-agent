@@ -104,7 +104,12 @@ export function createMemoryGateHook(): HookCallback {
 
         if (input.tool_name === "Write" || input.tool_name === "Edit") {
           const filePath = (input.tool_input as Record<string, unknown>)?.["file_path"];
-          if (typeof filePath === "string" && isInsideMemoryDirDenyOnFailure(filePath)) {
+          // Untrusted context: a resolution failure DENIES rather than
+          // falls back — ambiguity in a security check is not a reason to
+          // allow. isInsideMemoryDirOrThrow's throw (a non-ENOENT
+          // resolveReal failure) reaches the hook's own top-level
+          // try/catch below, which denies on any exception.
+          if (typeof filePath === "string" && isInsideMemoryDirOrThrow(filePath)) {
             return denyOutput(untrustedReason);
           }
         }
