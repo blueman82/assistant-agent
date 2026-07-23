@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { lintMemoryStore } from "./memoryLint.ts";
+import { lintMemoryStore, validateFrontmatter } from "./memoryLint.ts";
 
 function makeStore(): string {
   return mkdtempSync(join(tmpdir(), "rachel-memory-lint-test-"));
