@@ -14,9 +14,14 @@ export function resolveMemoryPath(): string {
 // but that's prompt-level convention with no code backstop — if
 // self-maintenance is ever skipped, an unbounded MEMORY.md would make every
 // turn pay the full token cost. This is the code backstop: past this size,
-// the index is truncated to a head slice plus an explicit marker telling
+// the index is truncated to a tail slice plus an explicit marker telling
 // the agent it was truncated and should consolidate. Never silently
-// dropped — the marker plus the head slice are both always visible.
+// dropped — the marker plus the tail slice are both always visible.
+//
+// Tail, not head: MEMORY.md is append-ordered (new pointer lines are added
+// at the end), so the oldest entries sit at the head and the newest at the
+// tail. Keeping the head would evict the newest — statistically the most
+// relevant — entries. Keeping the tail evicts the oldest instead.
 const MAX_INDEX_BYTES = 32 * 1024;
 
 // Absent-is-empty is a documented contract, matching proactive/push.ts's
@@ -39,17 +44,42 @@ export function composeSystemPrompt(basePrompt: string, memoryPath: string): str
   }
   if (Buffer.byteLength(index, "utf8") > MAX_INDEX_BYTES) {
     const buf = Buffer.from(index, "utf8");
+
+    // Preserve the leading "# Memory Index" heading (if present) so a tail
+    // slice doesn't silently drop the file's title. Only the first line is
+    // treated as a header, and only when it looks like a markdown heading —
+    // fixtures/inputs with no header are left alone rather than assuming
+    // structure that isn't there.
+    const firstNewline = buf.indexOf("\n");
+    let header = "";
+    let searchStart = 0;
+    if (firstNewline !== -1 && buf.subarray(0, firstNewline).toString("utf8").startsWith("#")) {
+      header = `${buf.subarray(0, firstNewline).toString("utf8")}\n\n`;
+      searchStart = firstNewline + 1;
+    }
+
+    // Keep the LAST MAX_INDEX_BYTES bytes (the newest entries). Cut point is
+    // relative to the start of the buffer.
+    let cut = Math.max(searchStart, buf.length - MAX_INDEX_BYTES);
+
     // A raw byte cut can land inside a multi-byte UTF-8 character (the
     // operator's writing style uses em dashes and accented names
     // routinely), turning the truncated tail into a U+FFFD replacement
-    // character. Back up over any continuation bytes (10xxxxxx) at the cut
-    // point so the slice always ends on a character boundary.
-    let cut = MAX_INDEX_BYTES;
-    while (cut > 0 && (buf[cut] & 0xc0) === 0x80) {
-      cut--;
+    // character. Advance FORWARD over any continuation bytes (10xxxxxx) at
+    // the cut point so the slice always STARTS on a character boundary.
+    while (cut < buf.length && (buf[cut] & 0xc0) === 0x80) {
+      cut++;
     }
-    const head = buf.subarray(0, cut).toString("utf8");
-    index = `${head}\n\n[MEMORY.md truncated at ${MAX_INDEX_BYTES} bytes — consolidate the index (see prompts/system.md's Memory contract).]`;
+
+    // Don't start mid-line: snap forward to just after the next newline so
+    // the kept tail never opens with a truncated half pointer-line.
+    const nextNewline = buf.indexOf("\n", cut);
+    if (nextNewline !== -1) {
+      cut = nextNewline + 1;
+    }
+
+    const tail = buf.subarray(cut, buf.length).toString("utf8");
+    index = `${header}[MEMORY.md truncated — older entries were dropped, keeping the most recent ${MAX_INDEX_BYTES} bytes; consolidate the index (see prompts/system.md's Memory contract).]\n\n${tail}`;
   }
   return `${basePrompt}\n\n${index}`;
 }
