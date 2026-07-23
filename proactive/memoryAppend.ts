@@ -139,6 +139,14 @@ export async function cliMain(argv: string[], overrides?: CliOverrides): Promise
     return 2;
   }
   const [title, file, hook] = args as [string, string, string];
+  // Same exit code as the argc check above: a validation failure is a usage
+  // error (bad input), not a runtime failure — distinct from the exit-1 path
+  // below, which is reserved for the lock/filesystem actually failing.
+  const problem = validatePointerArgs(title, file, hook);
+  if (problem !== undefined) {
+    console.error(`[memory-append] invalid ${problem.field}: ${problem.reason}`);
+    return 2;
+  }
   const memoryPath = overrides?.memoryPath ?? resolveMemoryPath();
   const lockOpts: WithLockOptions = {
     staleMs: overrides?.staleMs ?? DEFAULT_STALE_MS,
