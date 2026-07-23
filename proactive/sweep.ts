@@ -15,6 +15,9 @@ import { push, flushDeferred, getEventState, loadConfig, zonedDateString, zonedM
 import type { ProactiveConfig, PushDeps } from "./push.ts";
 import { sendChunked } from "../bridge/api.ts";
 import { loadTelegramConfig } from "../gate/surfaces/telegram.ts";
+import { lintMemoryStore } from "./memoryLint.ts";
+import type { Finding } from "./memoryLint.ts";
+import { resolveMemoryPath } from "./memoryIndex.ts";
 
 export interface SweepDeps {
   now: () => Date;
