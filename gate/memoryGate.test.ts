@@ -219,6 +219,31 @@ test("RACHEL_UNTRUSTED_CONTENT set + Write via symlink into memory dir, behind a
   });
 });
 
+test("RACHEL_UNTRUSTED_CONTENT set + Write via a symlink CYCLE (ELOOP) -> deny (fail-closed, same error class as EACCES)", async () => {
+  await withUntrustedFlag(async () => {
+    const hook = createMemoryGateHook();
+    // Same underlying fix as the EACCES test above (resolveReal's
+    // ENOENT-vs-other-errno distinction), a different errno hitting the
+    // same code path: a symlink cycle makes realpathSync throw ELOOP, not
+    // ENOENT. This target does not point into the memory dir at all — it
+    // can't, a cycle resolves to nothing — but per the fail-closed policy,
+    // an unresolvable path under RACHEL_UNTRUSTED_CONTENT denies regardless
+    // of what it would have resolved to, since resolution failing means the
+    // real target is unknowable. Pins the whole non-ENOENT error class
+    // rather than only the one errno (EACCES) the discriminating fixture
+    // happened to construct.
+    const scratchDir = mkdtempSync(joinPath(tmpdir(), "rachel-test-eloop-"));
+    const loopA = joinPath(scratchDir, "loopA");
+    const loopB = joinPath(scratchDir, "loopB");
+    symlinkSync(loopB, loopA);
+    symlinkSync(loopA, loopB);
+    const writeTarget = joinPath(loopA, "attacker.md");
+    const input = makeWriteInput(writeTarget, "attacker text");
+    const result = await hook(input, undefined, { signal: new AbortController().signal });
+    assert.equal(permissionDecisionOf(result), "deny", "a symlink cycle (ELOOP) must fail CLOSED under RACHEL_UNTRUSTED_CONTENT, same as EACCES");
+  });
+});
+
 test("RACHEL_UNTRUSTED_CONTENT UNSET + Write via an UNREADABLE ancestor pointing at a NON-memory target -> pass-through (trusted-path control)", async () => {
   // Deliberately NOT wrapped in withUntrustedFlag: this is the OTHER half
   // of the fix's fail-closed/fail-open split. Under RACHEL_UNTRUSTED_CONTENT
