@@ -1310,6 +1310,86 @@ test("a fresh cache resets the producer-silence streak and a new episode re-arms
   );
 });
 
+// --- Memory store lint: 6th family ---
+
+function memoryLintPushes(h: ReturnType<typeof makeHarness>) {
+  return h.pushes.filter((p) => p.family === "memory-lint");
+}
+
+test("a clean memory store pushes nothing", async () => {
+  const h = makeHarness();
+  h.deps.lintFn = () => [];
+  await sweepTick(h.deps);
+  assert.deepEqual(memoryLintPushes(h), []);
+});
+
+test("findings push exactly one normal-severity memory-lint event with a fixed event-id", async () => {
+  const h = makeHarness();
+  h.deps.lintFn = () => [
+    { file: "units-preference.md", code: "missing-frontmatter", level: "error", message: "no leading frontmatter block" },
+  ];
+  await sweepTick(h.deps);
+  const pushes = memoryLintPushes(h);
+  assert.equal(pushes.length, 1);
+  assert.equal(pushes[0]!.eventId, "memory:lint");
+  assert.equal(pushes[0]!.severity, "normal");
+});
+
+test("an unchanged violation set does not change state across ticks (chokepoint dedup can hold)", async () => {
+  const h = makeHarness();
+  h.deps.lintFn = () => [
+    { file: "units-preference.md", code: "missing-frontmatter", level: "error", message: "no leading frontmatter block" },
+  ];
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  const pushes = memoryLintPushes(h);
+  assert.equal(pushes.length, 2, "pushFn is called every tick — dedup itself lives in the real chokepoint, not the sweep");
+  assert.equal(pushes[0]!.state, pushes[1]!.state, "an unchanged violation set produces the same state both ticks");
+});
+
+test("a new violation changes the pushed state (re-arms dedup)", async () => {
+  const h = makeHarness();
+  h.deps.lintFn = () => [
+    { file: "units-preference.md", code: "missing-frontmatter", level: "error", message: "no leading frontmatter block" },
+  ];
+  await sweepTick(h.deps);
+  const firstState = memoryLintPushes(h)[0]!.state;
+  h.deps.lintFn = () => [
+    { file: "units-preference.md", code: "missing-frontmatter", level: "error", message: "no leading frontmatter block" },
+    { file: "other.md", code: "missing-date", level: "warning", message: "frontmatter is missing the date field" },
+  ];
+  await sweepTick(h.deps);
+  const secondState = memoryLintPushes(h)[1]!.state;
+  assert.notEqual(firstState, secondState, "adding a finding must change the hashed state so it re-alerts");
+});
+
+test("the same violation set in a different order hashes to the same state (order-independent)", async () => {
+  const h = makeHarness();
+  h.deps.lintFn = () => [
+    { file: "a.md", code: "missing-date", level: "warning", message: "m1" },
+    { file: "b.md", code: "missing-frontmatter", level: "error", message: "m2" },
+  ];
+  await sweepTick(h.deps);
+  const firstState = memoryLintPushes(h)[0]!.state;
+  h.deps.lintFn = () => [
+    { file: "b.md", code: "missing-frontmatter", level: "error", message: "m2-different-wording" },
+    { file: "a.md", code: "missing-date", level: "warning", message: "m1-different-wording" },
+  ];
+  await sweepTick(h.deps);
+  const secondState = memoryLintPushes(h)[1]!.state;
+  assert.equal(firstState, secondState, "state hashes the {file, code, level} set, not message text or order");
+});
+
+test("a lintFn throw is logged and the rest of the tick still runs", async () => {
+  const h = makeHarness();
+  h.deps.lintFn = () => {
+    throw new Error("boom");
+  };
+  await sweepTick(h.deps);
+  assert.ok(h.logs.some((line) => line.includes("memory-lint error")), `expected a memory-lint error log: ${JSON.stringify(h.logs)}`);
+  assert.ok(h.order.some((entry) => entry === "exec:launchctl"), "bridge-liveness still ran after the memory-lint family failed");
+});
+
 test("grep guard for proactive/sweep.test.ts: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
   const source = await (await import("node:fs/promises")).readFile(new URL("./sweep.test.ts", import.meta.url), "utf8");
   const realFetchCall = /fetch\(\s*["'`]https:\/\/api\.telegram\.org/;
