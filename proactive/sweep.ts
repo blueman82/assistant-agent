@@ -122,6 +122,7 @@ function resolveSweepDeps(overrides?: Partial<SweepDeps>): SweepDeps {
     statMtimeFn: overrides?.statMtimeFn ?? defaultStatMtime,
     readFileFn: overrides?.readFileFn ?? defaultReadFile,
     writeFileFn: overrides?.writeFileFn ?? defaultWriteFile,
+    lintFn: overrides?.lintFn ?? ((memoryDir: string) => lintMemoryStore(memoryDir)),
     sendFn: overrides?.sendFn,
     baseDir: overrides?.baseDir ?? join(homedir(), ".rachel", "proactive"),
     homeDir: overrides?.homeDir ?? homedir(),
