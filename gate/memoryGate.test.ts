@@ -1,5 +1,28 @@
+// Env-safety header — same idiom and reason as proactive/memoryIndex.test.ts:
+// the WIRING test below imports the REAL rachel.ts, and importing it runs
+// its module-scope side effects once (loadTelegramConfig(),
+// createQueueApprovalSurface(), createSendGateHook() writing the real audit
+// log). This block MUST stay ahead of every import in this file.
+process.env["RACHEL_TELEGRAM_TOKEN"] = "000000000:FAKE-TEST-TOKEN";
+process.env["RACHEL_TELEGRAM_CHAT_ID"] = "1";
+process.env["RACHEL_GATE_TIMEOUT_MS"] = "200";
+
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join as joinPath } from "node:path";
+
+const testQueueDir = mkdtempSync(joinPath(tmpdir(), "rachel-test-queue-"));
+process.env["RACHEL_QUEUE_DIR"] = testQueueDir;
+process.env["RACHEL_AUDIT_LOG_PATH"] = joinPath(testQueueDir, "audit.jsonl");
+process.env["RACHEL_MEMORY_PATH"] = joinPath(testQueueDir, "memory", "MEMORY.md");
+
+globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
+  throw new Error(`Unexpected real fetch() call in memoryGate.test.ts — all transports must be stubbed. Called with: ${String(args[0])}`);
+}) as typeof fetch;
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { createMemoryGateHook } from "./memoryGate.ts";
 import type { PreToolUseHookInput, HookJSONOutput } from "@anthropic-ai/claude-agent-sdk";
 
