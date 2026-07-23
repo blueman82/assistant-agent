@@ -41,11 +41,19 @@ function extractFrontmatterValue(lines: string[], key: string): string | undefin
   return line.trim().slice(line.trim().indexOf(":") + 1).trim();
 }
 
-// Lints a single fact file's content for frontmatter schema validity.
+// Pure frontmatter schema validator — the single source of truth for
+// Rachel's memory-fact schema (name/description/type/date, per
+// prompts/system.md's Memory contract). No fs access, no sweep coupling:
+// takes content as a string so a caller that has NOT yet written to disk
+// (e.g. a PreToolUse write-gate hook validating a candidate Write before it
+// lands) can call it directly, not just lintMemoryStore's directory scan.
+// lintMemoryStore below calls this rather than duplicating the logic — one
+// implementation, two callers.
+//
 // Returns one missing-frontmatter error and stops (no cascade into the
 // per-key checks) when there's no leading `---` block at all — one root
 // cause, one finding.
-function lintFactFile(filename: string, content: string): Finding[] {
+export function validateFrontmatter(content: string, filename: string): Finding[] {
   const findings: Finding[] = [];
   const lines = content.split("\n");
   if (lines[0]?.trim() !== "---") {
