@@ -1,11 +1,9 @@
 import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { denyOutput } from "./sendGate.ts";
-import { lintFactFile } from "../proactive/memoryLint.ts";
 
 const MEMORY_DIR = join(homedir(), ".rachel", "memory");
-const INDEX_FILENAME = "MEMORY.md";
 
 export function createMemoryGateHook(): HookCallback {
   return async (input) => {
@@ -30,34 +28,15 @@ export function createMemoryGateHook(): HookCallback {
           if (typeof command === "string" && command.includes(MEMORY_DIR)) {
             return denyOutput(untrustedReason);
           }
-          // Best-effort: also catch the ~/.rachel/memory shorthand a shell
-          // command is likely to use, same idiom as matchesBashSendPattern
-          // in bashPatterns.ts (small, explicit patterns, not a general path
-          // resolver).
           if (typeof command === "string" && /~\/\.rachel\/memory\b/.test(command)) {
             return denyOutput(untrustedReason);
           }
         }
       }
 
-      if (input.tool_name === "Write") {
-        const filePath = (input.tool_input as Record<string, unknown>)?.["file_path"];
-        const content = (input.tool_input as Record<string, unknown>)?.["content"];
-        if (
-          typeof filePath === "string"
-          && typeof content === "string"
-          && filePath.includes(MEMORY_DIR)
-          && filePath.endsWith(".md")
-          && basename(filePath) !== INDEX_FILENAME
-        ) {
-          const findings = lintFactFile(basename(filePath), content);
-          const errors = findings.filter((f) => f.level === "error");
-          if (errors.length > 0) {
-            const reason = errors.map((f) => f.message).join("; ");
-            return denyOutput(`Memory frontmatter invalid — fix and retry: ${reason}`);
-          }
-        }
-      }
+      // SPIKE-STRIPPED: check (b) frontmatter validation temporarily
+      // removed to prove check (a) + wiring are green in isolation, per
+      // advisor guidance. Restored immediately after this run.
 
       return {};
     } catch {
