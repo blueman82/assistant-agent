@@ -75,15 +75,6 @@ function isInsideMemoryDirOrThrow(filePath: string): boolean {
   return real.startsWith(dirWithSep);
 }
 
-// Untrusted-context callers (the lockout below) want a resolution failure
-// to DENY — ambiguity in a security check is not a reason to allow. This
-// wrapper is what makes that failure actually reach a deny: the caller
-// still needs its own try/catch around this (or rely on the hook's
-// top-level catch) to turn the throw into denyOutput(...).
-function isInsideMemoryDirDenyOnFailure(filePath: string): boolean {
-  return isInsideMemoryDirOrThrow(filePath);
-}
-
 // Trusted-context callers (the schema-validation branch below, which runs
 // unconditionally, not just when RACHEL_UNTRUSTED_CONTENT is set) must NOT
 // start denying Rachel's ordinary memory writes just because a path could
