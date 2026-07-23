@@ -29,6 +29,14 @@
   reads hostile email must not carry Chrome, WebFetch, or mcp-exec). The env
   var can only REMOVE tools from rachel.ts's default list, never add
   (injection hardening in proactive/allowedTools.ts).
+
+  RACHEL_UNTRUSTED_CONTENT marks this one-shot as processing hostile input
+  (the email being summarised). gate/memoryGate.ts denies any memory-dir
+  write while this flag is set, regardless of RACHEL_ALLOWED_TOOLS — a
+  hostile email must never persuade this run to "remember" attacker text,
+  which would otherwise compromise the system prompt on every future turn,
+  on every surface. If this sweep learns something worth keeping, it
+  surfaces it in the digest for interactive Rachel to save instead.
 -->
 <plist version="1.0">
 <dict>
@@ -38,6 +46,8 @@
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>RACHEL_ALLOWED_TOOLS</key>
     <string>Read,Write,Bash,mcp__claude_ai_Gmail__*</string>
+    <key>RACHEL_UNTRUSTED_CONTENT</key>
+    <string>1</string>
   </dict>
 
   <key>Label</key>
