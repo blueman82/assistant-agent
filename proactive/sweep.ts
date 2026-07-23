@@ -3,7 +3,8 @@
 // Consumes proactive/push.ts as a library — the sweep never touches the state
 // store directly; every delivery decision (dedup, quiet, budget) lives in the
 // chokepoint. Tick order is fixed: deferred flush FIRST, then bridge-liveness,
-// then PR-red, then calendar. Each family runs in its own try/catch so one
+// then PR-red, then calendar (escalation then one-shot spawn), then the
+// memory-lint store scan. Each family runs in its own try/catch so one
 // broken family never blocks the others and the tick still exits 0.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -15,6 +16,9 @@ import { push, flushDeferred, getEventState, loadConfig, zonedDateString, zonedM
 import type { ProactiveConfig, PushDeps } from "./push.ts";
 import { sendChunked } from "../bridge/api.ts";
 import { loadTelegramConfig } from "../gate/surfaces/telegram.ts";
+import { lintMemoryStore } from "./memoryLint.ts";
+import type { Finding } from "./memoryLint.ts";
+import { resolveMemoryPath } from "./memoryIndex.ts";
 
 export interface SweepDeps {
   now: () => Date;
@@ -30,6 +34,7 @@ export interface SweepDeps {
   statMtimeFn: (path: string) => Date | undefined;
   readFileFn: (path: string) => string | undefined;
   writeFileFn: (path: string, content: string) => void;
+  lintFn: (memoryDir: string) => Finding[];
   // Push-deps passthrough: forwarded to pushFn/flushFn/getStateFn so an
   // injected baseDir/clock/sendFn reaches the real chokepoint unchanged.
   sendFn?: PushDeps["sendFn"];
@@ -118,6 +123,7 @@ function resolveSweepDeps(overrides?: Partial<SweepDeps>): SweepDeps {
     statMtimeFn: overrides?.statMtimeFn ?? defaultStatMtime,
     readFileFn: overrides?.readFileFn ?? defaultReadFile,
     writeFileFn: overrides?.writeFileFn ?? defaultWriteFile,
+    lintFn: overrides?.lintFn ?? ((memoryDir: string) => lintMemoryStore(memoryDir)),
     sendFn: overrides?.sendFn,
     baseDir: overrides?.baseDir ?? join(homedir(), ".rachel", "proactive"),
     homeDir: overrides?.homeDir ?? homedir(),
@@ -610,6 +616,47 @@ async function checkCalendarEscalation(d: SweepDeps, cfg: ProactiveConfig, pushD
   }
 }
 
+// --- Memory store lint: periodic detection of prompts/system.md's Memory
+// contract (proactive/memoryLint.ts owns the checks; this just wires the
+// sweep to it). Dedup key is a hash of the violation SET ({file, code,
+// level} per finding, sorted so ordering never matters and message text
+// never leaks into the hash) — a persistent unchanged violation collapses to
+// one push per state via the chokepoint's own dedup (pushFn is still called
+// every tick; push.ts is what recognises the unchanged state and no-ops),
+// while a NEW or resolved finding changes the hash and re-arms it. A clean
+// store pushes nothing, same shape as pr-red on green.
+function memoryLintStateHash(findings: Finding[]): string {
+  const sorted = findings
+    .map((f) => `${f.file}|${f.code}|${f.level}`)
+    .sort();
+  return createHash("sha256").update(sorted.join("\n"), "utf8").digest("hex").slice(0, 16);
+}
+
+async function checkMemoryLint(d: SweepDeps, pushDeps: Partial<PushDeps>): Promise<void> {
+  const memoryDir = dirname(resolveMemoryPath());
+  const findings = d.lintFn(memoryDir);
+  if (findings.length === 0) {
+    return;
+  }
+  const errorCount = findings.filter((f) => f.level === "error").length;
+  const warningCount = findings.filter((f) => f.level === "warning").length;
+  const summary = [errorCount > 0 ? `${errorCount} error${errorCount === 1 ? "" : "s"}` : "", warningCount > 0 ? `${warningCount} warning${warningCount === 1 ? "" : "s"}` : ""]
+    .filter(Boolean)
+    .join(", ");
+  const sample = findings
+    .slice(0, 5)
+    .map((f) => `${f.file}: ${f.code}`)
+    .join("; ");
+  await d.pushFn(
+    "memory-lint",
+    "memory:lint",
+    memoryLintStateHash(findings),
+    "normal",
+    `[memory] store-lint found ${summary} — ${sample}`,
+    pushDeps,
+  );
+}
+
 // Exported for the cross-check test pinning this as a subset of rachel.ts's
 // DEFAULT_ALLOWED_TOOLS — a narrowing entry outside the default list would
 // be silently dropped by resolveAllowedTools.
@@ -747,6 +794,7 @@ export async function sweepTick(overrides?: Partial<SweepDeps>): Promise<Record<
     // block the spawn, and vice versa.
     "calendar-escalation": await runFamily("calendar-escalation", d, errors, () => checkCalendarEscalation(d, cfg, pushDeps)),
     calendar: await runFamily("calendar", d, errors, () => runCalendarOneshot(d, cfg)),
+    "memory-lint": await runFamily("memory-lint", d, errors, () => checkMemoryLint(d, pushDeps)),
   };
   try {
     await escalateSweepFailures(d, cfg, results, errors);
