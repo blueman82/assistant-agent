@@ -85,14 +85,29 @@ export async function appendMemoryPointer(
   hook: string,
   lockOpts: WithLockOptions,
 ): Promise<void> {
+  // Validate BEFORE acquiring the lock: a rejected append should never touch
+  // the lock or the filesystem at all (see validatePointerArgs above for why
+  // these characters are forbidden).
+  const problem = validatePointerArgs(title, file, hook);
+  if (problem !== undefined) {
+    throw new Error(`invalid ${problem.field}: ${problem.reason}`);
+  }
   const lockPath = `${path}.lock`;
+  // The lockfile lives at <path>.lock, inside the SAME directory as the
+  // index itself — on a fresh install (no ~/.rachel/memory/ yet) that
+  // directory doesn't exist, so acquireMemoryLock's openSync would fail with
+  // ENOENT before ever reaching the callback below. mkdirSync must run
+  // BEFORE the lock is acquired, not inside the locked callback, or the very
+  // first-ever memory write always fails (busy-polling withMemoryLock's full
+  // timeout on an ENOENT it can't distinguish from ordinary contention,
+  // before throwing a misleading "lock timed out").
+  mkdirSync(dirname(path), { recursive: true });
   await withMemoryLock(
     lockPath,
     async () => {
       const before = readIndex(path);
       const separator = before.endsWith("\n") || before === "" ? "" : "\n";
       const next = `${before}${separator}${formatPointerLine(title, file, hook)}\n`;
-      mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, next);
     },
     lockOpts,
