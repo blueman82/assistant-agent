@@ -137,6 +137,7 @@ const sendGateHook = gateTimeoutMs !== undefined
   : createSendGateHook(approvalSurfaces, auditLogPath);
 
 const askUserQuestionHook = createAskUserQuestionHook();
+const memoryGateHook = createMemoryGateHook();
 
 // ---------------------------------------------------------------------------
 // Session state — module-scoped so it persists across turns within a
