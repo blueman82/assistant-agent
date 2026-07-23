@@ -208,3 +208,44 @@ test("withMemoryLock leaves no leftover files in the lock's directory", async ()
   await withMemoryLock(lockPath, async () => {}, { staleMs: 30_000, timeoutMs: 2_000, pollMs: 10, now: () => new Date(), pid: process.pid });
   assert.deepEqual(readdirSync(dir), []);
 });
+
+// --- Critical 2 companion (reviewer-found): a non-contention acquire
+// failure (e.g. the lockfile's parent directory doesn't exist — ENOENT) must
+// fail FAST, not be swallowed as ordinary contention and busy-polled for the
+// full timeout. Distinguishing acquireMemoryLock's own LockContentionError
+// from every other thrown error is what makes that possible — this matters
+// independently of memoryAppend.ts's mkdirSync-before-lock fix, because a
+// poll loop that retries on ANY error masks the next unexpected failure the
+// same way (see memoryLock.ts's withMemoryLock header comment).
+test("acquireMemoryLock throws LockContentionError specifically when the lock is held and live", () => {
+  const dir = tmpDir();
+  const lockPath = join(dir, "MEMORY.md.lock");
+  acquireMemoryLock(lockPath, { staleMs: 30_000, pid: process.pid, now: () => new Date() });
+  assert.throws(() => acquireMemoryLock(lockPath, { staleMs: 30_000, pid: 888888, now: () => new Date() }), LockContentionError);
+});
+
+test("withMemoryLock fails fast (not after the full timeout) on a non-contention acquire error", async () => {
+  const dir = tmpDir();
+  // The lockfile's parent directory does not exist — openSync throws ENOENT,
+  // which is not contention and will never clear by waiting.
+  const lockPath = join(dir, "does-not-exist", "MEMORY.md.lock");
+  const start = Date.now();
+  await assert.rejects(
+    () =>
+      withMemoryLock(lockPath, async () => {}, {
+        staleMs: 30_000,
+        timeoutMs: 10_000,
+        pollMs: 50,
+        now: () => new Date(),
+        pid: process.pid,
+      }),
+    (err: unknown) => {
+      // Must be the raw ENOENT (or an error naming it), not the generic
+      // "lock timed out" message that hides the real cause.
+      assert.ok(!(err instanceof Error) || !/timed out/i.test(err.message), `expected a fail-fast ENOENT, got: ${String(err)}`);
+      return true;
+    },
+  );
+  const elapsedMs = Date.now() - start;
+  assert.ok(elapsedMs < 2_000, `expected a fast failure, took ${elapsedMs}ms (a swallowed-error regression would take ~10s)`);
+});
