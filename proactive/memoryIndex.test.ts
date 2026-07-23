@@ -88,8 +88,8 @@ test("an index over the size threshold is truncated with a visible marker, never
     Buffer.byteLength(result, "utf8") < Buffer.byteLength(basePrompt + "\n\n" + oversizedIndex, "utf8"),
     "the composed prompt must actually be shorter than the full untruncated index",
   );
-  // Not silently dropped — some head of the real content must still be there.
-  assert.ok(result.includes("- [fact](fact.md)"), "a truncated head of the real content is still present");
+  // Not silently dropped — some of the real content must still be there.
+  assert.ok(result.includes("- [fact](fact.md)"), "truncated real content is still present");
 });
 
 test("an index over the size threshold keeps the NEWEST entries and drops the oldest", () => {
