@@ -189,7 +189,7 @@ test("Write of a memory fact file with valid frontmatter -> pass-through", async
   assert.deepEqual(result, {});
 });
 
-test.skip("Write of a memory fact file MISSING a required frontmatter field -> deny naming the missing field", async () => {
+test("Write of a memory fact file MISSING a required frontmatter field -> deny naming the missing field", async () => {
   const hook = createMemoryGateHook();
   // Missing "type" entirely.
   const badContent = "---\nname: some-fact\ndescription: a one-line fact\n---\n\nBody text.\n";
