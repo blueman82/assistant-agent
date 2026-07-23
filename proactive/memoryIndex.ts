@@ -70,12 +70,22 @@ export function composeSystemPrompt(basePrompt: string, memoryPath: string): str
     while (cut < buf.length && (buf[cut] & 0xc0) === 0x80) {
       cut++;
     }
+    const charBoundaryCut = cut;
 
     // Don't start mid-line: snap forward to just after the next newline so
-    // the kept tail never opens with a truncated half pointer-line.
+    // the kept tail never opens with a truncated half pointer-line. But a
+    // single oversized line (or one with its only newline right at the end
+    // of the file) can push this snap all the way to buf.length, leaving an
+    // EMPTY tail — a total silent wipe of the operator's memory, worse than
+    // a partially-corrupt first line. If the line-snapped cut would leave
+    // nothing (or only whitespace) behind, fall back to the character-
+    // boundary cut instead: real, if imperfectly-split, content beats none.
     const nextNewline = buf.indexOf("\n", cut);
     if (nextNewline !== -1) {
       cut = nextNewline + 1;
+    }
+    if (buf.subarray(cut, buf.length).toString("utf8").trim() === "") {
+      cut = charBoundaryCut;
     }
 
     const tail = buf.subarray(cut, buf.length).toString("utf8");
