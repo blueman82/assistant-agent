@@ -14,9 +14,14 @@ export function resolveMemoryPath(): string {
 // but that's prompt-level convention with no code backstop — if
 // self-maintenance is ever skipped, an unbounded MEMORY.md would make every
 // turn pay the full token cost. This is the code backstop: past this size,
-// the index is truncated to a head slice plus an explicit marker telling
+// the index is truncated to a tail slice plus an explicit marker telling
 // the agent it was truncated and should consolidate. Never silently
-// dropped — the marker plus the head slice are both always visible.
+// dropped — the marker plus the tail slice are both always visible.
+//
+// Tail, not head: MEMORY.md is append-ordered (new pointer lines are added
+// at the end), so the oldest entries sit at the head and the newest at the
+// tail. Keeping the head would evict the newest — statistically the most
+// relevant — entries. Keeping the tail evicts the oldest instead.
 const MAX_INDEX_BYTES = 32 * 1024;
 
 // Absent-is-empty is a documented contract, matching proactive/push.ts's
