@@ -168,14 +168,10 @@ test("a tail truncation cut does not land mid-line — no half pointer-line in t
   writeFileSync(memoryPath, oversizedIndex);
   const basePrompt = "You are Rachel.";
   const result = composeSystemPrompt(basePrompt, memoryPath);
-  const bodyLines = result
-    .split("\n")
-    .filter((l) => l.startsWith("- [") || (l.length > 0 && !l.startsWith("#") && !l.startsWith("[MEMORY.md")));
-  for (const bodyLine of bodyLines) {
-    assert.ok(
-      bodyLine === line.trimEnd() || bodyLine.trim() === "",
-      `no half pointer-line expected, got: ${JSON.stringify(bodyLine)}`,
-    );
+  const injectedIndex = result.slice(result.indexOf(`${basePrompt}\n\n`) + `${basePrompt}\n\n`.length);
+  const candidateLines = injectedIndex.split("\n").filter((l) => l.startsWith("- ["));
+  for (const bodyLine of candidateLines) {
+    assert.equal(bodyLine, line.trimEnd(), "every pointer-line in the output must be a complete, unmodified line");
   }
 });
 
