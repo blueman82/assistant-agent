@@ -8,6 +8,7 @@ import * as readline from "node:readline/promises";
 import { homedir } from "node:os";
 import { createSendGateHook } from "./gate/sendGate.ts";
 import { createAskUserQuestionHook } from "./gate/askUserQuestionHook.ts";
+import { createMemoryGateHook } from "./gate/memoryGate.ts";
 import { createTerminalApprovalSurface } from "./gate/surfaces/terminal.ts";
 import { createTelegramApprovalSurface, loadTelegramConfig } from "./gate/surfaces/telegram.ts";
 import { createQueueApprovalSurface } from "./gate/surfaces/queue.ts";
