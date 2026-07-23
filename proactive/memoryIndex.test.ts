@@ -175,6 +175,24 @@ test("a tail truncation cut does not land mid-line — no half pointer-line in t
   }
 });
 
+test("REGRESSION: a single oversized line with no internal newline does not wipe all content — the newline-snap must not empty the tail", () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
+  const memoryPath = join(memoryDir, "MEMORY.md");
+  // A single line comfortably over 32 KiB, with only the file's own trailing
+  // "\n" as its one newline. Snapping the cut point forward to "the next
+  // newline" finds that trailing newline (the only one in the whole
+  // buffer), pushing cut to buf.length and leaving an EMPTY tail — the
+  // truncation marker is emitted but zero real content survives. Pre-PR
+  // head-keep code always retained real content up to the cap; this is a
+  // regression the tail-keep rewrite must not introduce.
+  const oversizedIndex = "y".repeat(65536) + "\n";
+  assert.ok(Buffer.byteLength(oversizedIndex, "utf8") > 32 * 1024, "fixture must exceed the 32 KiB threshold");
+  writeFileSync(memoryPath, oversizedIndex);
+  const basePrompt = "You are Rachel.";
+  const result = composeSystemPrompt(basePrompt, memoryPath);
+  assert.ok(result.includes("yyy"), "real memory content must survive truncation, never a total silent wipe");
+});
+
 test("the truncation marker names that OLDER entries were dropped", () => {
   const memoryDir = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
   const memoryPath = join(memoryDir, "MEMORY.md");
