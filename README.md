@@ -44,6 +44,7 @@ prompts/system.md   # system prompt (the behaviour)
 bridge/             # Telegram bridge (second front-end) + notify.ts
 gate/               # send-approval gate (PreToolUse hook + approval surfaces)
 proactive/          # proactive layer: push.ts alert chokepoint, sweep.ts launchd tick, allowedTools.ts
+scripts/            # install.sh (launchd deploy) + speech/ (local STT/TTS venv setup + transcribe/synthesize)
 tasks/              # task files (YYYY-MM-DD-slug.md)
 ```
 
@@ -54,7 +55,7 @@ npx tsx rachel.ts           # run interactively
 npm start                   # alias for the above
 npm run bridge              # tsx bridge/telegram-bridge.ts (Telegram front-end)
 npm run typecheck           # tsc --noEmit
-npm test                    # gate/bridge/proactive test suites + hook conventions test
+npm test                    # gate/bridge/proactive/scripts test suites + hook conventions test
 ```
 
 ### At the `You:` prompt
