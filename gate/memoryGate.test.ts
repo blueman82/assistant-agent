@@ -162,6 +162,32 @@ test("RACHEL_UNTRUSTED_CONTENT set + Write via a genuinely different sibling dir
   });
 });
 
+test("RACHEL_UNTRUSTED_CONTENT set + Write via a symlink pointing at the memory dir -> deny", async () => {
+  await withUntrustedFlag(async () => {
+    const hook = createMemoryGateHook();
+    // Symlink lives in an isolated mkdtempSync scratch dir, never inside the
+    // repo or the real ~/.rachel/ — cleaned up in finally.
+    const scratchDir = mkdtempSync(joinPath(tmpdir(), "rachel-test-symlink-"));
+    mkdirSync(joinPath(homedir(), ".rachel", "memory"), { recursive: true });
+    const linkPath = joinPath(scratchDir, "shortcut");
+    symlinkSync(joinPath(homedir(), ".rachel", "memory"), linkPath);
+    try {
+      // path.resolve() alone does NOT follow symlinks — it only collapses
+      // "." / ".." / doubled separators lexically. A write through this
+      // symlink lexically resolves to a path under scratchDir, which is
+      // outside MEMORY_DIR by pure string comparison, but the filesystem
+      // target is the real memory directory. This is the bypass a
+      // realpathSync-based check must close.
+      const symlinkTargetPath = joinPath(linkPath, "attacker.md");
+      const input = makeWriteInput(symlinkTargetPath, "attacker text");
+      const result = await hook(input, undefined, { signal: new AbortController().signal });
+      assert.equal(permissionDecisionOf(result), "deny", "a write through a symlink resolving into the memory dir must still be denied");
+    } finally {
+      unlinkSync(linkPath);
+    }
+  });
+});
+
 test("RACHEL_UNTRUSTED_CONTENT set + Edit into memory dir -> deny", async () => {
   await withUntrustedFlag(async () => {
     const hook = createMemoryGateHook();
