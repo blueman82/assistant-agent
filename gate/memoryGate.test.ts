@@ -26,20 +26,132 @@ function makeWriteInput(filePath: string, content: string): PreToolUseHookInput 
   } as PreToolUseHookInput;
 }
 
-test("RACHEL_UNTRUSTED_CONTENT set + Write into memory dir -> deny", async () => {
+function withUntrustedFlag(fn: () => Promise<void>): Promise<void> {
   const original = process.env["RACHEL_UNTRUSTED_CONTENT"];
+  // Literal value from tasks/inbox-brief-launchd.plist (SO-17: reproduce the
+  // real shape, not a simplified stand-in).
   process.env["RACHEL_UNTRUSTED_CONTENT"] = "1";
-  try {
-    const hook = createMemoryGateHook();
-    const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", "---\nname: some-fact\n---\n");
-    const result = await hook(input, undefined, { signal: new AbortController().signal });
-    assert.equal(permissionDecisionOf(result), "deny");
-    assert.match(reasonOf(result) ?? "", /untrusted/i);
-  } finally {
+  return fn().finally(() => {
     if (original === undefined) {
       delete process.env["RACHEL_UNTRUSTED_CONTENT"];
     } else {
       process.env["RACHEL_UNTRUSTED_CONTENT"] = original;
     }
+  });
+}
+
+test("RACHEL_UNTRUSTED_CONTENT set + Write into memory dir -> deny", async () => {
+  await withUntrustedFlag(async () => {
+    const hook = createMemoryGateHook();
+    const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", "---\nname: some-fact\n---\n");
+    const result = await hook(input, undefined, { signal: new AbortController().signal });
+    assert.equal(permissionDecisionOf(result), "deny");
+    assert.match(reasonOf(result) ?? "", /untrusted/i);
+  });
+});
+
+test("RACHEL_UNTRUSTED_CONTENT unset + Write into memory dir -> pass-through (not this check's concern)", async () => {
+  const original = process.env["RACHEL_UNTRUSTED_CONTENT"];
+  delete process.env["RACHEL_UNTRUSTED_CONTENT"];
+  try {
+    const hook = createMemoryGateHook();
+    const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", "---\nname: some-fact\ndescription: x\ntype: preference\n---\nbody");
+    const result = await hook(input, undefined, { signal: new AbortController().signal });
+    assert.deepEqual(result, {});
+  } finally {
+    if (original !== undefined) {
+      process.env["RACHEL_UNTRUSTED_CONTENT"] = original;
+    }
   }
+});
+
+test("RACHEL_UNTRUSTED_CONTENT set + Write OUTSIDE memory dir -> pass-through", async () => {
+  await withUntrustedFlag(async () => {
+    const hook = createMemoryGateHook();
+    const input = makeWriteInput("/Users/harrison/Github/assistant-agent/tasks/2026-07-23-something.md", "content");
+    const result = await hook(input, undefined, { signal: new AbortController().signal });
+    assert.deepEqual(result, {});
+  });
+});
+
+test("RACHEL_UNTRUSTED_CONTENT set + Edit into memory dir -> deny", async () => {
+  await withUntrustedFlag(async () => {
+    const hook = createMemoryGateHook();
+    const input = {
+      hook_event_name: "PreToolUse",
+      session_id: "test-session",
+      transcript_path: "/dev/null",
+      cwd: "/tmp",
+      tool_name: "Edit",
+      tool_input: {
+        file_path: "/Users/harrison/.rachel/memory/some-fact.md",
+        old_string: "a",
+        new_string: "attacker-controlled text",
+      },
+    } as PreToolUseHookInput;
+    const result = await hook(input, undefined, { signal: new AbortController().signal });
+    assert.equal(permissionDecisionOf(result), "deny");
+    assert.match(reasonOf(result) ?? "", /untrusted/i);
+  });
+});
+
+test("RACHEL_UNTRUSTED_CONTENT set + Bash command string-matching the memory path -> deny", async () => {
+  await withUntrustedFlag(async () => {
+    const hook = createMemoryGateHook();
+    const input = {
+      hook_event_name: "PreToolUse",
+      session_id: "test-session",
+      transcript_path: "/dev/null",
+      cwd: "/tmp",
+      tool_name: "Bash",
+      tool_input: { command: "echo 'attacker text' >> ~/.rachel/memory/some-fact.md" },
+    } as PreToolUseHookInput;
+    const result = await hook(input, undefined, { signal: new AbortController().signal });
+    assert.equal(permissionDecisionOf(result), "deny");
+    assert.match(reasonOf(result) ?? "", /untrusted/i);
+  });
+});
+
+test("RACHEL_UNTRUSTED_CONTENT set + Bash command NOT touching memory path -> pass-through", async () => {
+  await withUntrustedFlag(async () => {
+    const hook = createMemoryGateHook();
+    const input = {
+      hook_event_name: "PreToolUse",
+      session_id: "test-session",
+      transcript_path: "/dev/null",
+      cwd: "/tmp",
+      tool_name: "Bash",
+      tool_input: { command: "ls -la /tmp" },
+    } as PreToolUseHookInput;
+    const result = await hook(input, undefined, { signal: new AbortController().signal });
+    assert.deepEqual(result, {});
+  });
+});
+
+test("non-PreToolUse hook event -> pass-through with empty object even when untrusted", async () => {
+  await withUntrustedFlag(async () => {
+    const hook = createMemoryGateHook();
+    const input = {
+      hook_event_name: "PostToolUse",
+      session_id: "test-session",
+      transcript_path: "/dev/null",
+      cwd: "/tmp",
+      tool_name: "Write",
+      tool_input: { file_path: "/Users/harrison/.rachel/memory/some-fact.md", content: "x" },
+    } as unknown as PreToolUseHookInput;
+    const result = await hook(input, undefined, { signal: new AbortController().signal });
+    assert.deepEqual(result, {});
+  });
+});
+
+test("hook throws exception -> deny with 'Internal hook error' reason (fail-closed)", async () => {
+  const hook = createMemoryGateHook();
+  const input = new Proxy({} as PreToolUseHookInput, {
+    get: () => {
+      throw new Error("input threw");
+    },
+  });
+  const result = await hook(input, undefined, { signal: new AbortController().signal });
+  assert.equal(permissionDecisionOf(result), "deny");
+  assert.match(reasonOf(result) ?? "", /Internal hook error/);
 });
