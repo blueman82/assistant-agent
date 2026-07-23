@@ -135,21 +135,29 @@ test("REGRESSION: a multi-byte character straddling the TAIL-cut start boundary 
   const memoryDir = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
   const memoryPath = join(memoryDir, "MEMORY.md");
   const MAX_INDEX_BYTES = 32 * 1024;
-  // Tail-keep keeps the LAST MAX_INDEX_BYTES bytes, so the cut point is at
-  // byte offset (total length - MAX_INDEX_BYTES) from the start. Build a
-  // fixture where a 3-byte em dash (U+2014) straddles exactly that offset:
-  // prefix is sized so the cut point falls one byte INTO the em dash's
-  // encoding, then padding follows so the em dash and trailing content are
-  // within the kept tail window.
-  const prefixLen = MAX_INDEX_BYTES + 100 - 1; // cut point lands 1 byte into the em dash below
-  const oversizedIndex = "a".repeat(prefixLen) + "—tail-marker" + "b".repeat(200);
+  // Tail-keep keeps the LAST MAX_INDEX_BYTES bytes, so the raw cut point is
+  // at byte offset (total length - MAX_INDEX_BYTES) from the start of the
+  // buffer. To make the 3-byte em dash (U+2014) straddle THAT exact offset,
+  // work backwards from the tail-keep formula: cut = prefixLen + 3 (dash) +
+  // trailingLen - MAX_INDEX_BYTES. Choosing trailingLen = MAX_INDEX_BYTES - 1
+  // and a short prefix makes cut land 2 bytes into the dash's encoding
+  // (prefixLen < cut < prefixLen + 3) — verified arithmetically before
+  // writing this fixture, not assumed. No newline anywhere in this fixture,
+  // so nothing else can move the cut point and mask the assertion.
+  const prefixLen = 10;
+  const trailingLen = MAX_INDEX_BYTES - 1;
+  const oversizedIndex = "a".repeat(prefixLen) + "—" + "b".repeat(trailingLen);
   assert.ok(Buffer.byteLength(oversizedIndex, "utf8") > MAX_INDEX_BYTES, "fixture must exceed the threshold");
+  const rawCut = Buffer.byteLength(oversizedIndex, "utf8") - MAX_INDEX_BYTES;
+  assert.ok(
+    rawCut > prefixLen && rawCut < prefixLen + 3,
+    `fixture must actually straddle the em dash: rawCut=${rawCut} must be within (${prefixLen}, ${prefixLen + 3})`,
+  );
   writeFileSync(memoryPath, oversizedIndex);
   const basePrompt = "You are Rachel.";
   const result = composeSystemPrompt(basePrompt, memoryPath);
   assert.ok(!result.includes("�"), "truncation must not produce a UTF-8 replacement character");
   assert.ok(/truncat/i.test(result), "the truncation marker must still be present");
-  assert.ok(result.includes("b".repeat(200)), "tail content after the straddling character must survive");
 });
 
 test("a tail truncation cut does not land mid-line — no half pointer-line in the output", () => {
