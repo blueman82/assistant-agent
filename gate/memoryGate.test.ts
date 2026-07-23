@@ -189,6 +189,18 @@ test("Write of a memory fact file with valid frontmatter -> pass-through", async
   assert.deepEqual(result, {});
 });
 
+test("Write of a memory fact file MISSING only the optional date field -> pass-through (warning-level finding must not block)", async () => {
+  const hook = createMemoryGateHook();
+  // name/description/type all present and valid; date is absent, which
+  // validateFrontmatter reports as a warning-level missing-date finding.
+  // Gary's live store has pre-existing files without a date field, so this
+  // must never block — only error-level findings may deny.
+  const contentMissingDateOnly = "---\nname: some-fact\ndescription: a one-line fact\ntype: preference\n---\n\nBody text.\n";
+  const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", contentMissingDateOnly);
+  const result = await hook(input, undefined, { signal: new AbortController().signal });
+  assert.deepEqual(result, {}, "a warning-level-only finding set must pass through, not deny");
+});
+
 test("Write of a memory fact file MISSING a required frontmatter field -> deny naming the missing field", async () => {
   const hook = createMemoryGateHook();
   // Missing "type" entirely.
