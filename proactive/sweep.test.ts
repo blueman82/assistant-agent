@@ -66,6 +66,7 @@ function makeHarness(config: object = { calendar_oneshot_hours: [], pr_watch_rep
     writeFileFn: (path, content) => {
       files.set(path, content);
     },
+    lintFn: () => [],
     baseDir,
     homeDir,
     repoDir: "/repo",
