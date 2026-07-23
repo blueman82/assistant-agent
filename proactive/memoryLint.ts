@@ -182,7 +182,7 @@ export function lintMemoryStore(memoryDir: string): Finding[] {
 
   for (const filename of factFiles) {
     const content = readFileSync(join(memoryDir, filename), "utf8");
-    findings.push(...lintFactFile(filename, content));
+    findings.push(...validateFrontmatter(content, filename));
   }
 
   let indexLines: string[] = [];
