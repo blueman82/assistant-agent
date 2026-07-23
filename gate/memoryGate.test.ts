@@ -109,7 +109,11 @@ test("RACHEL_UNTRUSTED_CONTENT set + Write OUTSIDE memory dir -> pass-through", 
 test("RACHEL_UNTRUSTED_CONTENT set + Write via dot-segment path (~/.rachel/./memory/x.md) -> deny", async () => {
   await withUntrustedFlag(async () => {
     const hook = createMemoryGateHook();
-    const dotSegmentPath = joinPath(homedir(), ".rachel", ".", "memory", "attacker.md");
+    // Built as a raw template string, NOT via path.join/joinPath — join()
+    // normalises the "." segment away during construction, which would
+    // make this fixture already-canonical and never exercise the bypass
+    // (the exact vacuous-test trap this suite must avoid).
+    const dotSegmentPath = `${homedir()}/.rachel/./memory/attacker.md`;
     const input = makeWriteInput(dotSegmentPath, "attacker text");
     const result = await hook(input, undefined, { signal: new AbortController().signal });
     assert.equal(permissionDecisionOf(result), "deny", "a dot-segment path resolving into the memory dir must still be denied");
