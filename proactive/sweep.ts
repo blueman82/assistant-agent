@@ -615,6 +615,47 @@ async function checkCalendarEscalation(d: SweepDeps, cfg: ProactiveConfig, pushD
   }
 }
 
+// --- Memory store lint: periodic detection of prompts/system.md's Memory
+// contract (proactive/memoryLint.ts owns the checks; this just wires the
+// sweep to it). Dedup key is a hash of the violation SET ({file, code,
+// level} per finding, sorted so ordering never matters and message text
+// never leaks into the hash) — a persistent unchanged violation collapses to
+// one push per state via the chokepoint's own dedup (pushFn is still called
+// every tick; push.ts is what recognises the unchanged state and no-ops),
+// while a NEW or resolved finding changes the hash and re-arms it. A clean
+// store pushes nothing, same shape as pr-red on green.
+function memoryLintStateHash(findings: Finding[]): string {
+  const sorted = findings
+    .map((f) => `${f.file}|${f.code}|${f.level}`)
+    .sort();
+  return createHash("sha256").update(sorted.join("\n"), "utf8").digest("hex").slice(0, 16);
+}
+
+async function checkMemoryLint(d: SweepDeps, pushDeps: Partial<PushDeps>): Promise<void> {
+  const memoryDir = dirname(resolveMemoryPath());
+  const findings = d.lintFn(memoryDir);
+  if (findings.length === 0) {
+    return;
+  }
+  const errorCount = findings.filter((f) => f.level === "error").length;
+  const warningCount = findings.filter((f) => f.level === "warning").length;
+  const summary = [errorCount > 0 ? `${errorCount} error${errorCount === 1 ? "" : "s"}` : "", warningCount > 0 ? `${warningCount} warning${warningCount === 1 ? "" : "s"}` : ""]
+    .filter(Boolean)
+    .join(", ");
+  const sample = findings
+    .slice(0, 5)
+    .map((f) => `${f.file}: ${f.code}`)
+    .join("; ");
+  await d.pushFn(
+    "memory-lint",
+    "memory:lint",
+    memoryLintStateHash(findings),
+    "normal",
+    `[memory] store-lint found ${summary} — ${sample}`,
+    pushDeps,
+  );
+}
+
 // Exported for the cross-check test pinning this as a subset of rachel.ts's
 // DEFAULT_ALLOWED_TOOLS — a narrowing entry outside the default list would
 // be silently dropped by resolveAllowedTools.
