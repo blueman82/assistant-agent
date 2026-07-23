@@ -166,7 +166,7 @@ export function acquireMemoryLock(path: string, opts: AcquireLockOptions): LockH
     return { acquiredAt };
   }
   if (!isStale(path, opts)) {
-    throw new Error(`memory lock held: ${path}`);
+    throw new LockContentionError(path);
   }
   // Break the stale lock and retry exactly once. A racing acquirer could
   // recreate it between our unlink and our retry create — that retry then
