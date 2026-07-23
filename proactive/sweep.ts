@@ -3,7 +3,8 @@
 // Consumes proactive/push.ts as a library — the sweep never touches the state
 // store directly; every delivery decision (dedup, quiet, budget) lives in the
 // chokepoint. Tick order is fixed: deferred flush FIRST, then bridge-liveness,
-// then PR-red, then calendar. Each family runs in its own try/catch so one
+// then PR-red, then calendar (escalation then one-shot spawn), then the
+// memory-lint store scan. Each family runs in its own try/catch so one
 // broken family never blocks the others and the tick still exits 0.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
