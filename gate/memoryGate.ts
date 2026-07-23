@@ -1,11 +1,25 @@
 import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, resolve, sep } from "node:path";
 import { denyOutput } from "./sendGate.ts";
 import { validateFrontmatter } from "../proactive/memoryLint.ts";
 
 const MEMORY_DIR = join(homedir(), ".rachel", "memory");
 const INDEX_FILENAME = "MEMORY.md";
+
+// A raw substring test on a model-supplied path is bypassable: "." segments,
+// doubled separators, and (on this case-insensitive filesystem, confirmed
+// empirically) case variants all resolve to the exact same file while
+// failing a plain includes() check — a security-review finding (2026-07-24).
+// path.resolve() collapses "." / ".." / doubled separators; case-folding
+// both sides matches the filesystem's own case-insensitivity; anchoring with
+// `+ sep` (not includes()) prevents a sibling directory like
+// "memory-notes/" from matching as a false positive.
+function isInsideMemoryDir(filePath: string): boolean {
+  const resolved = resolve(filePath).toLowerCase();
+  const dirWithSep = (MEMORY_DIR + sep).toLowerCase();
+  return resolved.startsWith(dirWithSep);
+}
 
 export function createMemoryGateHook(): HookCallback {
   return async (input) => {
