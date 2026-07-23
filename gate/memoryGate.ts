@@ -139,7 +139,7 @@ export function createMemoryGateHook(): HookCallback {
         if (
           typeof filePath === "string"
           && typeof content === "string"
-          && isInsideMemoryDir(filePath)
+          && isInsideMemoryDirPermissive(filePath)
           && filePath.endsWith(".md")
           && basename(filePath) !== INDEX_FILENAME
         ) {
