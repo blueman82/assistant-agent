@@ -431,6 +431,13 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   const nowFn = options.nowFn ?? (() => new Date());
   const heartbeatPath = options.heartbeatPath ?? join(homedir(), ".rachel", "bridge-heartbeat.json");
 
+  function log(msg: string): void {
+    console.log(`[${nowFn().toISOString()}] ${msg}`);
+  }
+  function logError(msg: string): void {
+    console.error(`[${nowFn().toISOString()}] ${msg}`);
+  }
+
   try { resolvedFs.mkdirSync(watchdogDir, { recursive: true }); } catch { /* already exists */ }
 
   const fifo: { text: string; voice: boolean }[] = [];
@@ -474,7 +481,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
       // recovery.
       if (!heartbeatWriteFailing) {
         heartbeatWriteFailing = true;
-        console.error(`[telegram-bridge] heartbeat write failed: ${err instanceof Error ? err.message : String(err)}`);
+        logError(`[telegram-bridge] heartbeat write failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }
@@ -512,11 +519,11 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     try {
       await push(family, eventId, state, severity, text, bridgePushDeps);
     } catch (err) {
-      console.error(`[telegram-bridge] push() failed for ${family}/${eventId}: ${err instanceof Error ? err.message : String(err)} — falling back to direct send`);
+      logError(`[telegram-bridge] push() failed for ${family}/${eventId}: ${err instanceof Error ? err.message : String(err)} — falling back to direct send`);
       try {
         await sendChunked(config, text);
       } catch (sendErr) {
-        console.error(`[telegram-bridge] direct-send fallback also failed for ${family}/${eventId}: ${sendErr instanceof Error ? sendErr.message : String(sendErr)}`);
+        logError(`[telegram-bridge] direct-send fallback also failed for ${family}/${eventId}: ${sendErr instanceof Error ? sendErr.message : String(sendErr)}`);
       }
     }
   }
@@ -530,7 +537,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     if (fromChatId !== config.chatId) {
       // Audit row for rejected ingress — a message from an unauthorised
       // chat must never reach the agent.
-      console.error(`[telegram-bridge] rejected message from unauthorised chat_id=${fromChatId}`);
+      logError(`[telegram-bridge] rejected message from unauthorised chat_id=${fromChatId}`);
       return;
     }
 
@@ -587,11 +594,11 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
       try {
         await downloadFileFn(config, msg.voice.file_id, destPath);
       } catch (err) {
-        console.error(`[telegram-bridge] failed to download voice note: ${err instanceof Error ? err.message : String(err)}`);
+        logError(`[telegram-bridge] failed to download voice note: ${err instanceof Error ? err.message : String(err)}`);
         try {
           await reply("Failed to download your voice note — please try again.");
         } catch (replyErr) {
-          console.error(`[telegram-bridge] also failed to send failure reply: ${replyErr instanceof Error ? replyErr.message : String(replyErr)}`);
+          logError(`[telegram-bridge] also failed to send failure reply: ${replyErr instanceof Error ? replyErr.message : String(replyErr)}`);
         }
         return;
       }
@@ -600,11 +607,11 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
       try {
         transcript = await transcribeFn(destPath);
       } catch (err) {
-        console.error(`[telegram-bridge] transcription failed: ${err instanceof Error ? err.message : String(err)}`);
+        logError(`[telegram-bridge] transcription failed: ${err instanceof Error ? err.message : String(err)}`);
         try {
           await reply("I couldn't transcribe that voice note — please try again or type it instead.");
         } catch (replyErr) {
-          console.error(`[telegram-bridge] also failed to send failure reply: ${replyErr instanceof Error ? replyErr.message : String(replyErr)}`);
+          logError(`[telegram-bridge] also failed to send failure reply: ${replyErr instanceof Error ? replyErr.message : String(replyErr)}`);
         }
         return;
       } finally {
@@ -614,7 +621,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         try { resolvedFs.unlink(destPath); } catch { /* already gone or never written */ }
       }
 
-      console.log(`[telegram-bridge] voice received: ${transcript.length} chars`);
+      log(`[telegram-bridge] voice received: ${transcript.length} chars`);
       fifo.push({ text: transcript, voice: true });
       return;
     }
@@ -658,11 +665,11 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
       try {
         await downloadFileFn(config, fileId, destPath);
       } catch (err) {
-        console.error(`[telegram-bridge] failed to download ${tag}: ${err instanceof Error ? err.message : String(err)}`);
+        logError(`[telegram-bridge] failed to download ${tag}: ${err instanceof Error ? err.message : String(err)}`);
         try {
           await reply(`Failed to download ${tag} — please try again.`);
         } catch (replyErr) {
-          console.error(`[telegram-bridge] also failed to send failure reply: ${replyErr instanceof Error ? replyErr.message : String(replyErr)}`);
+          logError(`[telegram-bridge] also failed to send failure reply: ${replyErr instanceof Error ? replyErr.message : String(replyErr)}`);
         }
         return;
       }
@@ -683,7 +690,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
       // calls answerCallbackQuery so the tapping client's button spinner
       // resolves instead of hanging forever. Only logged here for the audit
       // trail of rejected ingress.
-      console.error(`[telegram-bridge] unauthorised callback_query from from_id=${cb.from.id}`);
+      logError(`[telegram-bridge] unauthorised callback_query from from_id=${cb.from.id}`);
     }
     if (options.telegramSurface) {
       await options.telegramSurface.handleCallbackQuery(cb);
@@ -751,16 +758,16 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         if (timedOut) {
           // Say it plainly rather than delivering a truncated turn as if it
           // were a complete answer.
-          console.error(`[telegram-bridge] turn exceeded ${turnTimeoutMs}ms — aborted, draining next message.`);
+          logError(`[telegram-bridge] turn exceeded ${turnTimeoutMs}ms — aborted, draining next message.`);
           buffer.push(`[Rachel] That turn ran past ${Math.round(turnTimeoutMs / 60000)} minutes and I cut it off. Ask again if you still need it, or say "background it" and I'll run it as a detached loop and ping you when it's done.`);
         } else if (turnErrored) {
           // A crashed turn is not a completed one — logging it as "completed"
           // would contaminate the duration data the line below exists to collect.
-          console.error(`[telegram-bridge] turn failed after ${Date.now() - turnStartedMs}ms`);
+          logError(`[telegram-bridge] turn failed after ${Date.now() - turnStartedMs}ms`);
         } else {
           // Instruments the 10-minute constant with real data (rather than
           // anecdote) so a future decision to adjust it has evidence behind it.
-          console.log(`[telegram-bridge] turn completed in ${Date.now() - turnStartedMs}ms`);
+          log(`[telegram-bridge] turn completed in ${Date.now() - turnStartedMs}ms`);
         }
 
         const replyText = buffer.join("\n").trim();
@@ -770,7 +777,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
           // silent downgrade based on reply size.
           const spoken = stripMarkdown(replyText || "(no output)");
           const charCount = `${spoken.length} chars`;
-          console.log(`[telegram-bridge] voice reply: ${charCount}`);
+          log(`[telegram-bridge] voice reply: ${charCount}`);
           const tmpDir = `${homedir()}/.rachel/tmp`;
           const stamp = Date.now();
           const wavPath = `${tmpDir}/reply-${stamp}.wav`;
@@ -780,7 +787,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
             await convertToOggFn(wavPath, oggPath);
             await sendVoiceFn(config, oggPath, charCount);
           } catch (err) {
-            console.error(`[telegram-bridge] voice reply synthesis failed, falling back to text: ${err instanceof Error ? err.message : String(err)}`);
+            logError(`[telegram-bridge] voice reply synthesis failed, falling back to text: ${err instanceof Error ? err.message : String(err)}`);
             await reply(replyText || "(no output)");
           } finally {
             try { resolvedFs.unlink(wavPath); } catch { /* already gone or never written */ }
@@ -815,14 +822,14 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         // to run()'s generic poll-error backoff, which would look like a
         // getUpdates failure rather than the real cause. Log and move on to
         // the next update in this batch instead of losing the whole poll.
-        console.error(`[telegram-bridge] error handling update ${update.update_id}: ${err instanceof Error ? err.message : String(err)}`);
+        logError(`[telegram-bridge] error handling update ${update.update_id}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     // Kick the FIFO drain off without blocking this poll cycle — a
     // long-running turn (or one waiting on /stop) must never stall getUpdates,
     // since /stop itself has to arrive via the next poll.
     void drainFifo().catch((err) => {
-      console.error(`[telegram-bridge] drain error: ${err instanceof Error ? err.message : String(err)}`);
+      logError(`[telegram-bridge] drain error: ${err instanceof Error ? err.message : String(err)}`);
     });
   }
 
@@ -855,7 +862,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         { command: "model", description: "Show or switch the active model" },
         { command: "effort", description: "Show or switch the active reasoning effort" },
       ]).catch((err) => {
-        console.error(`[telegram-bridge] setMyCommands failed: ${err instanceof Error ? err.message : String(err)}`);
+        logError(`[telegram-bridge] setMyCommands failed: ${err instanceof Error ? err.message : String(err)}`);
       });
 
       // Startup alert — best-effort, non-blocking, through the chokepoint at
@@ -879,7 +886,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
             const msg = prev === "conflict"
               ? "Rachel bridge recovered from Telegram conflict — back online."
               : "Rachel bridge recovered from poll error — back online.";
-            console.log(`[telegram-bridge] recovered from ${prev} state.`);
+            log(`[telegram-bridge] recovered from ${prev} state.`);
             void pushAlert("bridge-health", "bridge:health", "healthy", "normal", msg);
           }
           // Yield to the macrotask queue so that bridge.stop() → stopped=true
@@ -897,23 +904,23 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
 
             if (health !== "conflict") {
               health = "conflict";
-              console.error(`[telegram-bridge] 409 conflict (${consecutive409}/${CONFLICT_EXIT_THRESHOLD}): ${message} — backing off ${resolvedConflictBackoffMs / 1000}s, will auto-recover.`);
+              logError(`[telegram-bridge] 409 conflict (${consecutive409}/${CONFLICT_EXIT_THRESHOLD}): ${message} — backing off ${resolvedConflictBackoffMs / 1000}s, will auto-recover.`);
               void pushAlert("bridge-health", "bridge:health", "conflict", "normal",
                 `Rachel bridge: Telegram 409 conflict detected. Backing off ${resolvedConflictBackoffMs / 1000}s and retrying — will auto-recover if this is a launchd restart race.`
               );
             } else {
-              console.error(`[telegram-bridge] 409 conflict (${consecutive409}/${CONFLICT_EXIT_THRESHOLD}): ${message}`);
+              logError(`[telegram-bridge] 409 conflict (${consecutive409}/${CONFLICT_EXIT_THRESHOLD}): ${message}`);
             }
 
             if (consecutive409 >= CONFLICT_EXIT_THRESHOLD) {
-              console.error(`[telegram-bridge] FATAL: 409 conflict persisted for ${consecutive409} consecutive attempts — genuine second consumer, exiting.`);
+              logError(`[telegram-bridge] FATAL: 409 conflict persisted for ${consecutive409} consecutive attempts — genuine second consumer, exiting.`);
               // Await the alert before exiting — fire-and-forget would be killed by process.exit
               // before the HTTP request completes. "Never block the poll loop" doesn't apply here
               // since we're exiting immediately after.
               await sendChunked(config,
                 `Rachel bridge FATAL: Telegram 409 conflict persisted for ${consecutive409} attempts (~${Math.round(consecutive409 * resolvedConflictBackoffMs / 60_000)} min). Genuine second consumer detected. Exiting — launchd will restart.`
               ).catch((alertErr) => {
-                console.error(`[telegram-bridge] FATAL: failed to send exit alert: ${alertErr instanceof Error ? alertErr.message : String(alertErr)}`);
+                logError(`[telegram-bridge] FATAL: failed to send exit alert: ${alertErr instanceof Error ? alertErr.message : String(alertErr)}`);
               });
               process.exit(1);
             }
@@ -925,10 +932,10 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
             lastError = { message, at: new Date().toISOString(), recovered: false };
             if (health !== "failed") {
               health = "failed";
-              console.error(`[telegram-bridge] poll error (entering failed state): ${message}`);
+              logError(`[telegram-bridge] poll error (entering failed state): ${message}`);
               void pushAlert("bridge-health", "bridge:health", "failed", "normal", `Rachel bridge poll error: ${message}. Retrying with backoff.`);
             } else {
-              console.error(`[telegram-bridge] poll error: ${message}`);
+              logError(`[telegram-bridge] poll error: ${message}`);
             }
             await new Promise((resolve) => setTimeout(resolve, backoffMs));
             backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
@@ -963,11 +970,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
   const telegramConfig = loadTelegramConfig();
   if (!telegramConfig) {
-    console.error("[telegram-bridge] no Telegram config found (RACHEL_TELEGRAM_TOKEN/RACHEL_TELEGRAM_CHAT_ID or ~/.rachel/telegram.json) — exiting.");
+    console.error(`[${new Date().toISOString()}] [telegram-bridge] no Telegram config found (RACHEL_TELEGRAM_TOKEN/RACHEL_TELEGRAM_CHAT_ID or ~/.rachel/telegram.json) — exiting.`);
     process.exit(2);
   }
   if (!telegramSurface) {
-    console.error("[telegram-bridge] rachel.ts loaded but its telegramSurface is undefined — config mismatch, exiting.");
+    console.error(`[${new Date().toISOString()}] [telegram-bridge] rachel.ts loaded but its telegramSurface is undefined — config mismatch, exiting.`);
     process.exit(2);
   }
 
@@ -982,6 +989,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   process.on("SIGINT", () => void bridge.stop().then(() => process.exit(0)));
   process.on("SIGTERM", () => void bridge.stop().then(() => process.exit(0)));
 
-  console.log("[telegram-bridge] starting.");
+  console.log(`[${new Date().toISOString()}] [telegram-bridge] starting.`);
   await bridge.run();
 }
