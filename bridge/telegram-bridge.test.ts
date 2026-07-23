@@ -2629,6 +2629,45 @@ test("a normal completed turn logs its duration: 'turn completed in <ms>ms'", as
   );
 });
 
+test("bridge log lines are prefixed with an ISO-8601 timestamp from the injected clock", async () => {
+  // Every createBridge call in this suite spreads basePushOpts(), which pins
+  // nowFn to DAYTIME (2026-07-15T11:00:00Z) — the log helper must read that
+  // same seam, not a real wall clock, so the prefix is deterministic here.
+  const { transport } = makeStubTransport([
+    messageUpdate(1, "hello"),
+    { ok: true, result: [] },
+  ]);
+
+  const runTurnStub: BridgeRunTurn = async (input, emit) => {
+    emit(`echo: ${input}`, "text");
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  const logSpy: string[] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => { logSpy.push(args.map(String).join(" ")); };
+  try {
+    await bridge.drainOnce();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await bridge.stop();
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.ok(
+    logSpy.some((line) => line.startsWith("[2026-07-15T11:00:00.000Z] [telegram-bridge] turn completed in")),
+    `expected the turn-completed line to carry the injected clock's ISO timestamp prefix, got: ${JSON.stringify(logSpy)}`,
+  );
+});
+
 test("a turn that throws does not log 'turn completed in <ms>ms'", async () => {
   // A turn caught by the try/catch is not a completed turn — logging it as
   // one would contaminate the duration data the "turn completed" instrument
