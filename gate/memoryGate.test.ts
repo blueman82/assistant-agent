@@ -97,6 +97,67 @@ test("RACHEL_UNTRUSTED_CONTENT set + Write OUTSIDE memory dir -> pass-through", 
   });
 });
 
+// --- Path-normalisation bypasses (security review finding) ---
+// gate/memoryGate.ts used a raw `filePath.includes(MEMORY_DIR)` substring
+// test, which a model-supplied path can defeat with forms that
+// path.resolve() collapses to the exact protected file, or that a
+// case-insensitive filesystem (confirmed on this machine) resolves to the
+// same inode despite differing case. Each test below targets one bypass
+// form and must FAIL against the unfixed includes() implementation before
+// the fix — that is the acceptance criterion (SO-15).
+
+test("RACHEL_UNTRUSTED_CONTENT set + Write via dot-segment path (~/.rachel/./memory/x.md) -> deny", async () => {
+  await withUntrustedFlag(async () => {
+    const hook = createMemoryGateHook();
+    const dotSegmentPath = joinPath(homedir(), ".rachel", ".", "memory", "attacker.md");
+    const input = makeWriteInput(dotSegmentPath, "attacker text");
+    const result = await hook(input, undefined, { signal: new AbortController().signal });
+    assert.equal(permissionDecisionOf(result), "deny", "a dot-segment path resolving into the memory dir must still be denied");
+  });
+});
+
+test("RACHEL_UNTRUSTED_CONTENT set + Write via doubled-slash path (~/.rachel//memory/x.md) -> deny", async () => {
+  await withUntrustedFlag(async () => {
+    const hook = createMemoryGateHook();
+    const doubledSlashPath = `${homedir()}/.rachel//memory/attacker.md`;
+    const input = makeWriteInput(doubledSlashPath, "attacker text");
+    const result = await hook(input, undefined, { signal: new AbortController().signal });
+    assert.equal(permissionDecisionOf(result), "deny", "a doubled-slash path resolving into the memory dir must still be denied");
+  });
+});
+
+test("RACHEL_UNTRUSTED_CONTENT set + Write via case-variant path (~/.Rachel/Memory/x.md) -> deny", async () => {
+  await withUntrustedFlag(async () => {
+    const hook = createMemoryGateHook();
+    const caseVariantPath = `${homedir()}/.Rachel/Memory/attacker.md`;
+    const input = makeWriteInput(caseVariantPath, "attacker text");
+    const result = await hook(input, undefined, { signal: new AbortController().signal });
+    assert.equal(permissionDecisionOf(result), "deny", "a case-variant path resolving into the memory dir on a case-insensitive filesystem must still be denied");
+  });
+});
+
+test("RACHEL_UNTRUSTED_CONTENT set + Write via canonical path (control) -> deny", async () => {
+  await withUntrustedFlag(async () => {
+    const hook = createMemoryGateHook();
+    const canonicalPath = joinPath(homedir(), ".rachel", "memory", "attacker.md");
+    const input = makeWriteInput(canonicalPath, "attacker text");
+    const result = await hook(input, undefined, { signal: new AbortController().signal });
+    assert.equal(permissionDecisionOf(result), "deny", "the canonical form must still be denied — sanity control for the bypass tests above");
+  });
+});
+
+test("RACHEL_UNTRUSTED_CONTENT set + Write via a genuinely different sibling dir (~/.rachel/memory-notes/x.md) -> pass-through", async () => {
+  await withUntrustedFlag(async () => {
+    const hook = createMemoryGateHook();
+    // A prefix match without a separator boundary would wrongly treat this
+    // sibling directory as inside the memory dir. Must NOT deny.
+    const siblingPath = joinPath(homedir(), ".rachel", "memory-notes", "unrelated.md");
+    const input = makeWriteInput(siblingPath, "unrelated content");
+    const result = await hook(input, undefined, { signal: new AbortController().signal });
+    assert.deepEqual(result, {}, "a sibling directory sharing the memory dir's name as a prefix must not be denied");
+  });
+});
+
 test("RACHEL_UNTRUSTED_CONTENT set + Edit into memory dir -> deny", async () => {
   await withUntrustedFlag(async () => {
     const hook = createMemoryGateHook();
