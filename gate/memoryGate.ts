@@ -51,7 +51,7 @@ export function createMemoryGateHook(): HookCallback {
           && basename(filePath) !== INDEX_FILENAME
         ) {
           const findings = validateFrontmatter(content, basename(filePath));
-          const errors = findings.filter((f) => f.level === "error");
+          const errors = findings;
           if (errors.length > 0) {
             const reason = errors.map((f) => f.message).join("; ");
             return denyOutput(`Memory frontmatter invalid — fix and retry: ${reason}`);
