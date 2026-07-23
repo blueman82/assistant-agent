@@ -214,7 +214,7 @@ export async function runTurn(
     model: getModel(),
     effort: getEffort(),
     maxTurns: MAX_TURNS,
-    permissionMode: "auto",
+    permissionMode: "bypassPermissions",
     // Env read here, per call, not at module load — launchd/spawn
     // environments differ per invocation.
     allowedTools: resolveAllowedTools(DEFAULT_ALLOWED_TOOLS, process.env["RACHEL_ALLOWED_TOOLS"]),
