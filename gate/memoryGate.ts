@@ -40,6 +40,25 @@ export function createMemoryGateHook(): HookCallback {
         }
       }
 
+      if (input.tool_name === "Write") {
+        const filePath = (input.tool_input as Record<string, unknown>)?.["file_path"];
+        const content = (input.tool_input as Record<string, unknown>)?.["content"];
+        if (
+          typeof filePath === "string"
+          && typeof content === "string"
+          && filePath.includes(MEMORY_DIR)
+          && filePath.endsWith(".md")
+          && basename(filePath) !== INDEX_FILENAME
+        ) {
+          const findings = lintFactFile(basename(filePath), content);
+          const errors = findings.filter((f) => f.level === "error");
+          if (errors.length > 0) {
+            const reason = errors.map((f) => f.message).join("; ");
+            return denyOutput(`Memory frontmatter invalid — fix and retry: ${reason}`);
+          }
+        }
+      }
+
       return {};
     } catch {
       return denyOutput("Internal hook error — denied by default.");
