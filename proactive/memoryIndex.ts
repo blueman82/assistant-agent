@@ -44,17 +44,42 @@ export function composeSystemPrompt(basePrompt: string, memoryPath: string): str
   }
   if (Buffer.byteLength(index, "utf8") > MAX_INDEX_BYTES) {
     const buf = Buffer.from(index, "utf8");
+
+    // Preserve the leading "# Memory Index" heading (if present) so a tail
+    // slice doesn't silently drop the file's title. Only the first line is
+    // treated as a header, and only when it looks like a markdown heading —
+    // fixtures/inputs with no header are left alone rather than assuming
+    // structure that isn't there.
+    const firstNewline = buf.indexOf("\n");
+    let header = "";
+    let searchStart = 0;
+    if (firstNewline !== -1 && buf.subarray(0, firstNewline).toString("utf8").startsWith("#")) {
+      header = `${buf.subarray(0, firstNewline).toString("utf8")}\n\n`;
+      searchStart = firstNewline + 1;
+    }
+
+    // Keep the LAST MAX_INDEX_BYTES bytes (the newest entries). Cut point is
+    // relative to the start of the buffer.
+    let cut = Math.max(searchStart, buf.length - MAX_INDEX_BYTES);
+
     // A raw byte cut can land inside a multi-byte UTF-8 character (the
     // operator's writing style uses em dashes and accented names
     // routinely), turning the truncated tail into a U+FFFD replacement
-    // character. Back up over any continuation bytes (10xxxxxx) at the cut
-    // point so the slice always ends on a character boundary.
-    let cut = MAX_INDEX_BYTES;
-    while (cut > 0 && (buf[cut] & 0xc0) === 0x80) {
-      cut--;
+    // character. Advance FORWARD over any continuation bytes (10xxxxxx) at
+    // the cut point so the slice always STARTS on a character boundary.
+    while (cut < buf.length && (buf[cut] & 0xc0) === 0x80) {
+      cut++;
     }
-    const head = buf.subarray(0, cut).toString("utf8");
-    index = `${head}\n\n[MEMORY.md truncated at ${MAX_INDEX_BYTES} bytes — consolidate the index (see prompts/system.md's Memory contract).]`;
+
+    // Don't start mid-line: snap forward to just after the next newline so
+    // the kept tail never opens with a truncated half pointer-line.
+    const nextNewline = buf.indexOf("\n", cut);
+    if (nextNewline !== -1) {
+      cut = nextNewline + 1;
+    }
+
+    const tail = buf.subarray(cut, buf.length).toString("utf8");
+    index = `${header}[MEMORY.md truncated — older entries were dropped, keeping the most recent ${MAX_INDEX_BYTES} bytes; consolidate the index (see prompts/system.md's Memory contract).]\n\n${tail}`;
   }
   return `${basePrompt}\n\n${index}`;
 }
