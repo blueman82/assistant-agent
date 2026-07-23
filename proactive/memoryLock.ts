@@ -212,13 +212,21 @@ function sleep(ms: number): Promise<void> {
 // Acquire, run fn, always release — even on throw. Polls at pollMs intervals
 // until timeoutMs elapses, then throws loud (see module header: proceeding
 // unlocked would reintroduce the lost-update bug this exists to prevent).
+// Only LockContentionError is retried — anything else (ENOENT because the
+// lockfile's parent directory doesn't exist, EACCES, ENOTDIR, ...) is not
+// contention, will never clear by waiting, and is rethrown immediately
+// instead of busy-polling the full timeout and then reporting a misleading
+// "lock timed out" that hides the real cause.
 export async function withMemoryLock<T>(path: string, fn: () => Promise<T>, opts: WithLockOptions): Promise<T> {
   const deadline = opts.now().getTime() + opts.timeoutMs;
   let handle: LockHandle | undefined;
   while (handle === undefined) {
     try {
       handle = acquireMemoryLock(path, opts);
-    } catch {
+    } catch (err) {
+      if (!(err instanceof LockContentionError)) {
+        throw err;
+      }
       if (opts.now().getTime() >= deadline) {
         throw new Error(`memory lock timed out after ${opts.timeoutMs}ms: ${path}`);
       }
