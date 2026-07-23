@@ -587,6 +587,7 @@ test("sweepTick reports per-family results and a healthy tick is all ok", async 
     "pr-red": "ok",
     "calendar-escalation": "ok",
     calendar: "ok",
+    "memory-lint": "ok",
   });
 });
 
