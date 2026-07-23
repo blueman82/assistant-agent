@@ -83,7 +83,12 @@ function isInsideMemoryDirOrThrow(filePath: string): boolean {
 // comparison on any resolution failure, matching this check's pre-symlink-fix
 // behaviour rather than newly blocking.
 function isInsideMemoryDirPermissive(filePath: string): boolean {
-  return isInsideMemoryDirOrThrow(filePath);
+  try {
+    return isInsideMemoryDirOrThrow(filePath);
+  } catch {
+    const lexical = resolve(filePath).toLowerCase();
+    return lexical.startsWith((MEMORY_DIR + sep).toLowerCase());
+  }
 }
 
 export function createMemoryGateHook(): HookCallback {
