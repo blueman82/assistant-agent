@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acquireMemoryLock, releaseMemoryLock, withMemoryLock } from "./memoryLock.ts";
+import { acquireMemoryLock, releaseMemoryLock, withMemoryLock, LockContentionError } from "./memoryLock.ts";
 
 function tmpDir(): string {
   return mkdtempSync(join(tmpdir(), "rachel-test-memlock-"));
