@@ -34,7 +34,7 @@ export function createMemoryGateHook(): HookCallback {
 
         if (input.tool_name === "Write" || input.tool_name === "Edit") {
           const filePath = (input.tool_input as Record<string, unknown>)?.["file_path"];
-          if (typeof filePath === "string" && filePath.includes(MEMORY_DIR)) {
+          if (typeof filePath === "string" && isInsideMemoryDir(filePath)) {
             return denyOutput(untrustedReason);
           }
         }
