@@ -130,8 +130,13 @@ export function validateFrontmatter(content: string, filename: string): Finding[
 
 // A pointer line looks like "- [Title](file.md) — hook". Anything under the
 // index heading that isn't shaped like that is index content that should
-// have been a pointer, not embedded prose.
-const POINTER_RE = /^-\s*\[[^\]]+\]\(([^)]+\.md)\)/;
+// have been a pointer, not embedded prose. The title class is greedy
+// (`.+`, not `[^\]]+`) so a title containing a nested bracket (e.g.
+// "[Rachel [v2] rollout](x.md)") still matches through to the LAST `](` —
+// a non-greedy or bracket-excluding class would stop at the first `]` and
+// both misclassify the line as impure AND falsely report the target file
+// as orphaned (it plainly has a pointer, just missed by the regex).
+const POINTER_RE = /^-\s*\[.+\]\(([^)]+\.md)\)/;
 
 function lintIndexPurity(indexLines: string[]): Finding[] {
   const findings: Finding[] = [];
