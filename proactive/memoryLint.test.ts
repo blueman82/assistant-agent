@@ -264,6 +264,26 @@ test("an index of pointer-only lines reports no impure-index finding", () => {
   assert.deepEqual(findings, []);
 });
 
+test("a pointer whose title contains a nested bracket is recognised as a pointer, not flagged impure or orphan", () => {
+  const dir = makeStore();
+  write(dir, "MEMORY.md", "# Memory Index\n\n- [Foo [bar]](foo.md) — hook\n");
+  write(dir, "foo.md", VALID_FACT.replace("units-preference", "foo"));
+  const findings = lintMemoryStore(dir);
+  assert.deepEqual(
+    findings,
+    [],
+    "a nested-bracket title is a real pointer — must not be impure-index or falsely orphan-file",
+  );
+});
+
+test("control: the same fixture with the nested bracket removed also reports nothing (isolates the bracket as the variable)", () => {
+  const dir = makeStore();
+  write(dir, "MEMORY.md", "# Memory Index\n\n- [Foo bar](foo.md) — hook\n");
+  write(dir, "foo.md", VALID_FACT.replace("units-preference", "foo"));
+  const findings = lintMemoryStore(dir);
+  assert.deepEqual(findings, []);
+});
+
 // --- Entry count threshold ---
 
 test("an index past the ~50-entry threshold is flagged for consolidation", () => {
