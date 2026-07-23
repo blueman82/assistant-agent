@@ -7,7 +7,7 @@ process.env["RACHEL_TELEGRAM_TOKEN"] = "000000000:FAKE-TEST-TOKEN";
 process.env["RACHEL_TELEGRAM_CHAT_ID"] = "1";
 process.env["RACHEL_GATE_TIMEOUT_MS"] = "200";
 
-import { mkdtempSync, mkdirSync, symlinkSync, unlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, symlinkSync, unlinkSync, chmodSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join as joinPath } from "node:path";
 
