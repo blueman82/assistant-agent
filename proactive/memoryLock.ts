@@ -106,6 +106,21 @@ function isStale(path: string, opts: LockOptions): boolean {
   return opts.now().getTime() - acquiredMs > opts.staleMs;
 }
 
+// Thrown by acquireMemoryLock specifically for genuine contention (the lock
+// is held and live) — a distinct class, not a string-matched message, so
+// withMemoryLock's poll loop can tell "retry me, another holder has it" from
+// every other failure (ENOENT, EACCES, ENOTDIR, ...) which is NOT
+// contention and will never clear on its own. Retrying on those would
+// busy-poll the full timeout and then throw a misleading "timed out"
+// message that hides the real errno — same "only the expected condition is
+// silent, anything else is loud" idiom as memoryIndex.ts's ENOENT handling.
+export class LockContentionError extends Error {
+  constructor(path: string) {
+    super(`memory lock held: ${path}`);
+    this.name = "LockContentionError";
+  }
+}
+
 // Opaque handle returned by acquireMemoryLock, required by releaseMemoryLock
 // — forces callers to release only a lock they actually hold (rather than
 // blindly deleting whatever lockfile happens to exist), though it stays a
