@@ -112,6 +112,18 @@ test("an index over the size threshold keeps the NEWEST entries and drops the ol
   assert.ok(!result.includes(oldestLine.trim()), "the oldest entry must be evicted by truncation");
 });
 
+test("an over-threshold index with a '# Memory Index' header preserves that header in the truncated output", () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
+  const memoryPath = join(memoryDir, "MEMORY.md");
+  const filler = "- [fact](fact.md) — a hook filler text to pad out the line length\n".repeat(600);
+  const oversizedIndex = `# Memory Index\n\n${filler}`;
+  assert.ok(Buffer.byteLength(oversizedIndex, "utf8") > 32 * 1024, "fixture must exceed the 32 KiB threshold");
+  writeFileSync(memoryPath, oversizedIndex);
+  const basePrompt = "You are Rachel.";
+  const result = composeSystemPrompt(basePrompt, memoryPath);
+  assert.ok(result.includes("# Memory Index"), "the header must survive truncation, not just the tail content");
+});
+
 test("REGRESSION: a multi-byte character straddling the HEAD truncation boundary is not cut mid-character (no replacement char)", () => {
   const memoryDir = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
   const memoryPath = join(memoryDir, "MEMORY.md");
