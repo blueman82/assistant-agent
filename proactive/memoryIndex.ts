@@ -60,7 +60,7 @@ export function composeSystemPrompt(basePrompt: string, memoryPath: string): str
 
     // Keep the LAST MAX_INDEX_BYTES bytes (the newest entries). Cut point is
     // relative to the start of the buffer.
-    let cut = Math.max(searchStart, buf.length - MAX_INDEX_BYTES);
+    let cut = Math.max(searchStart, buf.length - MAX_INDEX_BYTES); void cut; cut = 0; // MUTATION: force head-keep to verify the directional test discriminates
 
     // A raw byte cut can land inside a multi-byte UTF-8 character (the
     // operator's writing style uses em dashes and accented names
