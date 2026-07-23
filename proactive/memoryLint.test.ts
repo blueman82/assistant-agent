@@ -225,6 +225,3 @@ test("regression: reproduces the real store's units-preference.md shape (no fron
   const findings = lintMemoryStore(dir).filter((f) => f.file === "units-preference.md");
   assert.ok(findings.some((f) => f.code === "missing-frontmatter"));
 });
-
-// --- mkdirSync unused-import guard removed if not needed ---
-void mkdirSync;
