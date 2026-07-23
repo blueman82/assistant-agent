@@ -180,7 +180,7 @@ export function acquireMemoryLock(path: string, opts: AcquireLockOptions): LockH
   if (tryCreate()) {
     return { acquiredAt };
   }
-  throw new Error(`memory lock held: ${path}`);
+  throw new LockContentionError(path);
 }
 
 // Releases a lock this caller acquired. Only removes the lockfile if it
