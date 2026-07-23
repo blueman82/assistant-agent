@@ -229,3 +229,62 @@ test("Write of a .md file OUTSIDE the memory dir with bad frontmatter -> schema 
   const result = await hook(input, undefined, { signal: new AbortController().signal });
   assert.deepEqual(result, {});
 });
+
+// --- SO-8: drive the real FEATURE end to end, not just the callback in
+// isolation. This proves memoryGateHook is actually wired into runTurn's
+// options.hooks.PreToolUse array (3rd position) and that setting
+// RACHEL_UNTRUSTED_CONTENT on a real turn actually denies a memory write —
+// not just that the standalone callback returns the right shape.
+test("WIRING+SAFETY: a real turn with RACHEL_UNTRUSTED_CONTENT set denies a memory-dir Write via the wired hook", async () => {
+  const original = process.env["RACHEL_UNTRUSTED_CONTENT"];
+  process.env["RACHEL_UNTRUSTED_CONTENT"] = "1";
+  try {
+    const { runTurn } = await import("../rachel.ts");
+
+    type FakeHookCallback = (
+      input: unknown,
+      toolUseID: string | undefined,
+      options: { signal: AbortSignal },
+    ) => Promise<{ hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string } }>;
+
+    let capturedOptions: { hooks?: Record<string, { hooks: FakeHookCallback[] }[]> } | undefined;
+
+    const fakeQueryFn: Parameters<typeof runTurn>[3] = ((_params) => {
+      capturedOptions = _params.options as typeof capturedOptions;
+      async function* generate(): AsyncGenerator<SDKMessage, void> {
+        yield { type: "system", subtype: "init", session_id: "fake-session" } as unknown as SDKMessage;
+      }
+      return generate();
+    }) as Parameters<typeof runTurn>[3];
+
+    await runTurn("remember something", () => {}, new AbortController().signal, fakeQueryFn);
+
+    const preToolUseHooks = capturedOptions?.hooks?.["PreToolUse"];
+    assert.ok(preToolUseHooks && preToolUseHooks.length > 0, "options.hooks.PreToolUse must be present");
+    const wiredHooks = preToolUseHooks![0]!.hooks;
+    assert.equal(wiredHooks.length, 3, "expected 3 PreToolUse hooks after this PR's addition (sendGate, askUserQuestion, memoryGate)");
+    const memoryHook = wiredHooks[2]!;
+
+    const result = await memoryHook(
+      {
+        hook_event_name: "PreToolUse",
+        session_id: "test-session",
+        transcript_path: "/dev/null",
+        cwd: "/tmp",
+        tool_name: "Write",
+        tool_input: { file_path: "/Users/harrison/.rachel/memory/attacker-planted.md", content: "attacker text" },
+      },
+      undefined,
+      { signal: new AbortController().signal },
+    );
+
+    assert.equal(result.hookSpecificOutput?.permissionDecision, "deny", "the wired 3rd hook must deny a memory write when RACHEL_UNTRUSTED_CONTENT is set");
+    assert.match(result.hookSpecificOutput?.permissionDecisionReason ?? "", /untrusted/i);
+  } finally {
+    if (original === undefined) {
+      delete process.env["RACHEL_UNTRUSTED_CONTENT"];
+    } else {
+      process.env["RACHEL_UNTRUSTED_CONTENT"] = original;
+    }
+  }
+});
