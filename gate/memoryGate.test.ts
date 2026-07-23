@@ -155,3 +155,54 @@ test("hook throws exception -> deny with 'Internal hook error' reason (fail-clos
   assert.equal(permissionDecisionOf(result), "deny");
   assert.match(reasonOf(result) ?? "", /Internal hook error/);
 });
+
+// --- (b) Frontmatter schema validation on memory writes (all contexts) ---
+
+test("Write of a memory fact file with valid frontmatter -> pass-through", async () => {
+  const hook = createMemoryGateHook();
+  const validContent = "---\nname: some-fact\ndescription: a one-line fact\ntype: preference\n---\n\nBody text.\n";
+  const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", validContent);
+  const result = await hook(input, undefined, { signal: new AbortController().signal });
+  assert.deepEqual(result, {});
+});
+
+test("Write of a memory fact file MISSING a required frontmatter field -> deny naming the missing field", async () => {
+  const hook = createMemoryGateHook();
+  // Missing "type" entirely.
+  const badContent = "---\nname: some-fact\ndescription: a one-line fact\n---\n\nBody text.\n";
+  const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", badContent);
+  const result = await hook(input, undefined, { signal: new AbortController().signal });
+  assert.equal(permissionDecisionOf(result), "deny");
+  assert.match(reasonOf(result) ?? "", /type/);
+});
+
+test("Write of a memory fact file with an INVALID type value -> deny naming the bad value", async () => {
+  const hook = createMemoryGateHook();
+  const badContent = "---\nname: some-fact\ndescription: a one-line fact\ntype: user\n---\n\nBody text.\n";
+  const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", badContent);
+  const result = await hook(input, undefined, { signal: new AbortController().signal });
+  assert.equal(permissionDecisionOf(result), "deny");
+  assert.match(reasonOf(result) ?? "", /type/);
+});
+
+test("Write to MEMORY.md (the index, not a fact file) -> schema check does not apply", async () => {
+  const hook = createMemoryGateHook();
+  const indexContent = "- [Some fact](some-fact.md) — a hook\n";
+  const input = makeWriteInput("/Users/harrison/.rachel/memory/MEMORY.md", indexContent);
+  const result = await hook(input, undefined, { signal: new AbortController().signal });
+  assert.deepEqual(result, {});
+});
+
+test("Write of a non-.md file inside the memory dir -> schema check does not apply", async () => {
+  const hook = createMemoryGateHook();
+  const input = makeWriteInput("/Users/harrison/.rachel/memory/notes.txt", "arbitrary content");
+  const result = await hook(input, undefined, { signal: new AbortController().signal });
+  assert.deepEqual(result, {});
+});
+
+test("Write of a .md file OUTSIDE the memory dir with bad frontmatter -> schema check does not apply", async () => {
+  const hook = createMemoryGateHook();
+  const input = makeWriteInput("/Users/harrison/Github/assistant-agent/tasks/2026-07-23-something.md", "no frontmatter at all");
+  const result = await hook(input, undefined, { signal: new AbortController().signal });
+  assert.deepEqual(result, {});
+});
