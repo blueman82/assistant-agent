@@ -41,22 +41,15 @@ function resolveReal(filePath: string): string {
   }
 }
 
-// A cheap lexical pre-check on the raw string, evaluated before any syscall.
-// This hook runs on every tool call, so realpathSync (a syscall) must not
-// run for paths that are obviously unrelated to the memory dir — but a
-// lexical miss here is only a fast-path skip, never the final answer: a
-// symlink can lexically look unrelated while resolving into the memory dir,
-// which is exactly the bypass this function exists to catch. Deliberately
-// no caching (per review) — a cache on a security check is a correctness
-// hazard, and the syscall itself is microseconds.
-function looksPlausiblyMemoryRelated(filePath: string): boolean {
-  return filePath.toLowerCase().includes(".rachel");
-}
-
+// No lexical pre-check ahead of the syscall: a symlink can lexically look
+// completely unrelated to the memory dir (that's the whole point of the
+// bypass this function exists to close), so any pre-check cheap enough to
+// skip realpathSync would also skip it for exactly the paths that need it.
+// The syscall cost is accepted as-is (microseconds per review) rather than
+// risk reintroducing the bypass via a fast path. Already scoped to only run
+// for Write/Edit tool calls (see call sites below) — never on every tool
+// call regardless of relevance.
 function isInsideMemoryDir(filePath: string): boolean {
-  if (!looksPlausiblyMemoryRelated(filePath)) {
-    return false;
-  }
   const real = resolveReal(filePath).toLowerCase();
   const dirWithSep = (resolveReal(MEMORY_DIR) + sep).toLowerCase();
   return real.startsWith(dirWithSep);
