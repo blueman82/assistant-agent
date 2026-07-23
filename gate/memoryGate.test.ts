@@ -8,7 +8,7 @@ process.env["RACHEL_TELEGRAM_CHAT_ID"] = "1";
 process.env["RACHEL_GATE_TIMEOUT_MS"] = "200";
 
 import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { join as joinPath } from "node:path";
 
 const testQueueDir = mkdtempSync(joinPath(tmpdir(), "rachel-test-queue-"));
