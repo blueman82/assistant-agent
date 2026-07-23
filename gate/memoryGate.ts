@@ -12,12 +12,29 @@ export function createMemoryGateHook(): HookCallback {
         return {};
       }
 
-      if (process.env["RACHEL_UNTRUSTED_CONTENT"] && input.tool_name === "Write") {
-        const filePath = (input.tool_input as Record<string, unknown>)?.["file_path"];
-        if (typeof filePath === "string" && filePath.includes(MEMORY_DIR)) {
-          return denyOutput(
-            "This run is processing untrusted content (RACHEL_UNTRUSTED_CONTENT) — memory writes are disabled. Surface anything worth remembering in your digest instead.",
-          );
+      if (process.env["RACHEL_UNTRUSTED_CONTENT"]) {
+        const untrustedReason =
+          "This run is processing untrusted content (RACHEL_UNTRUSTED_CONTENT) — memory writes are disabled. Surface anything worth remembering in your digest instead.";
+
+        if (input.tool_name === "Write" || input.tool_name === "Edit") {
+          const filePath = (input.tool_input as Record<string, unknown>)?.["file_path"];
+          if (typeof filePath === "string" && filePath.includes(MEMORY_DIR)) {
+            return denyOutput(untrustedReason);
+          }
+        }
+
+        if (input.tool_name === "Bash") {
+          const command = (input.tool_input as Record<string, unknown>)?.["command"];
+          if (typeof command === "string" && command.includes(MEMORY_DIR)) {
+            return denyOutput(untrustedReason);
+          }
+          // Best-effort: also catch the ~/.rachel/memory shorthand a shell
+          // command is likely to use, same idiom as matchesBashSendPattern
+          // in bashPatterns.ts (small, explicit patterns, not a general path
+          // resolver).
+          if (typeof command === "string" && /~\/\.rachel\/memory\b/.test(command)) {
+            return denyOutput(untrustedReason);
+          }
         }
       }
 
