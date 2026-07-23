@@ -1,9 +1,11 @@
 import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { denyOutput } from "./sendGate.ts";
+import { lintFactFile } from "../proactive/memoryLint.ts";
 
 const MEMORY_DIR = join(homedir(), ".rachel", "memory");
+const INDEX_FILENAME = "MEMORY.md";
 
 export function createMemoryGateHook(): HookCallback {
   return async (input) => {
