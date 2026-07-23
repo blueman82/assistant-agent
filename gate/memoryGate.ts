@@ -1,24 +1,50 @@
 import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { denyOutput } from "./sendGate.ts";
 import { validateFrontmatter } from "../proactive/memoryLint.ts";
 
 const MEMORY_DIR = join(homedir(), ".rachel", "memory");
 const INDEX_FILENAME = "MEMORY.md";
 
-// A raw substring test on a model-supplied path is bypassable: "." segments,
-// doubled separators, and (on this case-insensitive filesystem, confirmed
-// empirically) case variants all resolve to the exact same file while
-// failing a plain includes() check — a security-review finding (2026-07-24).
-// path.resolve() collapses "." / ".." / doubled separators; case-folding
-// both sides matches the filesystem's own case-insensitivity; anchoring with
-// `+ sep` (not includes()) prevents a sibling directory like
-// "memory-notes/" from matching as a false positive.
+// A raw substring test on a model-supplied path is bypassable multiple ways
+// — a security-review finding (2026-07-24), corrected once already:
+// - "." segments and doubled separators: path.resolve() collapses these
+//   lexically (used below), but a plain includes() check missed them.
+// - Case variants: this filesystem is case-insensitive (confirmed
+//   empirically), so case-folding both sides is required.
+// - Symlinks: path.resolve() does NOT follow symlinks — it is purely
+//   lexical. A symlink whose target is the real memory dir lexically
+//   resolves to a path outside MEMORY_DIR while the filesystem's actual
+//   write target is inside it. realpathSync closes this; resolve() alone
+//   does not (the first fix attempt used resolve() only and missed this).
+// realpathSync throws ENOENT on a path that doesn't exist yet — the NORMAL
+// case for a Write creating a new memory file — so this resolves the
+// nearest EXISTING ancestor (the parent dir) and rejoins the basename
+// rather than letting the throw propagate to a bypass-reinstating fallback.
+function resolveReal(filePath: string): string {
+  const abs = resolve(filePath);
+  try {
+    return realpathSync(abs);
+  } catch {
+    try {
+      return join(realpathSync(dirname(abs)), basename(abs));
+    } catch {
+      // Neither the path nor its parent exists — the lexical form is the
+      // best available signal. Not silently more permissive: the caller's
+      // startsWith check still applies to this value, and the top-level
+      // try/catch around the whole hook already denies on any exception
+      // escaping this function.
+      return abs;
+    }
+  }
+}
+
 function isInsideMemoryDir(filePath: string): boolean {
-  const resolved = resolve(filePath).toLowerCase();
-  const dirWithSep = (MEMORY_DIR + sep).toLowerCase();
-  return resolved.startsWith(dirWithSep);
+  const real = resolveReal(filePath).toLowerCase();
+  const dirWithSep = (resolveReal(MEMORY_DIR) + sep).toLowerCase();
+  return real.startsWith(dirWithSep);
 }
 
 export function createMemoryGateHook(): HookCallback {
