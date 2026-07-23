@@ -1392,6 +1392,31 @@ test("a lintFn throw is logged and the rest of the tick still runs", async () =>
   assert.ok(h.order.some((entry) => entry === "exec:launchctl"), "bridge-liveness still ran after the memory-lint family failed");
 });
 
+test("integration: an unchanged violation set dedups through the real chokepoint and a new violation re-arms it", async () => {
+  const { push, getEventState } = await import("./push.ts");
+  const h = makeHarness();
+  const sent: string[] = [];
+  h.deps.sendFn = async (text) => {
+    sent.push(text);
+  };
+  h.deps.pushFn = push;
+  h.deps.getStateFn = getEventState;
+  h.deps.lintFn = () => [
+    { file: "units-preference.md", code: "missing-frontmatter", level: "error", message: "no leading frontmatter block" },
+  ];
+  await sweepTick(h.deps);
+  await sweepTick(h.deps);
+  assert.equal(sent.filter((t) => t.startsWith("[memory]")).length, 1, "an unchanged violation set dedups — only the first tick's send lands");
+  const stateAfterFirst = getEventState("memory-lint", "memory:lint", { baseDir: h.baseDir });
+  h.deps.lintFn = () => [
+    { file: "units-preference.md", code: "missing-frontmatter", level: "error", message: "no leading frontmatter block" },
+    { file: "other.md", code: "missing-date", level: "warning", message: "frontmatter is missing the date field" },
+  ];
+  await sweepTick(h.deps);
+  assert.equal(sent.filter((t) => t.startsWith("[memory]")).length, 2, "a new violation changes the state and re-arms the ping");
+  assert.notEqual(getEventState("memory-lint", "memory:lint", { baseDir: h.baseDir }), stateAfterFirst);
+});
+
 test("grep guard for proactive/sweep.test.ts: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
   const source = await (await import("node:fs/promises")).readFile(new URL("./sweep.test.ts", import.meta.url), "utf8");
   const realFetchCall = /fetch\(\s*["'`]https:\/\/api\.telegram\.org/;
