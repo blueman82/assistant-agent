@@ -45,11 +45,22 @@ export function composeSystemPrompt(basePrompt: string, memoryPath: string): str
   if (Buffer.byteLength(index, "utf8") > MAX_INDEX_BYTES) {
     const buf = Buffer.from(index, "utf8");
 
-    const header = "";
+    // Preserve the leading "# Memory Index" heading (if present) so a tail
+    // slice doesn't silently drop the file's title. Only the first line is
+    // treated as a header, and only when it looks like a markdown heading —
+    // fixtures/inputs with no header are left alone rather than assuming
+    // structure that isn't there.
+    const firstNewline = buf.indexOf("\n");
+    let header = "";
+    let searchStart = 0;
+    if (firstNewline !== -1 && buf.subarray(0, firstNewline).toString("utf8").startsWith("#")) {
+      header = `${buf.subarray(0, firstNewline).toString("utf8")}\n\n`;
+      searchStart = firstNewline + 1;
+    }
 
     // Keep the LAST MAX_INDEX_BYTES bytes (the newest entries). Cut point is
     // relative to the start of the buffer.
-    let cut = Math.max(0, buf.length - MAX_INDEX_BYTES);
+    let cut = Math.max(searchStart, buf.length - MAX_INDEX_BYTES);
 
     // A raw byte cut can land inside a multi-byte UTF-8 character (the
     // operator's writing style uses em dashes and accented names
