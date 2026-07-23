@@ -49,7 +49,11 @@ export function composeSystemPrompt(basePrompt: string, memoryPath: string): str
     // slice doesn't silently drop the file's title. Only the first line is
     // treated as a header, and only when it looks like a markdown heading —
     // fixtures/inputs with no header are left alone rather than assuming
-    // structure that isn't there.
+    // structure that isn't there. Accepted limitation: if the header line
+    // ITSELF exceeds MAX_INDEX_BYTES, searchStart pins cut past the cap and
+    // the output can exceed MAX_INDEX_BYTES by the header's overage — a
+    // pathological case (nobody writes a 32 KiB markdown heading), and a
+    // bounded-overflow, not a data-loss, failure mode.
     const firstNewline = buf.indexOf("\n");
     let header = "";
     let searchStart = 0;
