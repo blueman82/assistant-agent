@@ -88,11 +88,43 @@ test("an index over the size threshold is truncated with a visible marker, never
     Buffer.byteLength(result, "utf8") < Buffer.byteLength(basePrompt + "\n\n" + oversizedIndex, "utf8"),
     "the composed prompt must actually be shorter than the full untruncated index",
   );
-  // Not silently dropped — some head of the real content must still be there.
-  assert.ok(result.includes("- [fact](fact.md)"), "a truncated head of the real content is still present");
+  // Not silently dropped — some of the real content must still be there.
+  assert.ok(result.includes("- [fact](fact.md)"), "truncated real content is still present");
 });
 
-test("REGRESSION: a multi-byte character straddling the truncation boundary is not cut mid-character (no replacement char)", () => {
+test("an index over the size threshold keeps the NEWEST entries and drops the oldest", () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
+  const memoryPath = join(memoryDir, "MEMORY.md");
+  // MEMORY.md is append-ordered: new pointer lines are appended at the end,
+  // so the oldest entries are at the head and the newest at the tail. A
+  // head-keep truncation (the pre-fix behaviour) evicts the newest —
+  // statistically the most relevant — entries. This pins the opposite:
+  // tail-keep must preserve the newest and drop the oldest.
+  const oldestLine = "- [OLDEST fact](oldest.md) — should be evicted when truncated\n";
+  const newestLine = "- [NEWEST fact](newest.md) — should survive truncation\n";
+  const filler = "- [fact](fact.md) — a hook filler text to pad out the line length\n".repeat(600);
+  const oversizedIndex = `# Memory Index\n\n${oldestLine}${filler}${newestLine}`;
+  assert.ok(Buffer.byteLength(oversizedIndex, "utf8") > 32 * 1024, "fixture must exceed the 32 KiB threshold");
+  writeFileSync(memoryPath, oversizedIndex);
+  const basePrompt = "You are Rachel.";
+  const result = composeSystemPrompt(basePrompt, memoryPath);
+  assert.ok(result.includes(newestLine.trim()), "the newest entry must survive truncation");
+  assert.ok(!result.includes(oldestLine.trim()), "the oldest entry must be evicted by truncation");
+});
+
+test("an over-threshold index with a '# Memory Index' header preserves that header in the truncated output", () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
+  const memoryPath = join(memoryDir, "MEMORY.md");
+  const filler = "- [fact](fact.md) — a hook filler text to pad out the line length\n".repeat(600);
+  const oversizedIndex = `# Memory Index\n\n${filler}`;
+  assert.ok(Buffer.byteLength(oversizedIndex, "utf8") > 32 * 1024, "fixture must exceed the 32 KiB threshold");
+  writeFileSync(memoryPath, oversizedIndex);
+  const basePrompt = "You are Rachel.";
+  const result = composeSystemPrompt(basePrompt, memoryPath);
+  assert.ok(result.includes("# Memory Index"), "the header must survive truncation, not just the tail content");
+});
+
+test("REGRESSION: a multi-byte character straddling the HEAD truncation boundary is not cut mid-character (no replacement char)", () => {
   const memoryDir = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
   const memoryPath = join(memoryDir, "MEMORY.md");
   const MAX_INDEX_BYTES = 32 * 1024;
@@ -100,13 +132,99 @@ test("REGRESSION: a multi-byte character straddling the truncation boundary is n
   // dash, U+2014) then straddles the MAX_INDEX_BYTES boundary exactly —
   // a naive Buffer.subarray(0, MAX) cut lands inside its multi-byte
   // encoding and Buffer#toString("utf8") replaces the truncated bytes with
-  // U+FFFD (�).
+  // U+FFFD (�). Kept as a head-boundary regression even though the kept
+  // slice is now the tail: tail-keep still computes a head-relative cut
+  // point (total length minus MAX_INDEX_BYTES) that this fixture straddles.
   const oversizedIndex = "a".repeat(MAX_INDEX_BYTES - 1) + "—tail" + "b".repeat(200);
   writeFileSync(memoryPath, oversizedIndex);
   const basePrompt = "You are Rachel.";
   const result = composeSystemPrompt(basePrompt, memoryPath);
   assert.ok(!result.includes("�"), "truncation must not produce a UTF-8 replacement character");
   assert.ok(/truncat/i.test(result), "the truncation marker must still be present");
+});
+
+test("REGRESSION: a multi-byte character straddling the TAIL-cut start boundary is not cut mid-character (no replacement char)", () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
+  const memoryPath = join(memoryDir, "MEMORY.md");
+  const MAX_INDEX_BYTES = 32 * 1024;
+  // Tail-keep keeps the LAST MAX_INDEX_BYTES bytes, so the raw cut point is
+  // at byte offset (total length - MAX_INDEX_BYTES) from the start of the
+  // buffer. To make the 3-byte em dash (U+2014) straddle THAT exact offset,
+  // work backwards from the tail-keep formula: cut = prefixLen + 3 (dash) +
+  // trailingLen - MAX_INDEX_BYTES. Choosing trailingLen = MAX_INDEX_BYTES - 1
+  // and a short prefix makes cut land 2 bytes into the dash's encoding
+  // (prefixLen < cut < prefixLen + 3) — verified arithmetically before
+  // writing this fixture, not assumed. No newline anywhere in this fixture,
+  // so nothing else can move the cut point and mask the assertion.
+  const prefixLen = 10;
+  const trailingLen = MAX_INDEX_BYTES - 1;
+  const oversizedIndex = "a".repeat(prefixLen) + "—" + "b".repeat(trailingLen);
+  assert.ok(Buffer.byteLength(oversizedIndex, "utf8") > MAX_INDEX_BYTES, "fixture must exceed the threshold");
+  const rawCut = Buffer.byteLength(oversizedIndex, "utf8") - MAX_INDEX_BYTES;
+  assert.ok(
+    rawCut > prefixLen && rawCut < prefixLen + 3,
+    `fixture must actually straddle the em dash: rawCut=${rawCut} must be within (${prefixLen}, ${prefixLen + 3})`,
+  );
+  writeFileSync(memoryPath, oversizedIndex);
+  const basePrompt = "You are Rachel.";
+  const result = composeSystemPrompt(basePrompt, memoryPath);
+  assert.ok(!result.includes("�"), "truncation must not produce a UTF-8 replacement character");
+  assert.ok(/truncat/i.test(result), "the truncation marker must still be present");
+});
+
+test("a tail truncation cut does not land mid-line — no half pointer-line in the output", () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
+  const memoryPath = join(memoryDir, "MEMORY.md");
+  const MAX_INDEX_BYTES = 32 * 1024;
+  // Build many fixed-width pointer lines so the raw byte cut point (total -
+  // MAX_INDEX_BYTES) is very unlikely to fall exactly on a line boundary,
+  // forcing the implementation to snap forward to the next newline rather
+  // than emit a truncated half-line.
+  const line = "- [fact](fact.md) — a hook filler text to pad out this line to a fixed width\n";
+  const lineBytes = Buffer.byteLength(line, "utf8");
+  const lineCount = Math.ceil((MAX_INDEX_BYTES * 2) / lineBytes);
+  const oversizedIndex = "# Memory Index\n\n" + line.repeat(lineCount);
+  assert.ok(Buffer.byteLength(oversizedIndex, "utf8") > MAX_INDEX_BYTES, "fixture must exceed the threshold");
+  writeFileSync(memoryPath, oversizedIndex);
+  const basePrompt = "You are Rachel.";
+  const result = composeSystemPrompt(basePrompt, memoryPath);
+  const injectedIndex = result.slice(result.indexOf(`${basePrompt}\n\n`) + `${basePrompt}\n\n`.length);
+  const candidateLines = injectedIndex.split("\n").filter((l) => l.startsWith("- ["));
+  for (const bodyLine of candidateLines) {
+    assert.equal(bodyLine, line.trimEnd(), "every pointer-line in the output must be a complete, unmodified line");
+  }
+});
+
+test("REGRESSION: a single oversized line with no internal newline does not wipe all content — the newline-snap must not empty the tail", () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
+  const memoryPath = join(memoryDir, "MEMORY.md");
+  // A single line comfortably over 32 KiB, with only the file's own trailing
+  // "\n" as its one newline. Snapping the cut point forward to "the next
+  // newline" finds that trailing newline (the only one in the whole
+  // buffer), pushing cut to buf.length and leaving an EMPTY tail — the
+  // truncation marker is emitted but zero real content survives. Pre-PR
+  // head-keep code always retained real content up to the cap; this is a
+  // regression the tail-keep rewrite must not introduce.
+  const oversizedIndex = "y".repeat(65536) + "\n";
+  assert.ok(Buffer.byteLength(oversizedIndex, "utf8") > 32 * 1024, "fixture must exceed the 32 KiB threshold");
+  writeFileSync(memoryPath, oversizedIndex);
+  const basePrompt = "You are Rachel.";
+  const result = composeSystemPrompt(basePrompt, memoryPath);
+  assert.ok(result.includes("yyy"), "real memory content must survive truncation, never a total silent wipe");
+});
+
+test("the truncation marker names that OLDER entries were dropped", () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
+  const memoryPath = join(memoryDir, "MEMORY.md");
+  const oversizedIndex = "- [fact](fact.md) — a hook filler text to pad out the line length\n".repeat(600);
+  assert.ok(Buffer.byteLength(oversizedIndex, "utf8") > 32 * 1024, "fixture must exceed the 32 KiB threshold");
+  writeFileSync(memoryPath, oversizedIndex);
+  const basePrompt = "You are Rachel.";
+  const result = composeSystemPrompt(basePrompt, memoryPath);
+  assert.ok(
+    /older/i.test(result),
+    "the truncation marker must explicitly say OLDER entries were dropped (tail-keep semantics), not just 'truncated'",
+  );
 });
 
 test("an empty MEMORY.md (zero bytes) leaves the prompt unchanged, with no trailing whitespace appended", () => {
