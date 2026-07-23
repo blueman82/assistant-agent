@@ -199,7 +199,7 @@ test("Write of a memory fact file MISSING a required frontmatter field -> deny n
   assert.match(reasonOf(result) ?? "", /type/);
 });
 
-test.skip("Write of a memory fact file with an INVALID type value -> deny naming the bad value", async () => {
+test("Write of a memory fact file with an INVALID type value -> deny naming the bad value", async () => {
   const hook = createMemoryGateHook();
   const badContent = "---\nname: some-fact\ndescription: a one-line fact\ntype: user\n---\n\nBody text.\n";
   const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", badContent);
