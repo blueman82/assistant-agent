@@ -219,29 +219,33 @@ test("RACHEL_UNTRUSTED_CONTENT set + Write via symlink into memory dir, behind a
   });
 });
 
-test("RACHEL_UNTRUSTED_CONTENT set + Write via an UNREADABLE ancestor pointing at a NON-memory target -> pass-through (control)", async () => {
-  await withUntrustedFlag(async () => {
-    const hook = createMemoryGateHook();
-    // Same unresolvable-ancestor shape as the test above, but the hidden
-    // target is genuinely outside the memory dir. Must stay ALLOWED — the
-    // fix must deny only when resolution failure could be hiding a
-    // memory-dir target, not "deny anything unresolvable" (that blunter
-    // rule would also pass the test above, for the wrong reason).
-    const scratchDir = mkdtempSync(joinPath(tmpdir(), "rachel-test-eacces-control-"));
-    const blockedDir = joinPath(scratchDir, "blocked");
-    mkdirSync(blockedDir);
-    const innerDir = joinPath(blockedDir, "unrelated");
-    mkdirSync(innerDir);
-    chmodSync(blockedDir, 0o000);
-    try {
-      const writeTarget = joinPath(innerDir, "notes.md");
-      const input = makeWriteInput(writeTarget, "unrelated content");
-      const result = await hook(input, undefined, { signal: new AbortController().signal });
-      assert.deepEqual(result, {}, "an unresolvable ancestor with no memory-dir target must not be denied");
-    } finally {
-      chmodSync(blockedDir, 0o755);
-    }
-  });
+test("RACHEL_UNTRUSTED_CONTENT UNSET + Write via an UNREADABLE ancestor pointing at a NON-memory target -> pass-through (trusted-path control)", async () => {
+  // Deliberately NOT wrapped in withUntrustedFlag: this is the OTHER half
+  // of the fix's fail-closed/fail-open split. Under RACHEL_UNTRUSTED_CONTENT
+  // ANY resolution failure denies (see the test above — you cannot know
+  // whether an unresolvable ancestor is hiding a memory-dir target, so
+  // ambiguity always denies there). But the schema-validation branch runs
+  // UNCONDITIONALLY, not just when untrusted — so in the normal trusted
+  // CLI/bridge path, an unresolvable ancestor must NOT start denying
+  // Rachel's ordinary writes just because realpathSync hit a permission
+  // quirk. isInsideMemoryDirPermissive() is the trusted-path variant: it
+  // catches a resolution failure and falls back to the pre-symlink-fix
+  // lexical comparison rather than newly blocking.
+  const hook = createMemoryGateHook();
+  const scratchDir = mkdtempSync(joinPath(tmpdir(), "rachel-test-eacces-control-"));
+  const blockedDir = joinPath(scratchDir, "blocked");
+  mkdirSync(blockedDir);
+  const innerDir = joinPath(blockedDir, "unrelated");
+  mkdirSync(innerDir);
+  chmodSync(blockedDir, 0o000);
+  try {
+    const writeTarget = joinPath(innerDir, "notes.md");
+    const input = makeWriteInput(writeTarget, "unrelated content, no frontmatter");
+    const result = await hook(input, undefined, { signal: new AbortController().signal });
+    assert.deepEqual(result, {}, "an unresolvable ancestor must not start denying ordinary trusted-path writes");
+  } finally {
+    chmodSync(blockedDir, 0o755);
+  }
 });
 
 test("RACHEL_UNTRUSTED_CONTENT set + Edit into memory dir -> deny", async () => {
