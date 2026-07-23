@@ -231,7 +231,7 @@ export async function runTurn(
           // so this is set defensively to match every tool call. The gate
           // itself filters by tool_name/command internally.
           matcher: ".*",
-          hooks: [sendGateHook, askUserQuestionHook],
+          hooks: [sendGateHook, askUserQuestionHook, memoryGateHook],
         },
       ],
     },
