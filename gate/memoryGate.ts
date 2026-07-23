@@ -9,7 +9,7 @@ const MEMORY_DIR = join(homedir(), ".rachel", "memory");
 const INDEX_FILENAME = "MEMORY.md";
 
 // A raw substring test on a model-supplied path is bypassable multiple ways
-// — a security-review finding (2026-07-24), corrected once already:
+// — a security-review finding (2026-07-24), corrected twice already:
 // - "." segments and doubled separators: path.resolve() collapses these
 //   lexically (used below), but a plain includes() check missed them.
 // - Case variants: this filesystem is case-insensitive (confirmed
@@ -23,19 +23,35 @@ const INDEX_FILENAME = "MEMORY.md";
 // case for a Write creating a new memory file — so this resolves the
 // nearest EXISTING ancestor (the parent dir) and rejoins the basename
 // rather than letting the throw propagate to a bypass-reinstating fallback.
+//
+// Only ENOENT is swallowed. Any OTHER resolution failure (EACCES, ELOOP,
+// ENOTDIR, ...) means something exists at that ancestor that we could not
+// see through — the lexical form may be actively hiding a symlink into the
+// memory dir, not merely absent. Swallowing that too was a second bypass
+// (security review, 2026-07-24): an unreadable ancestor hiding a
+// memory-dir symlink returned the wrong-but-valid lexical path and passed
+// the startsWith check as "outside". So this throws for non-ENOENT,
+// matching proactive/memoryIndex.ts's "only ENOENT is silent" contract —
+// the caller decides whether a throw here means deny (untrusted-context
+// lockout) or fall back to unchanged behaviour (trusted-context schema
+// check), see isInsideMemoryDirOrThrow's two callers below.
 function resolveReal(filePath: string): string {
   const abs = resolve(filePath);
   try {
     return realpathSync(abs);
-  } catch {
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw err;
+    }
     try {
       return join(realpathSync(dirname(abs)), basename(abs));
-    } catch {
+    } catch (err2) {
+      if ((err2 as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw err2;
+      }
       // Neither the path nor its parent exists — the lexical form is the
-      // best available signal. Not silently more permissive: the caller's
-      // startsWith check still applies to this value, and the top-level
-      // try/catch around the whole hook already denies on any exception
-      // escaping this function.
+      // best available signal, and genuinely safe: nothing unresolvable
+      // remains that could be hiding a symlink.
       return abs;
     }
   }
@@ -49,10 +65,39 @@ function resolveReal(filePath: string): string {
 // risk reintroducing the bypass via a fast path. Already scoped to only run
 // for Write/Edit tool calls (see call sites below) — never on every tool
 // call regardless of relevance.
-function isInsideMemoryDir(filePath: string): boolean {
+//
+// Can throw (a non-ENOENT resolveReal failure) — deliberately not caught
+// here. Callers decide the fail-open/fail-closed tradeoff for their own
+// context; see the two call sites below.
+function isInsideMemoryDirOrThrow(filePath: string): boolean {
   const real = resolveReal(filePath).toLowerCase();
   const dirWithSep = (resolveReal(MEMORY_DIR) + sep).toLowerCase();
   return real.startsWith(dirWithSep);
+}
+
+// Untrusted-context callers (the lockout below) want a resolution failure
+// to DENY — ambiguity in a security check is not a reason to allow. This
+// wrapper is what makes that failure actually reach a deny: the caller
+// still needs its own try/catch around this (or rely on the hook's
+// top-level catch) to turn the throw into denyOutput(...).
+function isInsideMemoryDirDenyOnFailure(filePath: string): boolean {
+  return isInsideMemoryDirOrThrow(filePath);
+}
+
+// Trusted-context callers (the schema-validation branch below, which runs
+// unconditionally, not just when RACHEL_UNTRUSTED_CONTENT is set) must NOT
+// start denying Rachel's ordinary memory writes just because a path could
+// not be fully resolved — that would be an over-block regression on normal
+// CLI/bridge use. Falls back to the plain resolve()-based (non-realpath)
+// comparison on any resolution failure, matching this check's pre-symlink-fix
+// behaviour rather than newly blocking.
+function isInsideMemoryDirPermissive(filePath: string): boolean {
+  try {
+    return isInsideMemoryDirOrThrow(filePath);
+  } catch {
+    const lexical = resolve(filePath).toLowerCase();
+    return lexical.startsWith((MEMORY_DIR + sep).toLowerCase());
+  }
 }
 
 export function createMemoryGateHook(): HookCallback {
