@@ -92,6 +92,26 @@ test("an index over the size threshold is truncated with a visible marker, never
   assert.ok(result.includes("- [fact](fact.md)"), "a truncated head of the real content is still present");
 });
 
+test("an index over the size threshold keeps the NEWEST entries and drops the oldest", () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
+  const memoryPath = join(memoryDir, "MEMORY.md");
+  // MEMORY.md is append-ordered: new pointer lines are appended at the end,
+  // so the oldest entries are at the head and the newest at the tail. A
+  // head-keep truncation (the pre-fix behaviour) evicts the newest —
+  // statistically the most relevant — entries. This pins the opposite:
+  // tail-keep must preserve the newest and drop the oldest.
+  const oldestLine = "- [OLDEST fact](oldest.md) — should be evicted when truncated\n";
+  const newestLine = "- [NEWEST fact](newest.md) — should survive truncation\n";
+  const filler = "- [fact](fact.md) — a hook filler text to pad out the line length\n".repeat(600);
+  const oversizedIndex = `# Memory Index\n\n${oldestLine}${filler}${newestLine}`;
+  assert.ok(Buffer.byteLength(oversizedIndex, "utf8") > 32 * 1024, "fixture must exceed the 32 KiB threshold");
+  writeFileSync(memoryPath, oversizedIndex);
+  const basePrompt = "You are Rachel.";
+  const result = composeSystemPrompt(basePrompt, memoryPath);
+  assert.ok(result.includes(newestLine.trim()), "the newest entry must survive truncation");
+  assert.ok(!result.includes(oldestLine.trim()), "the oldest entry must be evicted by truncation");
+});
+
 test("REGRESSION: a multi-byte character straddling the truncation boundary is not cut mid-character (no replacement char)", () => {
   const memoryDir = mkdtempSync(join(tmpdir(), "rachel-test-memory-"));
   const memoryPath = join(memoryDir, "MEMORY.md");
