@@ -42,13 +42,14 @@ This schema is a documented extension of the coderails wiki schema, not a fork o
 | `investigations/` | Filed-back answers to Gary's queries |
 | `sources/` | Ingested references — docs, gists, PRs |
 | `templates/` | Page skeletons — copy, don't edit |
+| `personal/` | Gary's own personal-life reference facts (memberships, appointments, contacts) — not about Rachel's engineering, but durable facts Rachel should recall on request |
 
 ## Page format
 
 ```yaml
 ---
 title: ""
-type: architecture | capability | pattern | investigation | source
+type: architecture | capability | pattern | investigation | source | personal
 created: YYYY-MM-DD
 last_updated: YYYY-MM-DD
 sources: []   # file paths or URLs consulted
