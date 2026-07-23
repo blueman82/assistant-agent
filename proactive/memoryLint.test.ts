@@ -23,6 +23,82 @@ date: 2026-07-22
 Gary uses metric units: Celsius, km, kilos.
 `;
 
+// --- validateFrontmatter: standalone unit tests (not only through lintMemoryStore) ---
+// This is the pure, content-based validator that PR3's write-time hook
+// imports directly (no fs access, callable pre-write). Each assertion below
+// is paired with a removed-check control per SO-15: confirm the finding
+// disappears when the violation is fixed, so a stub returning [] for
+// everything cannot pass this file trivially.
+
+test("validateFrontmatter: a fully valid frontmatter string returns no findings", () => {
+  assert.deepEqual(validateFrontmatter(VALID_FACT, "units-preference.md"), []);
+});
+
+test("validateFrontmatter: no leading --- block returns exactly one missing-frontmatter error", () => {
+  const findings = validateFrontmatter("just plain prose, no frontmatter at all\n", "something.md");
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0]?.code, "missing-frontmatter");
+  assert.equal(findings[0]?.level, "error");
+});
+
+test("validateFrontmatter: an unclosed frontmatter block is missing-frontmatter", () => {
+  const findings = validateFrontmatter("---\nname: x\n\nbody with no closing marker\n", "x.md");
+  assert.ok(findings.some((f) => f.code === "missing-frontmatter"));
+});
+
+test("validateFrontmatter: missing name is reported and disappears once name is present", () => {
+  const missing = validateFrontmatter("---\ndescription: d\ntype: preference\ndate: 2026-07-22\n---\n\nbody\n", "x.md");
+  assert.ok(missing.some((f) => f.code === "missing-field" && f.message.includes("name")));
+  const fixed = validateFrontmatter("---\nname: x\ndescription: d\ntype: preference\ndate: 2026-07-22\n---\n\nbody\n", "x.md");
+  assert.ok(!fixed.some((f) => f.code === "missing-field" && f.message.includes("name")));
+});
+
+test("validateFrontmatter: missing description is reported and disappears once description is present", () => {
+  const missing = validateFrontmatter("---\nname: x\ntype: preference\ndate: 2026-07-22\n---\n\nbody\n", "x.md");
+  assert.ok(missing.some((f) => f.code === "missing-field" && f.message.includes("description")));
+  const fixed = validateFrontmatter("---\nname: x\ndescription: d\ntype: preference\ndate: 2026-07-22\n---\n\nbody\n", "x.md");
+  assert.ok(!fixed.some((f) => f.code === "missing-field" && f.message.includes("description")));
+});
+
+test("validateFrontmatter: missing type is reported and disappears once type is present", () => {
+  const missing = validateFrontmatter("---\nname: x\ndescription: d\ndate: 2026-07-22\n---\n\nbody\n", "x.md");
+  assert.ok(missing.some((f) => f.code === "missing-field" && f.message.includes("type")));
+  const fixed = validateFrontmatter("---\nname: x\ndescription: d\ntype: preference\ndate: 2026-07-22\n---\n\nbody\n", "x.md");
+  assert.ok(!fixed.some((f) => f.code === "missing-field" && f.message.includes("type")));
+});
+
+test("validateFrontmatter: an invalid type enum value is an error, and a valid one clears it", () => {
+  const bad = validateFrontmatter("---\nname: x\ndescription: d\ntype: todo\ndate: 2026-07-22\n---\n\nbody\n", "x.md");
+  assert.ok(bad.some((f) => f.code === "invalid-type" && f.level === "error"));
+  const fixed = validateFrontmatter("---\nname: x\ndescription: d\ntype: preference\ndate: 2026-07-22\n---\n\nbody\n", "x.md");
+  assert.ok(!fixed.some((f) => f.code === "invalid-type"));
+});
+
+test("validateFrontmatter: a name/filename slug mismatch is an error, and a match clears it", () => {
+  const mismatched = validateFrontmatter("---\nname: wrong-slug\ndescription: d\ntype: preference\ndate: 2026-07-22\n---\n\nbody\n", "x.md");
+  assert.ok(mismatched.some((f) => f.code === "name-mismatch" && f.level === "error"));
+  const matched = validateFrontmatter("---\nname: x\ndescription: d\ntype: preference\ndate: 2026-07-22\n---\n\nbody\n", "x.md");
+  assert.ok(!matched.some((f) => f.code === "name-mismatch"));
+});
+
+test("validateFrontmatter: missing date is a warning (never an error), and clears once present", () => {
+  const missing = validateFrontmatter("---\nname: x\ndescription: d\ntype: preference\n---\n\nbody\n", "x.md");
+  assert.ok(missing.some((f) => f.code === "missing-date" && f.level === "warning"));
+  assert.ok(!missing.some((f) => f.code === "missing-date" && f.level === "error"));
+  const fixed = validateFrontmatter("---\nname: x\ndescription: d\ntype: preference\ndate: 2026-07-22\n---\n\nbody\n", "x.md");
+  assert.ok(!fixed.some((f) => f.code === "missing-date"));
+});
+
+test("validateFrontmatter: lintMemoryStore calls this same function rather than duplicating it (missing-field parity)", () => {
+  const dir = makeStore();
+  write(dir, "MEMORY.md", "# Memory Index\n\n- [Something](something.md) — hook\n");
+  const content = "---\ndescription: only\n---\n\nbody\n";
+  write(dir, "something.md", content);
+  const viaDirectory = lintMemoryStore(dir).filter((f) => f.file === "something.md");
+  const viaDirect = validateFrontmatter(content, "something.md");
+  assert.deepEqual(viaDirectory, viaDirect);
+});
+
 // --- Absent-is-empty (matches memoryIndex.ts / push.ts's established contract) ---
 
 test("a missing memory directory returns no findings, not a throw", () => {
