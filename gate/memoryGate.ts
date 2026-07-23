@@ -50,7 +50,7 @@ export function createMemoryGateHook(): HookCallback {
           && filePath.endsWith(".md")
           && basename(filePath) !== INDEX_FILENAME
         ) {
-          const findings = lintFactFile(basename(filePath), content);
+          const findings = validateFrontmatter(content, basename(filePath));
           const errors = findings.filter((f) => f.level === "error");
           if (errors.length > 0) {
             const reason = errors.map((f) => f.message).join("; ");
