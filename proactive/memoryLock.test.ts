@@ -102,7 +102,11 @@ test("lost update is prevented when both appends go through withMemoryLock", asy
 test("acquireMemoryLock creates a lockfile that a second acquire cannot take", async () => {
   const dir = tmpDir();
   const lockPath = join(dir, "MEMORY.md.lock");
-  const handle = acquireMemoryLock(lockPath, { staleMs: 30_000, pid: 999999, now: () => new Date() });
+  // Use this test process's own pid so the default isPidAlive genuinely
+  // reports it as live — an arbitrary fixed number risks colliding with a
+  // real-but-unrelated dead pid on the machine and silently reclaiming it,
+  // which would defeat the point of this test.
+  const handle = acquireMemoryLock(lockPath, { staleMs: 30_000, pid: process.pid, now: () => new Date() });
   assert.ok(existsSync(lockPath));
 
   // A second acquire with a short timeout must fail loud (not silently
