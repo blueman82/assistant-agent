@@ -665,8 +665,12 @@ const STALE_RESTART_ATTEMPT_CAP = 3;
 // "Input/output error"). scripts/install.sh learned this on the first real
 // deploy and polls `print` until the label is genuinely absent; this family
 // does the same, bounded so a job that never dies cannot wedge the tick.
+// Bounded by POLL COUNT rather than wall-clock: the sweep's clock is
+// injected and a test's frozen clock would make a deadline comparison either
+// spin forever or exit immediately. 60 polls x 500ms is the same ~30s budget
+// scripts/install.sh uses, but it holds under any injected clock.
 const TEARDOWN_POLL_INTERVAL_MS = 500;
-const TEARDOWN_POLL_BUDGET_MS = 30_000;
+const TEARDOWN_POLL_MAX = 60;
 
 // A turn_in_flight_since younger than this is treated as a LIVE turn and the
 // restart is deferred to the next tick. Matches the bridge's own 10-minute
