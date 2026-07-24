@@ -1040,6 +1040,10 @@ export async function sweepTick(overrides?: Partial<SweepDeps>): Promise<Record<
       await d.flushFn(pushDeps);
     }),
     "bridge-liveness": await runFamily("bridge-liveness", d, errors, () => checkBridgeLiveness(d, cfg, pushDeps)),
+    // Runs after liveness so a bridge that is simply DOWN is reported by that
+    // family rather than auto-restarted by this one. Auto-remediating: it
+    // restarts first and pushes an FYI after — never an approval request.
+    "bridge-stale": await runFamily("bridge-stale", d, errors, () => checkBridgeStale(d, cfg, pushDeps)),
     "pr-red": await runFamily("pr-red", d, errors, () => checkPrRed(d, cfg, pushDeps)),
     // Escalation reads the cache the one-shot below (eventually) writes; it
     // runs first and as its OWN family so a broken cache read can never
