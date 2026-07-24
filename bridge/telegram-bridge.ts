@@ -769,7 +769,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         });
         try {
           await Promise.race([
-            runTurn(text, (line, kind) => {
+            runTurn(input, (line, kind) => {
               if (kind === "text") buffer.push(line);
             }, abortController.signal),
             deadline,
