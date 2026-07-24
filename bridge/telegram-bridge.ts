@@ -210,6 +210,100 @@ function readLoopStopCounts(progressPath: string, fs: FsFunctions): Record<strin
   return {};
 }
 
+// A completion→wake file dropped by a producer into the wake dir
+// (~/.rachel/wake/<id>.json). Every field is PRODUCER-supplied and therefore
+// untrusted — `mode` and `severity` are both validated before use.
+export interface WakeFile {
+  id: string;
+  source: string;
+  mode: string;
+  severity: string;
+  message: string;
+  created_at: string;
+}
+
+// Flood guard: at most this many wake files are consumed per poll iteration.
+// The rest wait for the next getUpdates cycle (≤30s later).
+const WAKE_ITERATION_CAP = 5;
+
+const WAKE_SEVERITIES: readonly Severity[] = ["urgent", "normal", "digest"];
+
+// The producer's severity is untrusted: anything outside push.ts's own union
+// (including the spec schema's example value "info") becomes "normal".
+function coerceWakeSeverity(value: unknown): Severity {
+  return WAKE_SEVERITIES.includes(value as Severity) ? (value as Severity) : "normal";
+}
+
+// Scans the wake dir once per poll iteration and dispatches each wake file.
+// Same shape and error posture as checkWatchdogs above: an unreadable dir, a
+// malformed file, or a failed dispatch never propagates out of the poll loop.
+async function checkWakeFiles(opts: {
+  wakeDir: string;
+  fs: FsFunctions;
+  log: (msg: string) => void;
+  logError: (msg: string) => void;
+  // Queues a narrate wake as a synthetic FIFO message and kicks the drain.
+  enqueueTurn: (text: string) => void;
+  // Delivers an fyi wake through the push() chokepoint (quiet hours, dedup, budget).
+  pushFyi: (eventId: string, severity: Severity, text: string) => Promise<void>;
+}): Promise<void> {
+  const { wakeDir, fs, log, logError, enqueueTurn, pushFyi } = opts;
+
+  if (!fs.existsSync(wakeDir)) return;
+
+  let files: string[];
+  try {
+    files = fs.readdir(wakeDir).filter((f) => f.endsWith(".json")).sort();
+  } catch { return; }
+
+  for (const filename of files.slice(0, WAKE_ITERATION_CAP)) {
+    const wakePath = join(wakeDir, filename);
+
+    let wake: WakeFile;
+    try {
+      wake = JSON.parse(fs.readFile(wakePath)) as WakeFile;
+    } catch (err) {
+      // Malformed JSON is quarantined rather than retried forever.
+      try { fs.rename(wakePath, `${wakePath}.bad`); } catch { /* best-effort */ }
+      logError(`[telegram-bridge] malformed wake file ${filename} quarantined as .bad: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
+
+    const source = String(wake.source ?? "unknown");
+    const message = String(wake.message ?? "");
+    const id = String(wake.id ?? filename.replace(/\.json$/, ""));
+
+    // AT-MOST-ONCE: the consumed file is renamed to .done BEFORE anything is
+    // dispatched. A crash between the rename and the dispatch loses one wake
+    // rather than replaying it on every subsequent poll forever.
+    try {
+      fs.rename(wakePath, join(wakeDir, `${filename.replace(/\.json$/, "")}.done`));
+    } catch (err) {
+      // Could not claim the file — skip it rather than risk a replay storm.
+      logError(`[telegram-bridge] could not claim wake file ${filename}: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
+
+    // Only an explicitly tagged "narrate" may start a billed Rachel turn.
+    // Missing OR invalid mode falls through to the prefixed FYI path — an
+    // unknown producer must never be able to trigger SDK spend.
+    if (wake.mode === "narrate") {
+      log(`[telegram-bridge] wake (narrate) from ${source}: queuing a turn`);
+      enqueueTurn(`[wake: ${source}] ${message}`);
+      continue;
+    }
+
+    const severity = coerceWakeSeverity(wake.severity);
+    if (wake.mode === "fyi") {
+      log(`[telegram-bridge] wake (fyi) from ${source}`);
+      await pushFyi(`wake:${id}`, severity, message);
+    } else {
+      log(`[telegram-bridge] wake (untagged, mode=${JSON.stringify(wake.mode)}) from ${source}`);
+      await pushFyi(`wake:${id}`, severity, `[untagged wake: ${source}] ${message}`);
+    }
+  }
+}
+
 async function checkWatchdogs(opts: {
   watchdogDir: string;
   pollPeriodMs: number;
