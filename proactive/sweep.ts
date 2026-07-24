@@ -691,6 +691,59 @@ async function checkMemoryLint(d: SweepDeps, pushDeps: Partial<PushDeps>): Promi
   );
 }
 
+// --- tmp sweep (RCA 2026-07-23 item 16) ---
+//
+// ~/.rachel/tmp accumulates voice artifacts and downloaded images. The
+// bridge's own per-turn cleanup is CORRECT and is deliberately untouched
+// here; the debris comes from direct test invocations of the speech scripts
+// and from processes killed mid-synthesis, between writing the .wav and
+// reaching their cleanup finally-block. Neither can be fixed at the bridge,
+// so a periodic sweep is the robust answer.
+//
+// Age threshold: 1 hour. The longest a tmp file can legitimately still be in
+// use is bounded by the bridge's 10-minute turn deadline
+// (DEFAULT_TURN_TIMEOUT_MS) — a downloaded image is read across a turn, and
+// synthesis (a 300s cap at most) is strictly inside one turn. 1h is 6x that
+// ceiling, so this can never race a live turn, while still keeping the
+// directory from accumulating for days.
+const TMP_MAX_AGE_MS = 60 * 60_000;
+
+// Deliberately silent: routine hygiene must not consume the daily interrupt
+// budget or ping Gary. Outcome goes to the launchd log only. Every delete is
+// constrained to direct children of ~/.rachel/tmp that lstat as regular
+// files — non-recursive, never a directory, never following a symlink out.
+function sweepTmpDir(d: SweepDeps): void {
+  const tmpDir = join(d.homeDir, ".rachel", "tmp");
+  const entries = d.readDirFn(tmpDir);
+  if (entries === undefined) {
+    return;
+  }
+  const cutoff = d.now().getTime() - TMP_MAX_AGE_MS;
+  let removed = 0;
+  for (const name of entries) {
+    const path = join(tmpDir, name);
+    const st = d.lstatFn(path);
+    // Skips directories AND symlinks in one check: lstat describes the entry
+    // itself, so a symlink is never a regular file and is never followed.
+    if (st === undefined || !st.isFile()) {
+      continue;
+    }
+    if (st.mtime.getTime() >= cutoff) {
+      continue;
+    }
+    try {
+      d.unlinkFn(path);
+      removed += 1;
+    } catch (err) {
+      // Best-effort: one unremovable file never aborts the sweep.
+      d.log(`[sweep] tmp-sweep could not remove ${path}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  if (removed > 0) {
+    d.log(`[sweep] tmp-sweep removed ${removed} stale file${removed === 1 ? "" : "s"} from ${tmpDir}`);
+  }
+}
+
 // Exported for the cross-check test pinning this as a subset of rachel.ts's
 // DEFAULT_ALLOWED_TOOLS — a narrowing entry outside the default list would
 // be silently dropped by resolveAllowedTools.
