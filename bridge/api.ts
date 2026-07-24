@@ -122,6 +122,19 @@ export async function editMessageText(config: ApiConfig, messageId: number, text
   await tg(config, "editMessageText", { chat_id: config.chatId, message_id: messageId, text });
 }
 
+// Sends a message with disable_notification:true — the ticker's placeholder
+// send. Returns the sent message's id so the caller can issue editMessageText
+// against it; sendChunked/sendVoice don't need this because they're one-shot,
+// but the ticker edits its own placeholder in place for the rest of the turn.
+export async function sendSilentMessage(config: ApiConfig, text: string): Promise<number> {
+  const result = (await tg(config, "sendMessage", {
+    chat_id: config.chatId,
+    text,
+    disable_notification: true,
+  })) as { message_id: number };
+  return result.message_id;
+}
+
 // Splits text at the last newline at-or-before the 4096-char boundary when
 // one exists (avoids cutting mid-word/mid-sentence); falls back to a hard
 // cut at the boundary when no newline is available in range. maxLength is a
