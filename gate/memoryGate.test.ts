@@ -356,6 +356,68 @@ test("hook throws exception -> deny with 'Internal hook error' reason (fail-clos
   assert.match(reasonOf(result) ?? "", /Internal hook error/);
 });
 
+// --- Audit logging (security review finding, 2026-07-24): every deny path
+// must leave a durable record, not just return a decision to the SDK. ---
+
+test("RACHEL_UNTRUSTED_CONTENT set + Write into memory dir -> deny is audit-logged", async () => {
+  const auditPath = joinPath(mkdtempSync(joinPath(tmpdir(), "memorygate-audit-")), "audit.jsonl");
+  await withUntrustedFlag(async () => {
+    const hook = createMemoryGateHook(auditPath);
+    const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", "---\nname: some-fact\n---\n");
+    await hook(input, undefined, { signal: new AbortController().signal });
+  });
+  const rows = readFileSync(auditPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].event, "decision");
+  assert.equal(rows[0].decision, "deny");
+  assert.equal(rows[0].surface, "untrusted-lockout");
+  assert.equal(rows[0].toolName, "Write");
+});
+
+test("Write of a memory fact file with bad frontmatter -> deny is audit-logged", async () => {
+  const auditPath = joinPath(mkdtempSync(joinPath(tmpdir(), "memorygate-audit-")), "audit.jsonl");
+  const hook = createMemoryGateHook(auditPath);
+  const badContent = "---\nname: some-fact\ndescription: a one-line fact\n---\n\nBody text.\n";
+  const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", badContent);
+  await hook(input, undefined, { signal: new AbortController().signal });
+  const rows = readFileSync(auditPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].decision, "deny");
+  assert.equal(rows[0].surface, "frontmatter-schema");
+});
+
+test("hook throws exception -> the actual error is audit-logged, not just a generic deny", async () => {
+  const auditPath = joinPath(mkdtempSync(joinPath(tmpdir(), "memorygate-audit-")), "audit.jsonl");
+  const hook = createMemoryGateHook(auditPath);
+  const input = new Proxy({} as PreToolUseHookInput, {
+    get: (_target, prop) => {
+      if (prop === "hook_event_name") {
+        return "PreToolUse";
+      }
+      if (prop === "tool_name") {
+        return "Write";
+      }
+      throw new Error("boom: simulated internal failure");
+    },
+  });
+  const result = await hook(input, undefined, { signal: new AbortController().signal });
+  assert.equal(permissionDecisionOf(result), "deny");
+  const rows = readFileSync(auditPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].surface, "internal-error");
+  assert.equal(rows[0].decision, "deny");
+  assert.match(rows[0].errorMessage, /boom: simulated internal failure/);
+});
+
+test("a call that produces no deny writes no audit row (pass-through is not logged as an event)", async () => {
+  const auditPath = joinPath(mkdtempSync(joinPath(tmpdir(), "memorygate-audit-")), "audit.jsonl");
+  const hook = createMemoryGateHook(auditPath);
+  const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", "---\nname: some-fact\n---\n");
+  const result = await hook(input, undefined, { signal: new AbortController().signal });
+  assert.deepEqual(result, {});
+  assert.throws(() => readFileSync(auditPath));
+});
+
 // --- (b) Frontmatter schema validation on memory writes (all contexts) ---
 
 test("Write of a memory fact file with valid frontmatter -> pass-through", async () => {
