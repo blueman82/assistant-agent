@@ -778,6 +778,13 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         let tickerConsecutiveFailures = 0;
         let tickerFrozen = false;
         let tickerCadenceMs = tickerJitterMinMs;
+        // 429's cadence doubling is STICKY for the remainder of the turn
+        // (spec: "double the cadence for the remainder of the turn") —
+        // unlike the generic-error exponential backoff below, which resets
+        // once an edit succeeds again. This floor is what a post-429
+        // success resets tickerCadenceMs back down TO, instead of the
+        // ordinary jitter minimum.
+        let tickerCadenceFloorMs = tickerJitterMinMs;
         let graceTimer: ReturnType<typeof setTimeout> | undefined;
         let renderTimer: ReturnType<typeof setTimeout> | undefined;
 
