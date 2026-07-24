@@ -806,7 +806,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         // anyway (braces) — either way this must never throw into the drain
         // loop or affect the turn.
         async function renderTickerOnce(): Promise<void> {
-          if (tickerFrozen || tickerMessageId === null || tickerEditCount >= tickerMaxEdits) return;
+          if (tickerDone || tickerFrozen || tickerMessageId === null || tickerEditCount >= tickerMaxEdits) return;
           const rendered = renderTickerLine(Date.now() - turnStartedMs, latestEvent);
           if (rendered === lastSentTickerText) return;
           try {
