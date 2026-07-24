@@ -57,10 +57,14 @@ export function synthesizeTimeoutMs(textLength: number): number {
   return Math.min(scaled, SYNTHESIZE_CEILING_MS);
 }
 
+// env is optional and, when given, is the COMPLETE child environment (node's
+// execFile replaces rather than merges) — callers that need one variable must
+// spread process.env themselves. Omitted means "inherit the parent env".
 export type ExecFileFn = (
   cmd: string,
   args: string[],
   timeoutMs: number,
+  env?: NodeJS.ProcessEnv,
 ) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 
 // Default execFileFn: never throws on non-zero exit — the exit code is
