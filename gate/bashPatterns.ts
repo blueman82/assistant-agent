@@ -29,7 +29,7 @@ const CALENDAR_EVENTS_PATTERN = /googleapis\.com\/calendar\/v3\/calendars\/[^/]+
 // because curl's `-D` is dump-header — a read flag — and must not be mistaken
 // for a body, while the markers above stay case-insensitive.
 const POST_METHOD_PATTERN = /-X\s*POST|--request\s+POST|--data\b/i;
-const SHORT_DATA_FLAG_PATTERN = /(^|\s)-d/i;
+const SHORT_DATA_FLAG_PATTERN = /(^|\s)-d/;
 
 function sendsRequestBody(command: string): boolean {
   return POST_METHOD_PATTERN.test(command) || SHORT_DATA_FLAG_PATTERN.test(command);
