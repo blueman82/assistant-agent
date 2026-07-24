@@ -255,6 +255,86 @@ function readLoopStopCounts(progressPath: string, fs: FsFunctions): Record<strin
   return {};
 }
 
+// Completion->wake channel (Part B of the wake-channel spec). Schema at
+// <wakeDir>/<id>.json:
+//   { id, source, mode: "narrate" | "fyi", severity, message, created_at }
+// "narrate" enqueues a synthetic FIFO message that becomes a real Rachel
+// turn. "fyi" (and anything missing/invalid mode — the SDK-spend guard: an
+// unknown producer must never be able to trigger a narrating turn) routes
+// through push() as a plain FYI, prefixed "[untagged wake: <source>]" for
+// the untagged case. Consumed files are renamed to .done BEFORE dispatch
+// (at-most-once — a crash between rename and dispatch loses one wake rather
+// than replaying it forever); malformed JSON is quarantined as .bad rather
+// than retried on every poll.
+const WAKE_ITERATION_CAP = 5;   // flood guard — scanned once per getUpdates iteration
+
+interface WakeFile {
+  id: string;
+  source: string;
+  mode?: unknown;
+  severity: string;
+  message: string;
+  created_at: string;
+}
+
+async function checkWakeFiles(opts: {
+  wakeDir: string;
+  fs: FsFunctions;
+  // Enqueues a synthetic FIFO message that becomes a real Rachel turn.
+  enqueueNarrate: (text: string) => void;
+  // Delivers an FYI wake through the push() chokepoint (never rejects).
+  pushFyi: (eventId: string, severity: string, text: string) => Promise<void>;
+  log: (msg: string) => void;
+}): Promise<void> {
+  const { wakeDir, fs, enqueueNarrate, pushFyi, log } = opts;
+
+  if (!fs.existsSync(wakeDir)) return;
+
+  let files: string[];
+  try {
+    files = fs.readdir(wakeDir).filter((f) => f.endsWith(".json")).slice(0, WAKE_ITERATION_CAP);
+  } catch { return; }
+
+  for (const filename of files) {
+    const wakePath = join(wakeDir, filename);
+    const id = filename.slice(0, -".json".length);
+
+    let raw: string;
+    try {
+      raw = fs.readFile(wakePath);
+    } catch { continue; } // gone already (e.g. raced) — nothing to do
+
+    let wake: WakeFile;
+    try {
+      wake = JSON.parse(raw) as WakeFile;
+    } catch {
+      // Malformed JSON — quarantine, log, continue. Never crash the poll loop.
+      try { fs.rename(wakePath, `${wakePath}.bad`); } catch { /* best-effort */ }
+      log(`[telegram-bridge] wake file ${filename} is not valid JSON — quarantined as .bad`);
+      continue;
+    }
+
+    // Rename to .done BEFORE dispatch — at-most-once.
+    const donePath = join(wakeDir, `${id}.done`);
+    try {
+      fs.rename(wakePath, donePath);
+    } catch (err) {
+      log(`[telegram-bridge] failed to consume wake file ${filename}: ${err instanceof Error ? err.message : String(err)} — skipping`);
+      continue;
+    }
+
+    const source = wake.source ?? "unknown";
+    if (wake.mode === "narrate") {
+      enqueueNarrate(`[wake: ${source}] ${wake.message}`);
+    } else if (wake.mode === "fyi") {
+      await pushFyi(`wake:${wake.id}`, wake.severity, wake.message);
+    } else {
+      // Missing or invalid mode: untagged rule — FYI only, never a turn.
+      await pushFyi(`wake:${wake.id}`, wake.severity, `[untagged wake: ${source}] ${wake.message}`);
+    }
+  }
+}
+
 async function checkWatchdogs(opts: {
   watchdogDir: string;
   pollPeriodMs: number;
