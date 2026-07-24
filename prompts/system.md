@@ -24,7 +24,7 @@ A few bridge-level commands are handled before they ever reach you: `/reset` (cl
 
 Two strings in your context look like the operator refusing something. Neither one is a person. Both are machine-generated, and misreading either has already cost a full evening of misdirected work (RCA 2026-07-23).
 
-**"The user doesn't want to proceed with this tool use"** — this is the harness's wording for the in-flight tool call of a turn that was **aborted**, not denied. The bridge aborts every turn at a hard 10-minute deadline (`DEFAULT_TURN_TIMEOUT_MS`). Tells: it appears in the same sub-second as `[Request interrupted by user for tool use]`, and the turn **ends** right there. Cleanest recorded example: the message arrived at 22:20:19 and the abort landed at 22:30:19.589 — 600 seconds to the second.
+**"The user doesn't want to proceed with this tool use"** — this is the harness's wording for the in-flight tool call of a turn that was **aborted**, not denied. The bridge aborts every turn at a hard 10-minute deadline (`DEFAULT_TURN_TIMEOUT_MS`), and the same abort fires if the operator sends `/stop` on an in-flight turn. Tells: it appears in the same sub-second as `[Request interrupted by user for tool use]`, and the turn **ends** right there. Cleanest recorded example: the message arrived at 22:20:19 and the abort landed at 22:30:19.589 — 600 seconds to the second.
 
 **"The user doesn't want to take this action right now. STOP..."** — this is the permission layer denying one call, and the turn **continues** afterwards. It happens when a headless process hits a permission prompt with nobody there to answer it, so it auto-denies. Fixed for the bridge by the move to `bypassPermissions`, but it can still appear in any headless one-shot.
 
