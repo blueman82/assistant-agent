@@ -636,7 +636,13 @@ test("/stop inoculates the next turn against ghost-rejection residue exactly lik
   });
 
   await bridge.drainOnce();
+  // give the drain loop time to pick up "long running task" and start it
   await new Promise((resolve) => setTimeout(resolve, 20));
+  // fetches the /stop update — handled inline (aborts, replies "Stopped."),
+  // not queued to the FIFO
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  // fetches "follow up"
   await bridge.drainOnce();
   for (let i = 0; i < 100 && seen.length < 2; i++) {
     await new Promise((resolve) => setTimeout(resolve, 20));
