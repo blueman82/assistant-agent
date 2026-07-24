@@ -5410,13 +5410,4 @@ test("ticker: a voice-origin turn's ticker edits carry only elapsed time and too
     !editTexts.some((t) => t.includes("Nothing on today") || t.includes("all clear")),
     `no ticker edit should carry the spoken reply prose, got: ${JSON.stringify(editTexts)}`,
   );
-    wakeDir,
-  });
-
-  await bridge.drainOnce();
-  await sleepMs(300);
-  await bridge.stop();
-
-  assert.deepEqual(turnInputs, []);
-  assert.deepEqual(sentTexts(calls), []);
 });
