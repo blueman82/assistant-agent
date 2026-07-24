@@ -845,7 +845,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         }
 
         function scheduleNextRender(): void {
-          if (tickerFrozen || stopped) return;
+          if (tickerDone || tickerFrozen || stopped) return;
           renderTimer = setTimeout(() => {
             void renderTickerOnce().finally(scheduleNextRender);
           }, jitteredCadence());
@@ -854,7 +854,14 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         graceTimer = setTimeout(() => {
           void (async () => {
             try {
-              tickerMessageId = await sendSilentMessage(config, "working…");
+              const sentId = await sendSilentMessage(config, "working…");
+              // The turn may have ended while this send was in flight — the
+              // terminal-edit block below runs synchronously in the turn's
+              // finally chain and would have already seen tickerMessageId
+              // as null and skipped it, so setting it now would leave a
+              // "working…" placeholder that nothing ever edits again.
+              if (tickerDone) return;
+              tickerMessageId = sentId;
               await renderTickerOnce();
               scheduleNextRender();
             } catch {
