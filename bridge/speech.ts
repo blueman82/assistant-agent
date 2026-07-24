@@ -132,6 +132,7 @@ export async function synthesize(text: string, outPath: string, execFileFn: Exec
     VENV_PYTHON,
     [SYNTHESIZE_SCRIPT, text, outPath],
     synthesizeTimeoutMs(text.length),
+    hfOfflineEnv(),
   );
   if (exitCode !== 0) {
     // stdout matters here, and is not redundant with stderr. mlx-audio's
