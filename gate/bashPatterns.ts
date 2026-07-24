@@ -21,9 +21,10 @@ const SEND_PATTERNS: RegExp[] = [
 
 const CALENDAR_EVENTS_PATTERN = /googleapis\.com\/calendar\/v3\/calendars\/[^/]+\/events\b/i;
 // curl infers POST from any body flag, so an explicit method marker is not the
-// only signal of a write. `--data` covers --data-raw/-binary/-urlencode; `-d`
-// is matched separately with a boundary so --dump-header does not trip it.
-const POST_METHOD_PATTERN = /-X\s*POST|--request\s+POST|--data\b|--data-(raw|binary|urlencode)\b|(^|\s)-d(\s|$)/i;
+// only signal of a write. `--data\b` also covers --data-raw/-binary/-urlencode,
+// since the boundary sits before the hyphen. `-d` is matched separately, fenced
+// by whitespace so --dump-header and friends do not trip it.
+const POST_METHOD_PATTERN = /-X\s*POST|--request\s+POST|--data\b|(^|\s)-d(\s|$)/i;
 
 export function matchesBashSendPattern(command: string): boolean {
   if (SEND_PATTERNS.some((pattern) => pattern.test(command))) {
