@@ -3,12 +3,11 @@
 // only — not a general URL classifier. Read-only calls to the same domains
 // (e.g. Slack's users.info) must NOT match.
 
-// chat.postMessage/sendMessage/messages/send are inherently write endpoints —
-// no GET-vs-POST distinction needed. The calendar /events path is also used
-// for read (GET .../events, GET .../events/{id}), so that one alone requires
-// an explicit non-GET method marker (curl -X POST / -XPOST) to avoid denying
-// a read-only calendar listing — matching the plan's own true-case list,
-// which uses `-X POST` on every calendar example.
+// The routes in SEND_PATTERNS are inherently write endpoints — no GET-vs-POST
+// distinction needed. The calendar /events path is also used for read
+// (GET .../events, GET .../events/{id}), so that one alone requires a write
+// signal — either an explicit method marker or a request body — to avoid
+// denying a read-only calendar listing.
 // Each verb/route below is anchored explicitly rather than matching a bare
 // `chat.` or `drafts` prefix, so read routes on the same surface
 // (chat.getPermalink, drafts listing) stay allowed.
