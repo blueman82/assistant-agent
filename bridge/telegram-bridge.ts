@@ -97,6 +97,26 @@ const DEFAULT_TYPING_INTERVAL_MS = 5000;
 const DEFAULT_TURN_TIMEOUT_MS = 10 * 60 * 1000;
 const CONFLICT_BACKOFF_MS = 65_000;   // Telegram releases getUpdates lock in ~30-60s; 65s gives safe margin
 const CONFLICT_EXIT_THRESHOLD = 5;    // 5 consecutive 409s (~5 min) = genuine second consumer, not launchd race
+// Ceiling on the error detail copied into a synthesis-failure log line.
+// synthesize.py takes the reply text as an argv element, so an execFile
+// timeout error echoes the entire reply back in its message — one real
+// failure wrote a 9,696-char private reply into the bridge log
+// (RCA 2026-07-23, item 9). Long enough to keep the leading diagnostic.
+const SYNTH_ERROR_LOG_MAX_CHARS = 300;
+
+// Seeded into the NEXT turn's input after a turn is aborted — either by the
+// deadline watchdog or by an operator /stop. The harness injects "The user
+// doesn't want to proceed with this tool use" for the in-flight tool call as
+// an aborted turn dies (RCA 2026-07-23, mechanism A); that residue sits in
+// session context and reads as a real refusal on the following turn even
+// when the abort itself was requested. This tells the model what it is
+// actually looking at. Distinct from the user-facing cutoff notice, which
+// explains the same event to the operator rather than to the model.
+const ABORT_ARTIFACT_PREFIX =
+  "[bridge note] Your previous turn was aborted by the bridge — either the turn deadline or an operator /stop. " +
+  "Any \"The user doesn't want to proceed with this tool use\" or \"[Request interrupted by user for tool use]\" text " +
+  "from that turn is a machine-generated artifact of that abort, not a semantic refusal. Do not attribute it to the operator, " +
+  "and do not apologise for it. The operator's actual message follows.\n\n";
 
 export interface Bridge {
   // Runs one getUpdates cycle (and processes whatever it returns) — the
@@ -152,6 +172,15 @@ export function defaultFsFn(): FsFunctions {
       return results;
     },
   };
+}
+
+// Caps an error detail before it reaches the log. The leading characters
+// carry the diagnostic ("synthesize failed (exit 1): …"); the tail is where a
+// leaked reply body lives. Marks itself truncated so a short message is never
+// mistaken for a clipped one.
+export function truncateErrorDetail(detail: string, maxChars: number = SYNTH_ERROR_LOG_MAX_CHARS): string {
+  if (detail.length <= maxChars) return detail;
+  return `${detail.slice(0, maxChars)}… [truncated, ${detail.length} chars total]`;
 }
 
 export function isPidAlive(pid: number, expectedCmd?: string): boolean {
@@ -568,6 +597,9 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   // staleness as "poll loop silent", and the 10-minute threshold there
   // clears the legitimate 5x65s backoff window.
   let turnInFlightSince: Date | null = null;   // set while drainFifo has a turn running
+  // Set when the deadline or /stop aborts a turn; consumed by the next
+  // turn's input.
+  let pendingAbortNotice = false;
   let lastHeartbeatMs = 0;
   let heartbeatWriteFailing = false;
 
@@ -660,6 +692,10 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
 
     if (text === "/reset") {
       resetSession();
+      // A fresh session holds none of the aborted turn's residue, so there is
+      // nothing left to explain — carrying the note across would assert an
+      // abort into a context that has no trace of one.
+      pendingAbortNotice = false;
       await reply("Session reset.");
       return;
     }
@@ -682,6 +718,11 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     if (text === "/stop") {
       if (currentAbort) {
         currentAbort.abort();
+        // /stop aborts the same in-flight tool call the deadline watchdog
+        // would, producing the identical SDK rejection-residue string —
+        // inoculate the next turn against it exactly as the timeout path
+        // does.
+        pendingAbortNotice = true;
         await reply("Stopped.");
       } else {
         await reply("No turn in flight.");
@@ -818,6 +859,16 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     try {
       while (fifo.length > 0) {
         const { text, voice } = fifo.shift()!;
+        // Abort inoculation: consumed here so it applies to exactly one turn —
+        // the one immediately after the abort. Left sticky it would assert an
+        // abort that didn't happen, which is a ghost of its own.
+        const input = pendingAbortNotice ? ABORT_ARTIFACT_PREFIX + text : text;
+        pendingAbortNotice = false;
+        // Turn start, with the backlog still queued behind this one. Before
+        // this line only completion/abort were logged, so establishing when a
+        // turn began meant cross-referencing SDK session JSONL (RCA
+        // 2026-07-23, item 8).
+        log(`[telegram-bridge] turn started (queue depth ${fifo.length})`);
         const abortController = new AbortController();
         currentAbort = abortController;
         turnInFlightSince = nowFn();
@@ -855,7 +906,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         });
         try {
           await Promise.race([
-            runTurn(text, (line, kind) => {
+            runTurn(input, (line, kind) => {
               if (kind === "text") buffer.push(line);
             }, abortController.signal),
             deadline,
@@ -874,6 +925,8 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
           // Say it plainly rather than delivering a truncated turn as if it
           // were a complete answer.
           logError(`[telegram-bridge] turn exceeded ${turnTimeoutMs}ms — aborted, draining next message.`);
+          // Inoculate the next turn against this abort's rejection residue.
+          pendingAbortNotice = true;
           buffer.push(`[Rachel] That turn ran past ${Math.round(turnTimeoutMs / 60000)} minutes and I cut it off. Ask again if you still need it, or say "background it" and I'll run it as a detached loop and ping you when it's done.`);
         } else if (turnErrored) {
           // A crashed turn is not a completed one — logging it as "completed"
@@ -902,7 +955,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
             await convertToOggFn(wavPath, oggPath);
             await sendVoiceFn(config, oggPath, charCount);
           } catch (err) {
-            logError(`[telegram-bridge] voice reply synthesis failed, falling back to text: ${err instanceof Error ? err.message : String(err)}`);
+            logError(`[telegram-bridge] voice reply synthesis failed, falling back to text: ${truncateErrorDetail(err instanceof Error ? err.message : String(err))}`);
             await reply(replyText || "(no output)");
           } finally {
             try { resolvedFs.unlink(wavPath); } catch { /* already gone or never written */ }
