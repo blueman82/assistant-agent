@@ -80,6 +80,7 @@ export interface CreateBridgeOptions {
   tickerMaxEdits?: number;
   tickerFreezeAfterFailures?: number;
   wakeDir?: string;   // defaults to ~/.rachel/wake (expanded, not ~) — completion→wake channel, Part B
+}
 
 interface TelegramUpdate {
   update_id: number;
