@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "scope": "pr",
+  "task_ref": "71",
+  "tier": 1,
+  "tier_justification": "More than a single trivial work-unit (new SweepDeps seams + a new family + doc update), but no irreversible/outward surface in the tier-2 sense (publish, deploy, migration, external send) — the sweep only touches an operator-local hygiene directory under the operator's own account, on a background launchd tick with no human-facing UI/CLI/served-endpoint output, so rule 6's strongest-surface requirement does not apply. Tier 1: standard, 4 end-state evals, 4 negative controls, P0/P1 split.",
+  "frozen_at": "2026-07-24T08:22:08Z",
+  "frozen_sha": "eaf6e0b29423e6df3cac3ce5c3b16151511789b4",
+  "amendments": [
+    {
+      "eval": "ALL",
+      "when": "2026-07-24T08:22:08Z",
+      "why": "DISCLOSED: this evals.json was authored after PR #71 was already implemented and merged-state-reviewed (no pre-frozen pr-scope evals.json existed for this RCA-batch fix, per the task owner's explicit instruction). frozen_sha is stamped as the branch's real current HEAD at authoring time, not backdated; frozen_at is the real authoring timestamp, not backdated. Every eval was written and smoke-run fresh against the merged sweepTick surface using independently-written driver scripts (not the PR's own sweep.test.ts fixtures or makeHarness), to preserve oracle independence per rule 4. This matches the disclosed pattern already used for PR #69 (merged) and PR #70 (gated)."
+    }
+  ],
+  "evals": [
+    {
+      "id": "E1",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "A stale (>1h old) regular file under an injected ~/.rachel/tmp is deleted by sweepTick's tmp-sweep family, and the family reports ok",
+      "cmd": "npx tsx .rachel-evals-scratch/e1_stale_deleted.mjs",
+      "negative_control": "npx tsx .rachel-evals-scratch/e1_negative.mjs",
+      "smoke": {
+        "cmd_exit": 0,
+        "negative_control_exit": 1,
+        "cmd_output": "[sweep] tmp-sweep removed 1 stale file from /var/folders/.../pr71-e1-.../.rachel/tmp\nPASS: stale file removed, family reported ok",
+        "negative_control_output": "fresh file survived as expected — this negative control intentionally fails to prove E1 discriminates"
+      },
+      "status": "pass",
+      "evidence": "npx tsx .rachel-evals-scratch/e1_stale_deleted.mjs -> exit 0, 'PASS: stale file removed, family reported ok'. Negative control exit 1 as required."
+    },
+    {
+      "id": "E2",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "A symlink under tmp pointing outside the tmp dir, and a stale subdirectory with a stale file nested inside it, are BOTH left untouched by sweepTick (no following symlinks out of tmp, no directory deletion, no recursion) — the safety-critical guard given this code deletes real files from an operator's home",
+      "cmd": "npx tsx .rachel-evals-scratch/e2_symlink_dir_guard.mjs",
+      "negative_control": "npx tsx .rachel-evals-scratch/e2_negative.mjs",
+      "smoke": {
+        "cmd_exit": 0,
+        "negative_control_exit": 1,
+        "cmd_output": "PASS: symlink target and stale subdirectory both survived untouched",
+        "negative_control_output": "negative control: asserting 'target was deleted' fails as expected, because the real guard keeps it alive"
+      },
+      "status": "pass",
+      "evidence": "npx tsx .rachel-evals-scratch/e2_symlink_dir_guard.mjs -> exit 0. Negative control (asserting the opposite claim) exits 1 as required, proving the assertion has discriminating power."
+    },
+    {
+      "id": "E3",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "A file exactly at the 1h age boundary survives (strictly-older comparison, not >=), while a file 1 second past the boundary is removed",
+      "cmd": "npx tsx .rachel-evals-scratch/e3_boundary.mjs",
+      "negative_control": "npx tsx .rachel-evals-scratch/e3_negative.mjs",
+      "smoke": {
+        "cmd_exit": 0,
+        "negative_control_exit": 1,
+        "cmd_output": "PASS: boundary-aged file survived",
+        "negative_control_output": "file just past the boundary was correctly removed — this negative control intentionally fails to prove E3 discriminates"
+      },
+      "status": "pass",
+      "evidence": "npx tsx .rachel-evals-scratch/e3_boundary.mjs -> exit 0. Negative control (asserting a file just past the boundary survives) exits 1 as required."
+    },
+    {
+      "id": "E4",
+      "priority": "P1",
+      "mode": "scripted",
+      "surface": "merged-state",
+      "assert": "The merged branch typechecks cleanly with tsc --noEmit (no type regressions from the new SweepDeps seams / tmp-sweep family)",
+      "cmd": "npm run typecheck",
+      "negative_control": ".rachel-evals-scratch/e4_negative_broken_ts.sh",
+      "smoke": {
+        "cmd_exit": 0,
+        "negative_control_exit": 2,
+        "cmd_output": "> assistant-agent@0.1.0 typecheck\n> tsc --noEmit",
+        "negative_control_output": "error TS2322: Type 'string' is not assignable to type 'number'."
+      },
+      "status": "pass",
+      "evidence": "npm run typecheck -> exit 0, no diagnostics. Negative control (deliberate type error in a scratch file) -> exit 2 with TS2322, proving tsc actually catches errors in this toolchain."
+    }
+  ],
+  "result": null,
+  "graded_at": null,
+  "head_sha": "eaf6e0b29423e6df3cac3ce5c3b16151511789b4"
+}
