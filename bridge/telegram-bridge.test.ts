@@ -4140,7 +4140,7 @@ test("ticker: coalesces to the latest event only — an edit never carries a sta
 
   const bridge = createBridge({
     ...basePushOpts(),
-    config: { token: "t", chatId: "12345", transport },
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
     resetSession: () => {},
@@ -4153,20 +4153,20 @@ test("ticker: coalesces to the latest event only — an edit never carries a sta
   await bridge.stop();
 
   const edits = calls.filter((c) => c.url.includes("/editMessageText"));
-  const editTexts = edits.map((c) => String(c.body["text"] ?? ""));
+  const editTexts = edits.map((c) => String((c.body as Record<string, unknown>)["text"] ?? ""));
   assert.ok(editTexts.some((t) => t.includes("second-event")), `expected an edit carrying the latest event, got: ${JSON.stringify(editTexts)}`);
   assert.ok(!editTexts.some((t) => t.includes("first-event")), `no edit should carry the stale first event once a newer one has arrived, got: ${JSON.stringify(editTexts)}`);
 });
 
 test("ticker: skips an edit when the rendered text is unchanged from the last sent edit", async () => {
-  const calls: { url: string; body: Record<string, unknown> }[] = [];
-  const transport: typeof fetch = async (input, init) => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
+  const recordingTransport: typeof transport = async (input, init) => {
     const url = String(input);
-    const body = init?.body ? (JSON.parse(init.body as string) as Record<string, unknown>) : {};
-    calls.push({ url, body });
-    if (url.includes("/getUpdates")) return { ok: true, json: async () => ({ ok: true, result: [] }) } as Response;
     if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
-    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+    return transport(input, init);
   };
 
   // A single event with no further emits: the elapsed-time component of the
@@ -4186,7 +4186,7 @@ test("ticker: skips an edit when the rendered text is unchanged from the last se
 
   const bridge = createBridge({
     ...basePushOpts(),
-    config: { token: "t", chatId: "12345", transport },
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
     resetSession: () => {},
