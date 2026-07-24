@@ -8,7 +8,8 @@
 // broken family never blocks the others and the tick still exits 0.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, mkdirSync, readdirSync, lstatSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import type { Stats } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
