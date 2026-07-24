@@ -269,23 +269,25 @@ async function checkWakeFiles(opts: {
       continue;
     }
 
-    // Valid JSON does not guarantee these coerce safely — e.g. a message
-    // field shaped like {"toString":1,"valueOf":2} makes String() throw
-    // (no primitive coercion path exists), and a top-level `null` throws on
-    // property access. Guard the same way as the JSON.parse above: quarantine
-    // rather than let the throw escape checkWakeFiles uncaught. An uncaught
-    // throw here would propagate past the un-renamed file (still .json) all
-    // the way to pollOnce's outer catch, which backs off and retries the
-    // SAME poll cycle — replaying the poison file forever instead of the
-    // at-most-once semantics the rename below is meant to guarantee.
+    // Valid JSON does not guarantee `wake` is a safely readable object — a
+    // top-level `null` (or any non-object) throws on property access below,
+    // and a field shaped like {"toString":1,"valueOf":2} makes String()
+    // throw (no primitive coercion path exists). Guard the same way as the
+    // JSON.parse above: quarantine rather than let the throw escape
+    // checkWakeFiles uncaught. An uncaught throw here would propagate past
+    // the un-renamed file (still .json) all the way to pollOnce's outer
+    // catch, which backs off and retries the SAME poll cycle — replaying the
+    // poison file forever instead of the at-most-once semantics the rename
+    // below is meant to guarantee.
     let source: string, message: string, id: string;
     try {
-      source = String(wake?.source ?? "unknown");
-      message = String(wake?.message ?? "");
-      id = String(wake?.id ?? filename.replace(/\.json$/, ""));
+      if (wake === null || typeof wake !== "object") throw new Error("wake file is not a JSON object");
+      source = String(wake.source ?? "unknown");
+      message = String(wake.message ?? "");
+      id = String(wake.id ?? filename.replace(/\.json$/, ""));
     } catch (err) {
       try { fs.rename(wakePath, `${wakePath}.bad`); } catch { /* best-effort */ }
-      logError(`[telegram-bridge] wake file ${filename} has fields that cannot be read as strings, quarantined as .bad: ${err instanceof Error ? err.message : String(err)}`);
+      logError(`[telegram-bridge] wake file ${filename} is not a usable object, quarantined as .bad: ${err instanceof Error ? err.message : String(err)}`);
       continue;
     }
 
