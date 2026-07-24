@@ -4356,6 +4356,82 @@ test("ticker: exponential backoff freezes after 3 consecutive edit failures, and
   assert.equal(editAttempts, 3, `expected the ticker (including its terminal edit) to stop after exactly 3 consecutive failures, got ${editAttempts} attempts`);
 });
 
+test("ticker: an edit still in flight when the turn ends does not reschedule or clobber the terminal edit", async () => {
+  // Reproduces the race clearTimeout cannot close: renderTickerOnce is
+  // suspended mid-`await editMessageText` when runTurn resolves. The turn's
+  // finally block fires (and would, pre-fix, leave nothing to stop the
+  // suspended call from resuming, rescheduling via .finally(scheduleNextRender),
+  // and editing again after the terminal "done" edit already ran). No
+  // bridge.stop() before the assertion — stopping first is what let this
+  // race hide behind the rest of the ticker suite (stopped=true masks it).
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
+  let releaseInFlightEdit: (() => void) | undefined;
+  let editCount = 0;
+  const recordingTransport: typeof transport = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/sendMessage")) {
+      await transport(input, init);
+      return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
+    }
+    if (url.includes("/editMessageText")) {
+      editCount++;
+      const body = init?.body ? JSON.parse(init.body as string) : {};
+      calls.push({ url, body });
+      if (editCount === 1) {
+        // Hold the FIRST edit open until released below — this is the one
+        // that must still be in flight when the turn completes.
+        await new Promise<void>((resolve) => { releaseInFlightEdit = resolve; });
+      }
+      return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+    }
+    return transport(input, init);
+  };
+
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("  [Bash] event-a", "tool");
+    // Turn completes shortly after the first render fires, while that
+    // render's editMessageText is still held open above.
+    await new Promise((r) => setTimeout(r, 40));
+    emit("done text", "text");
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    typingIntervalMs: 100000,
+    tickerGraceMs: 10,
+    tickerJitterMinMs: 20,
+    tickerJitterMaxMs: 20,
+  });
+
+  await bridge.drainOnce();
+  // Let the turn finish (40ms) and the terminal edit attempt run — the held
+  // first edit is still suspended throughout this wait.
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const editsAtTerminal = calls.filter((c) => c.url.includes("/editMessageText")).length;
+
+  // Now release the in-flight edit and give its .finally(scheduleNextRender)
+  // chain a full cadence window to reschedule and fire again, if it can.
+  releaseInFlightEdit?.();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  const editsAfterRelease = calls.filter((c) => c.url.includes("/editMessageText")).length;
+  assert.equal(
+    editsAfterRelease,
+    editsAtTerminal,
+    `expected no further edits after the in-flight one resolved post-turn, got ${editsAtTerminal} at terminal vs ${editsAfterRelease} after release`,
+  );
+
+  await bridge.stop();
+});
+
 test("ticker: the edit cap stops further edits once tickerMaxEdits is reached, even though the turn is still running", async () => {
   const { transport, calls } = makeStubTransport([
     messageUpdate(1, "run a long job"),
