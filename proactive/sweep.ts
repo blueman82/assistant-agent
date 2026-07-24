@@ -750,7 +750,7 @@ function turnInFlight(d: SweepDeps, nowMs: number): boolean {
     const sinceMs = Date.parse(heartbeat.turn_in_flight_since);
     return !Number.isNaN(sinceMs) && nowMs - sinceMs < TURN_IN_FLIGHT_WINDOW_MS;
   } catch {
-    return false;
+    return true; // TEMP: inverted for red-green verification only
   }
 }
 
