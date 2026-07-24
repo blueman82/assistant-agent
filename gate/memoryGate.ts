@@ -99,13 +99,15 @@ function isInsideMemoryDirPermissive(filePath: string): boolean {
 // the hook fired at all (security review finding, 2026-07-24).
 export function createMemoryGateHook(auditLogPath: string): HookCallback {
   return async (input) => {
+    // Captured before the PreToolUse narrowing below so the catch block —
+    // which runs on any exception, including ones thrown before narrowing
+    // completes — can still log which tool call triggered it.
+    const toolName = input.hook_event_name === "PreToolUse" ? input.tool_name : input.hook_event_name;
+    const hash = input.hook_event_name === "PreToolUse" ? hashInput(input.tool_input) : "n/a";
     try {
       if (input.hook_event_name !== "PreToolUse") {
         return {};
       }
-
-      const toolName = input.tool_name;
-      const hash = hashInput(input.tool_input);
 
       if (process.env["RACHEL_UNTRUSTED_CONTENT"]) {
         const untrustedReason =
