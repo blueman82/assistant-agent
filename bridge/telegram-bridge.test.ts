@@ -4752,7 +4752,10 @@ test("ticker: a ticker edit that throws never propagates into the drain loop —
   ]);
   const recordingTransport: typeof transport = async (input, init) => {
     const url = String(input);
-    if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
+    if (url.includes("/sendMessage")) {
+      await transport(input, init); // still records the call
+      return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
+    }
     if (url.includes("/editMessageText")) {
       // Simulate a transport-level throw (not a well-formed Telegram error
       // response) — the harshest failure shape, to prove renderTickerOnce's
