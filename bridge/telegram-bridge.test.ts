@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, existsSync as realExistsSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync, existsSync as realExistsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -4344,6 +4344,22 @@ test("checkLaunchAllowed: worktree path containing repo basename blocks launch (
 });
 
 // ---------------------------------------------------------------------------
+// Streaming ticker (Part A of the wake-channel spec): a turn that outruns a
+// 3s grace window gets a silent placeholder message that edits in place with
+// elapsed time + the latest live event, so Gary sees the bridge is alive on
+// a long-running turn instead of Telegram-side silence. A turn that finishes
+// inside the grace window shows no ticker at all — that's the point of the
+// grace window, not an oversight.
+// ---------------------------------------------------------------------------
+
+test("ticker: a turn that finishes inside the 3s grace window sends no placeholder and no edits", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "quick question"),
+    { ok: true, result: [] },
+  ]);
+
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("instant answer", "text");
 // Wake channel consumer (spec Part B). These use REAL temp dirs rather than
 // the stub fs above: the whole point of the design is the .done/.bad rename
 // semantics, which are real filesystem behaviour.
@@ -4394,6 +4410,50 @@ test("wake consumer: a narrate wake starts a real Rachel turn carrying its sourc
     getSessionId: () => undefined,
     resetSession: () => {},
     pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  // Wait past the 3s grace window to prove the grace timer was cleared on
+  // turn completion, not merely that no ticker had fired yet by 30ms.
+  await new Promise((resolve) => setTimeout(resolve, 3300));
+  await bridge.stop();
+
+  const sends = calls.filter((c) => c.url.includes("/sendMessage"));
+  const edits = calls.filter((c) => c.url.includes("/editMessageText"));
+  const silentSends = sends.filter((c) => (c.body as Record<string, unknown>)["disable_notification"] === true);
+
+  assert.equal(silentSends.length, 0, "no ticker placeholder should be sent for a turn inside the grace window");
+  assert.equal(edits.length, 0, "no ticker edits should occur for a turn inside the grace window");
+});
+
+test("ticker: a turn that outruns the grace window sends a silent placeholder, then an in-place edit carrying elapsed time and the latest tool event, before the turn ends", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
+
+  // sendMessage must return a message_id so the ticker can issue edits
+  // against it — the stub transport's default response doesn't carry one.
+  const wrappedTransport: typeof transport = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/sendMessage")) {
+      await transport(input, init); // still records the call
+      return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
+    }
+    return transport(input, init);
+  };
+
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("  [Bash] npm test", "tool");
+    await new Promise((r) => setTimeout(r, 2600));
+    emit("  [Read] bridge/api.ts", "tool");
+    await new Promise((r) => setTimeout(r, 2600));
+    emit("Job finished.", "text");
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport: wrappedTransport },
     typingIntervalMs: 100000,
     wakeDir,
   });
@@ -4429,6 +4489,61 @@ test("wake consumer: an fyi wake reaches Telegram without starting a turn", asyn
     resetSession: () => {},
     pollIntervalMs: 5,
     typingIntervalMs: 100000,
+  });
+
+  await bridge.drainOnce();
+  // t=3.5s: grace has expired (3s) and the immediate first edit should have
+  // fired, but the turn (5.2s) has not finished yet — this is the window
+  // that proves the ticker updates DURING the turn, not only at the end.
+  await new Promise((resolve) => setTimeout(resolve, 3500));
+
+  const editsSoFar = calls.filter((c) => c.url.includes("/editMessageText"));
+  const editTexts = editsSoFar.map((c) => String((c.body as Record<string, unknown>)["text"] ?? ""));
+
+  assert.ok(editsSoFar.length >= 1, `expected at least one editMessageText before turn completion, got ${editsSoFar.length}`);
+  assert.ok(
+    editTexts.some((t) => /\d+m\d+s|\d+s/.test(t)),
+    `expected an edit with elapsed-time reading, got: ${JSON.stringify(editTexts)}`,
+  );
+  assert.ok(
+    editTexts.some((t) => t.includes("npm test") || t.includes("bridge/api.ts")),
+    `expected an edit carrying the latest tool event, got: ${JSON.stringify(editTexts)}`,
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  await bridge.stop();
+
+  const sends = calls.filter((c) => c.url.includes("/sendMessage"));
+  const silentSends = sends.filter((c) => (c.body as Record<string, unknown>)["disable_notification"] === true);
+  assert.equal(silentSends.length, 1, "expected exactly one silent ticker placeholder");
+
+  const finalReply = sends.find(
+    (c) => String((c.body as Record<string, unknown>)["text"] ?? "").includes("Job finished.") &&
+      (c.body as Record<string, unknown>)["disable_notification"] !== true,
+  );
+  assert.ok(finalReply, "expected the final reply to be sent as its own notifying message");
+});
+
+test("ticker: terminal edit on a turn that errors reads 'failed', not 'done'", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
+  const recordingTransport: typeof transport = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
+    return transport(input, init);
+  };
+
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("  [Bash] npm test", "tool");
+    await new Promise((r) => setTimeout(r, 3200));
+    throw new Error("boom");
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
     wakeDir,
   });
 
@@ -4528,6 +4643,41 @@ test("wake consumer: malformed JSON is renamed .bad and never crashes the poll l
     resetSession: () => {},
     pollIntervalMs: 5,
     typingIntervalMs: 100000,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 3400));
+  await bridge.stop();
+
+  const edits = calls.filter((c) => c.url.includes("/editMessageText"));
+  const lastEditText = String((edits.at(-1)?.body as Record<string, unknown> | undefined)?.["text"] ?? "");
+  assert.match(lastEditText, /^failed —/, `expected terminal edit to read "failed — ...", got: ${lastEditText}`);
+});
+
+test("ticker: terminal edit on a turn that times out reads 'timed out', not 'done'", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
+  const recordingTransport: typeof transport = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
+    return transport(input, init);
+  };
+
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("  [Bash] npm test", "tool");
+    await new Promise((r) => setTimeout(r, 60_000));
+  };
+
+  // turnTimeoutMs is what the terminal text reports (the configured
+  // deadline in whole minutes, not a measurement) — kept short so the test
+  // runs fast; the assertion below derives the expected minutes the same
+  // way production does, from turnTimeoutMs itself.
+  const turnTimeoutMs = 3200;
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
     wakeDir,
   });
 
@@ -4562,6 +4712,44 @@ test("wake consumer: a field that cannot coerce to a string is quarantined .bad,
     resetSession: () => {},
     pollIntervalMs: 5,
     typingIntervalMs: 100000,
+    tickerGraceMs: 10,
+    turnTimeoutMs,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 3400));
+  await bridge.stop();
+
+  const edits = calls.filter((c) => c.url.includes("/editMessageText"));
+  const lastEditText = String((edits.at(-1)?.body as Record<string, unknown> | undefined)?.["text"] ?? "");
+  // Spec's literal terminal shape: "timed out at 10m" — "at" (not an em
+  // dash) and whole minutes only (no seconds), unlike the done/failed edits.
+  const expectedMinutes = Math.round(turnTimeoutMs / 60000);
+  assert.equal(lastEditText, `timed out at ${expectedMinutes}m`, `expected terminal edit to read "timed out at <N>m", got: ${lastEditText}`);
+});
+
+test("ticker: coalesces to the latest event only — an edit never carries a stale earlier event once a newer one arrives", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
+  const recordingTransport: typeof transport = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
+    return transport(input, init);
+  };
+
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("  [Bash] first-event", "tool");
+    await new Promise((r) => setTimeout(r, 500));
+    emit("  [Bash] second-event", "tool");
+    await new Promise((r) => setTimeout(r, 3000));
+    emit("done text", "text");
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
     wakeDir,
   });
 
@@ -4593,6 +4781,38 @@ test("wake consumer: a top-level null wake file is quarantined .bad, not replaye
     resetSession: () => {},
     pollIntervalMs: 5,
     typingIntervalMs: 100000,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 3700));
+  await bridge.stop();
+
+  const edits = calls.filter((c) => c.url.includes("/editMessageText"));
+  const editTexts = edits.map((c) => String((c.body as Record<string, unknown>)["text"] ?? ""));
+  assert.ok(editTexts.some((t) => t.includes("second-event")), `expected an edit carrying the latest event, got: ${JSON.stringify(editTexts)}`);
+  assert.ok(!editTexts.some((t) => t.includes("first-event")), `no edit should carry the stale first event once a newer one has arrived, got: ${JSON.stringify(editTexts)}`);
+});
+
+test("ticker: skips an edit when the rendered text is unchanged since the last sent edit", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
+  const recordingTransport: typeof transport = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
+    return transport(input, init);
+  };
+
+  // Deterministic zero jitter (min=max=50ms) fires many renders per real
+  // second, while elapsed only advances once per second — so most renders
+  // within the same second MUST produce byte-identical text, and the
+  // skip-if-unchanged guard must suppress the edit call for them. Without
+  // that guard, editAttempts would roughly track render attempts (~1:1);
+  // with it, edits are bounded by elapsed-seconds, not by render count.
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("  [Bash] steady-event", "tool");
+    await new Promise((r) => setTimeout(r, 600));
     wakeDir,
   });
 
@@ -4623,12 +4843,80 @@ test("wake consumer: the wake file is renamed .done BEFORE the turn is dispatche
 
   const bridge = createBridge({
     ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
     config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
     resetSession: () => {},
     pollIntervalMs: 5,
     typingIntervalMs: 100000,
+    tickerGraceMs: 10,
+    tickerJitterMinMs: 50,
+    tickerJitterMaxMs: 50,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  await bridge.stop();
+
+  const edits = calls.filter((c) => c.url.includes("/editMessageText"));
+  const editTexts = edits.map((c) => String((c.body as Record<string, unknown>)["text"] ?? ""));
+  // ~600ms at a 50ms render cadence is ~12 render attempts, but elapsed only
+  // advances in whole seconds, so an un-guarded ticker would send ~12
+  // edits; a guarded one sends at most a couple (grace-expiry render + the
+  // terminal edit once elapsed crosses a second boundary or the turn ends).
+  assert.ok(edits.length <= 3, `expected skip-if-unchanged to suppress most same-second renders, got ${edits.length} edits: ${JSON.stringify(editTexts)}`);
+  for (let i = 1; i < editTexts.length; i++) {
+    assert.notEqual(editTexts[i], editTexts[i - 1], `expected no two consecutive edits with identical text, got: ${JSON.stringify(editTexts)}`);
+  }
+});
+
+test("ticker: a 429 with retry_after is honoured, and the gap before the next edit attempt reflects the doubled cadence", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
+  let editAttempts = 0;
+  const editAttemptTimestamps: number[] = [];
+  const recordingTransport: typeof transport = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
+    if (url.includes("/editMessageText")) {
+      editAttempts++;
+      editAttemptTimestamps.push(Date.now());
+      await transport(input, init); // records the call
+      if (editAttempts === 1) {
+        // First edit (fires at grace expiry) is rate-limited.
+        return {
+          ok: false,
+          status: 429,
+          json: async () => ({ ok: false, description: "Too Many Requests", parameters: { retry_after: 0 } }),
+        } as Response;
+      }
+      return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+    }
+    return transport(input, init);
+  };
+
+  // Deterministic zero-span jitter (min=max) makes the post-429 cadence
+  // exactly 2x the base — the doubling is the thing under test, not the
+  // jitter shape (already covered by the jitter-bounds test). A distinct
+  // tool event per render tick guarantees skip-if-unchanged never
+  // suppresses an attempt, and the turn runs well past 4 real mid-turn
+  // renders so the LAST measured gap is never accidentally the terminal
+  // edit (which fires immediately at turn end, not on the jittered
+  // schedule, and would otherwise contaminate a cadence measurement).
+  const baseCadenceMs = 100;
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    for (let i = 0; i < 20; i++) {
+      emit(`  [Bash] event-${i}`, "tool");
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
     wakeDir,
   });
 
@@ -4687,6 +4975,425 @@ test("wake consumer: an absent wake directory is a silent no-op", async () => {
     resetSession: () => {},
     pollIntervalMs: 5,
     typingIntervalMs: 100000,
+    tickerGraceMs: 10,
+    tickerJitterMinMs: baseCadenceMs,
+    tickerJitterMaxMs: baseCadenceMs,
+    tickerMaxEdits: 100,
+  });
+
+  await bridge.drainOnce();
+  // Sample strictly WHILE the turn is still running (turn lasts 20*50=1000ms)
+  // so every timestamp captured is a jittered mid-turn render, never the
+  // turn-end terminal edit.
+  await new Promise((resolve) => setTimeout(resolve, 700));
+
+  assert.ok(editAttempts >= 4, `expected several mid-turn retries after the 429, got ${editAttempts} attempt(s)`);
+  const gap1 = editAttemptTimestamps[1]! - editAttemptTimestamps[0]!;
+  // retry_after=0 contributes ~0ms wait; the doubled cadence (200ms) is what
+  // must separate attempt 1 from attempt 2 — assert it's clearly past the
+  // un-doubled base (100ms) and in the right ballpark, with generous slack
+  // for test-runner scheduling jitter.
+  assert.ok(gap1 >= baseCadenceMs * 1.5, `expected the gap before the retry to reflect doubled cadence (~${baseCadenceMs * 2}ms), got ${gap1}ms`);
+
+  // The gap between attempts 3 and 4 (both well AFTER the 429, both
+  // successful, both still mid-turn) must ALSO reflect the doubled cadence —
+  // proving the doubling is sticky for the rest of the turn rather than
+  // reset by the first success.
+  const gap2 = editAttemptTimestamps[3]! - editAttemptTimestamps[2]!;
+  assert.ok(gap2 >= baseCadenceMs * 1.5, `expected the cadence to STAY doubled after successful edits (~${baseCadenceMs * 2}ms), got ${gap2}ms — cadence must not reset to base mid-turn`);
+
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await bridge.stop();
+
+  const successfulEdits = calls.filter((c) => c.url.includes("/editMessageText"));
+  assert.ok(successfulEdits.length >= 1, "expected at least one successful edit after the 429 was honoured");
+});
+
+test("ticker: exponential backoff freezes after 3 consecutive edit failures, and the terminal edit is also skipped once frozen", async () => {
+  const { transport } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
+  let editAttempts = 0;
+  const recordingTransport: typeof transport = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
+    if (url.includes("/editMessageText")) {
+      editAttempts++;
+      return { ok: false, json: async () => ({ ok: false, description: "Internal Server Error" }) } as Response;
+    }
+    return transport(input, init);
+  };
+
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("  [Bash] event-a", "tool");
+    await new Promise((r) => setTimeout(r, 400));
+    emit("done text", "text");
+  };
+
+  let dispatchedTurnCompleted = false;
+  const wrappedRunTurn: BridgeRunTurn = async (input, emit, signal) => {
+    await runTurnStub(input, emit, signal);
+    dispatchedTurnCompleted = true;
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
+    runTurn: wrappedRunTurn,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    typingIntervalMs: 100000,
+    tickerGraceMs: 10,
+    tickerJitterMinMs: 20,
+    tickerJitterMaxMs: 20,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  await bridge.stop();
+
+  assert.ok(dispatchedTurnCompleted, "a failing ticker must never prevent the turn itself from completing");
+  // Exactly 3 consecutive failures freeze the ticker, and the terminal edit
+  // respects the same frozen guard — proving the branch was entered AND
+  // that freezing actually stops further attempts, not merely that nothing
+  // threw.
+  assert.equal(editAttempts, 3, `expected the ticker (including its terminal edit) to stop after exactly 3 consecutive failures, got ${editAttempts} attempts`);
+});
+
+test("ticker: an edit still in flight when the turn ends does not reschedule or clobber the terminal edit", async () => {
+  // Reproduces the race clearTimeout cannot close: renderTickerOnce is
+  // suspended mid-`await editMessageText` when runTurn resolves. The turn's
+  // finally block fires (and would, pre-fix, leave nothing to stop the
+  // suspended call from resuming, rescheduling via .finally(scheduleNextRender),
+  // and editing again after the terminal "done" edit already ran). No
+  // bridge.stop() before the assertion — stopping first is what let this
+  // race hide behind the rest of the ticker suite (stopped=true masks it).
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
+  let releaseInFlightEdit: (() => void) | undefined;
+  let editCount = 0;
+  const recordingTransport: typeof transport = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/sendMessage")) {
+      await transport(input, init);
+      return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
+    }
+    if (url.includes("/editMessageText")) {
+      editCount++;
+      const body = init?.body ? JSON.parse(init.body as string) : {};
+      calls.push({ url, body });
+      if (editCount === 1) {
+        // Hold the FIRST edit open until released below — this is the one
+        // that must still be in flight when the turn completes.
+        await new Promise<void>((resolve) => { releaseInFlightEdit = resolve; });
+      }
+      return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+    }
+    return transport(input, init);
+  };
+
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("  [Bash] event-a", "tool");
+    // Turn completes shortly after the first render fires, while that
+    // render's editMessageText is still held open above.
+    await new Promise((r) => setTimeout(r, 40));
+    emit("done text", "text");
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    typingIntervalMs: 100000,
+    tickerGraceMs: 10,
+    tickerJitterMinMs: 20,
+    tickerJitterMaxMs: 20,
+  });
+
+  await bridge.drainOnce();
+  // Let the turn finish (40ms) and the terminal edit attempt run — the held
+  // first edit is still suspended throughout this wait.
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const editsAtTerminal = calls.filter((c) => c.url.includes("/editMessageText")).length;
+
+  // Now release the in-flight edit and give its .finally(scheduleNextRender)
+  // chain a full cadence window to reschedule and fire again, if it can.
+  releaseInFlightEdit?.();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  const editsAfterRelease = calls.filter((c) => c.url.includes("/editMessageText")).length;
+  assert.equal(
+    editsAfterRelease,
+    editsAtTerminal,
+    `expected no further edits after the in-flight one resolved post-turn, got ${editsAtTerminal} at terminal vs ${editsAfterRelease} after release`,
+  );
+
+  await bridge.stop();
+});
+
+test("ticker: the edit cap stops further edits once tickerMaxEdits is reached, even though the turn is still running", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
+  const recordingTransport: typeof transport = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
+    return transport(input, init);
+  };
+
+  // A tiny cap (3) with fast, deterministic cadence and a distinct event
+  // per render (so skip-if-unchanged never suppresses one) proves the cap
+  // fires ON EDIT COUNT while the turn is still going, not merely that a
+  // long turn happens to produce few edits.
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    for (let i = 0; i < 20; i++) {
+      emit(`  [Bash] event-${i}`, "tool");
+      await new Promise((r) => setTimeout(r, 30));
+    }
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    typingIntervalMs: 100000,
+    tickerGraceMs: 10,
+    tickerJitterMinMs: 20,
+    tickerJitterMaxMs: 20,
+    tickerMaxEdits: 3,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  await bridge.stop();
+
+  const edits = calls.filter((c) => c.url.includes("/editMessageText"));
+  assert.equal(edits.length, 3, `expected exactly tickerMaxEdits (3) edits despite a much longer turn, got ${edits.length}`);
+});
+
+test("ticker: jitter cadence stays within the configured [min, max) bounds across several renders", async () => {
+  const { transport } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
+  const editAttemptTimestamps: number[] = [];
+  const recordingTransport: typeof transport = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
+    if (url.includes("/editMessageText")) {
+      editAttemptTimestamps.push(Date.now());
+      return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+    }
+    return transport(input, init);
+  };
+
+  const jitterMin = 40;
+  const jitterMax = 80;
+  // Long enough (60 * 10ms = 600ms) to comfortably outlast the 400ms sample
+  // window below, so every timestamp captured in that window is a
+  // mid-turn scheduled render — never the terminal edit, which fires only
+  // once the turn ends and isn't jitter-scheduled at all.
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    for (let i = 0; i < 60; i++) {
+      emit(`  [Bash] event-${i}`, "tool");
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    typingIntervalMs: 100000,
+    tickerGraceMs: 10,
+    tickerJitterMinMs: jitterMin,
+    tickerJitterMaxMs: jitterMax,
+    tickerMaxEdits: 100,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  await bridge.stop();
+
+  // Drop the very first edit (fires immediately at grace expiry by design,
+  // not jitter-scheduled) — only edits 2+ are governed by jitteredCadence().
+  const scheduledTimestamps = editAttemptTimestamps.slice(1);
+  assert.ok(scheduledTimestamps.length >= 3, `expected several jitter-scheduled edits, got ${scheduledTimestamps.length}`);
+  for (let i = 1; i < scheduledTimestamps.length; i++) {
+    const gap = scheduledTimestamps[i]! - scheduledTimestamps[i - 1]!;
+    // Generous slack (20ms) for test-runner scheduling noise around the
+    // configured [40, 80) bounds.
+    assert.ok(gap >= jitterMin - 20, `expected inter-edit gap >= ~${jitterMin}ms, got ${gap}ms`);
+    assert.ok(gap <= jitterMax + 20, `expected inter-edit gap <= ~${jitterMax}ms, got ${gap}ms`);
+  }
+});
+
+test("ticker: a ticker edit that throws never propagates into the drain loop — the turn still completes and the reply still sends", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
+  const recordingTransport: typeof transport = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/sendMessage")) {
+      await transport(input, init); // still records the call
+      return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
+    }
+    if (url.includes("/editMessageText")) {
+      // Simulate a transport-level throw (not a well-formed Telegram error
+      // response) — the harshest failure shape, to prove renderTickerOnce's
+      // try/catch really isolates the drain loop from ANY editMessageText
+      // failure, not just ones shaped like a normal tg() Error.
+      throw new Error("network exploded");
+    }
+    return transport(input, init);
+  };
+
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("  [Bash] event-a", "tool");
+    await new Promise((r) => setTimeout(r, 400));
+    emit("Job finished.", "text");
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    typingIntervalMs: 100000,
+    tickerGraceMs: 10,
+    tickerJitterMinMs: 20,
+    tickerJitterMaxMs: 20,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  await bridge.stop();
+
+  const sends = calls.filter((c) => c.url.includes("/sendMessage"));
+  const finalReply = sends.find(
+    (c) => String((c.body as Record<string, unknown>)["text"] ?? "").includes("Job finished.") &&
+      (c.body as Record<string, unknown>)["disable_notification"] !== true,
+  );
+  assert.ok(finalReply, "expected the final reply to still be sent even though every ticker edit threw");
+});
+
+test("ticker: a text-only turn (no tool calls) still shows live progress — the first line of the latest completed text block feeds the ticker", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
+  const recordingTransport: typeof transport = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
+    return transport(input, init);
+  };
+
+  // No "tool" emits at all — only completed text blocks, mirroring a turn
+  // that narrates in prose rather than calling tools. The ticker must still
+  // show live progress from the first (non-final) text block, not sit
+  // frozen on the neutral placeholder for the whole turn.
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("Step one: reading the config.\nMore detail on the next line.", "text");
+    await new Promise((r) => setTimeout(r, 3200));
+    emit("Job finished.", "text");
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    typingIntervalMs: 100000,
+  });
+
+  await bridge.drainOnce();
+  // Sample strictly before the turn ends (3500ms wait vs. a 3200ms-delayed
+  // final emit) so any edit observed here is mid-turn, not the terminal one.
+  await new Promise((resolve) => setTimeout(resolve, 3500));
+
+  const editsSoFar = calls.filter((c) => c.url.includes("/editMessageText"));
+  const editTexts = editsSoFar.map((c) => String((c.body as Record<string, unknown>)["text"] ?? ""));
+  assert.ok(editsSoFar.length >= 1, `expected at least one editMessageText for a text-only turn past the grace window, got ${editsSoFar.length}`);
+  assert.ok(
+    editTexts.some((t) => t.includes("Step one: reading the config.")),
+    `expected an edit carrying the first line of the latest completed text block, got: ${JSON.stringify(editTexts)}`,
+  );
+  // Only the FIRST line of the text block, never the second — a multi-line
+  // text block must not spill its later lines into the single-line ticker.
+  assert.ok(
+    !editTexts.some((t) => t.includes("More detail on the next line.")),
+    `no edit should carry text beyond the first line of the block, got: ${JSON.stringify(editTexts)}`,
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await bridge.stop();
+});
+
+test("ticker: a voice-origin turn's ticker edits carry only elapsed time and tool events — never the spoken reply text", async () => {
+  const { transport, calls } = makeStubTransport([
+    voiceReplyUpdate("v1"),
+    { ok: true, result: [] },
+  ]);
+  const recordingTransport: typeof transport = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
+    return transport(input, init);
+  };
+
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("  [Bash] check-calendar", "tool");
+    await new Promise((r) => setTimeout(r, 400));
+    emit("Nothing on today, all clear for the afternoon.", "text");
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    typingIntervalMs: 100000,
+    downloadFileFn: async () => {},
+    transcribeFn: async () => "what's on today",
+    synthesizeFn: async () => {},
+    convertToOggFn: async () => {},
+    sendVoiceFn: async () => {},
+    tickerGraceMs: 10,
+    tickerJitterMinMs: 20,
+    tickerJitterMaxMs: 20,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  await bridge.stop();
+
+  const edits = calls.filter((c) => c.url.includes("/editMessageText"));
+  assert.ok(edits.length >= 1, "expected at least one ticker edit for a voice turn that outruns the grace window");
+  const editTexts = edits.map((c) => String((c.body as Record<string, unknown>)["text"] ?? ""));
+  assert.ok(
+    !editTexts.some((t) => t.includes("Nothing on today") || t.includes("all clear")),
+    `no ticker edit should carry the spoken reply prose, got: ${JSON.stringify(editTexts)}`,
+  );
     wakeDir,
   });
 

@@ -63,11 +63,29 @@ interface TelegramResponseBody {
   ok: boolean;
   description?: string;
   result?: unknown;
+  error_code?: number;
+  parameters?: { retry_after?: number };
+}
+
+// Thrown by tg() when Telegram responds with a 429 and a retry_after hint
+// (e.g. editMessageText rate limiting). A plain Error would discard that
+// hint — callers that need to back off on a schedule (the ticker) catch
+// this specifically; every other caller still just sees an Error.
+export class TelegramRetryAfterError extends Error {
+  readonly retryAfterSeconds: number;
+  constructor(message: string, retryAfterSeconds: number) {
+    super(message);
+    this.name = "TelegramRetryAfterError";
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
 }
 
 // Calls a Telegram Bot API method and returns its `result`. Throws on
 // either a non-ok HTTP response or a body with ok:false — callers never see
-// a "successful" call that Telegram actually rejected.
+// a "successful" call that Telegram actually rejected. A 429 response
+// carrying parameters.retry_after throws TelegramRetryAfterError instead of
+// a plain Error, so a caller that needs the hint (the ticker's backoff) can
+// catch it specifically without every other tg() caller having to know.
 export async function tg(config: ApiConfig, method: string, body: unknown): Promise<unknown> {
   const transport = config.transport ?? fetch;
   const url = `https://api.telegram.org/bot${config.token}/${method}`;
@@ -85,9 +103,36 @@ export async function tg(config: ApiConfig, method: string, body: unknown): Prom
     throw new Error(redact(`Telegram ${method} request failed: ${err instanceof Error ? err.message : String(err)}`));
   }
   if (!res.ok || !parsed.ok) {
+    const retryAfter = parsed.parameters?.retry_after;
+    if (res.status === 429 && typeof retryAfter === "number") {
+      throw new TelegramRetryAfterError(
+        redact(`Telegram ${method} failed: ${parsed.description ?? "rate limited"}`),
+        retryAfter,
+      );
+    }
     throw new Error(redact(`Telegram ${method} failed: ${parsed.description ?? "unknown error"}`));
   }
   return parsed.result;
+}
+
+// Edits an existing message's text in place — the ticker's update
+// mechanism. Returns nothing on success; throws (possibly
+// TelegramRetryAfterError) on failure like every other tg() call.
+export async function editMessageText(config: ApiConfig, messageId: number, text: string): Promise<void> {
+  await tg(config, "editMessageText", { chat_id: config.chatId, message_id: messageId, text });
+}
+
+// Sends a message with disable_notification:true — the ticker's placeholder
+// send. Returns the sent message's id so the caller can issue editMessageText
+// against it; sendChunked/sendVoice don't need this because they're one-shot,
+// but the ticker edits its own placeholder in place for the rest of the turn.
+export async function sendSilentMessage(config: ApiConfig, text: string): Promise<number> {
+  const result = (await tg(config, "sendMessage", {
+    chat_id: config.chatId,
+    text,
+    disable_notification: true,
+  })) as { message_id: number };
+  return result.message_id;
 }
 
 // Splits text at the last newline at-or-before the 4096-char boundary when

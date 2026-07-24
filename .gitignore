@@ -57,3 +57,7 @@ prompts/system.local.md
 # re-stales every SHA-bound gate artifact posted against the previous head.
 # Keep it untracked so eval iteration never churns the branch it's on.
 .rachel-evals-scratch/
+
+# Frozen task-evals working material (pr-scope evals.json). Working material
+# only — the durable artifact is the SHA-bound PR comment post_evals.sh posts.
+.evals/

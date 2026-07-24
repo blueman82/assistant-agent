@@ -7,7 +7,7 @@
 // the Telegram approval surface's handleCallbackQuery — never queued behind
 // pending chat turns, since a gate decision may be blocking a turn.
 
-import { tg, sendChunked, sendTyping, setMyCommands, downloadFile, stripMarkdown, sendVoice, type ApiConfig } from "./api.ts";
+import { tg, sendChunked, sendTyping, setMyCommands, downloadFile, stripMarkdown, sendVoice, editMessageText, sendSilentMessage, TelegramRetryAfterError, type ApiConfig } from "./api.ts";
 import { transcribe, synthesize, convertToOgg } from "./speech.ts";
 import { push, type PushDeps, type Severity } from "../proactive/push.ts";
 import { homedir } from "node:os";
@@ -72,6 +72,14 @@ export interface CreateBridgeOptions {
   nowFn?: () => Date;          // clock seam — heartbeat timestamps + push() quiet-hours/dedup decisions
   heartbeatPath?: string;      // defaults to ~/.rachel/bridge-heartbeat.json (expanded, not ~)
   pushBaseDir?: string;        // push() state-store dir — defaults to ~/.rachel/proactive (expanded, not ~)
+  // Streaming ticker timing — all default to the spec's real values
+  // (TICKER_GRACE_MS etc. below); injectable so tests can observe jitter,
+  // backoff, freeze, and the edit cap without waiting out real minutes.
+  tickerGraceMs?: number;
+  tickerJitterMinMs?: number;
+  tickerJitterMaxMs?: number;
+  tickerMaxEdits?: number;
+  tickerFreezeAfterFailures?: number;
 }
 
 interface TelegramUpdate {
@@ -87,6 +95,43 @@ interface TelegramUpdate {
     voice?: { file_id: string; duration: number; mime_type?: string; file_size?: number };
   };
   callback_query?: TelegramCallbackQuery;
+}
+
+// Streaming ticker (Part A of the wake-channel spec): a turn that outruns
+// this grace window gets a silent placeholder message that edits in place
+// with elapsed time + the latest live event, so Gary sees the bridge is
+// alive instead of Telegram-side silence on a long-running turn. A turn
+// that finishes inside the grace window shows no ticker at all.
+const DEFAULT_TICKER_GRACE_MS = 3000;
+const DEFAULT_TICKER_JITTER_MIN_MS = 4000;
+const DEFAULT_TICKER_JITTER_MAX_MS = 8000;
+// Belt-and-braces cap: even a legitimately long turn (the 10-minute
+// timeout) must not edit forever — 120 edits bounds Telegram API usage
+// regardless of jitter/backoff shape.
+const DEFAULT_TICKER_MAX_EDITS = 120;
+// After 3 consecutive edit failures (any reason), stop trying — a ticker
+// that's clearly broken must not keep hammering the API for the rest of a
+// long turn. The turn itself is never affected either way.
+const DEFAULT_TICKER_FREEZE_AFTER_FAILURES = 3;
+const TICKER_EVENT_MAX_CHARS = 100;
+const TICKER_LINE_MAX_CHARS = 200;
+
+// Spec format: always minutes + zero-padded seconds, e.g. "0m03s", "4m32s".
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m${String(seconds).padStart(2, "0")}s`;
+}
+
+function truncate(text: string, maxChars: number): string {
+  return text.length > maxChars ? `${text.slice(0, maxChars - 1)}…` : text;
+}
+
+function renderTickerLine(elapsedMs: number, latestEvent: string | null): string {
+  const elapsed = formatElapsed(elapsedMs);
+  const event = latestEvent ? truncate(latestEvent, TICKER_EVENT_MAX_CHARS) : "working";
+  return truncate(`working ${elapsed} — ${event}`, TICKER_LINE_MAX_CHARS);
 }
 
 const DEFAULT_TYPING_INTERVAL_MS = 5000;
@@ -564,6 +609,11 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   const pollIntervalMs = options.pollIntervalMs ?? 2000;
   const typingIntervalMs = options.typingIntervalMs ?? DEFAULT_TYPING_INTERVAL_MS;
   const turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
+  const tickerGraceMs = options.tickerGraceMs ?? DEFAULT_TICKER_GRACE_MS;
+  const tickerJitterMinMs = options.tickerJitterMinMs ?? DEFAULT_TICKER_JITTER_MIN_MS;
+  const tickerJitterMaxMs = options.tickerJitterMaxMs ?? DEFAULT_TICKER_JITTER_MAX_MS;
+  const tickerMaxEdits = options.tickerMaxEdits ?? DEFAULT_TICKER_MAX_EDITS;
+  const tickerFreezeAfterFailures = options.tickerFreezeAfterFailures ?? DEFAULT_TICKER_FREEZE_AFTER_FAILURES;
 
   // Tilde expansion: watchdogDir must be an absolute path — Node's fs never expands ~.
   const watchdogDir = options.watchdogDir ?? join(homedir(), ".rachel", "loops");
@@ -884,6 +934,109 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         sendTyping(config).catch(() => {});
 
         const buffer: string[] = [];
+
+        // Ticker state — mutated only by the closures below, all of which
+        // run on this turn's iteration of the loop.
+        // Set once the turn's own try/finally has run. clearTimeout on
+        // graceTimer/renderTimer only cancels a callback that hasn't fired
+        // yet — it cannot stop one already suspended at an await. tickerDone
+        // is what those already-fired callbacks check on the other side of
+        // that await, so a render or placeholder-send that resolves after
+        // the turn has ended bails out instead of rescheduling and editing
+        // a "done" ticker message post-hoc.
+        let tickerDone = false;
+        let tickerMessageId: number | null = null;
+        let latestEvent: string | null = null;
+        let lastSentTickerText: string | null = null;
+        let tickerEditCount = 0;
+        let tickerConsecutiveFailures = 0;
+        let tickerFrozen = false;
+        let tickerCadenceMs = tickerJitterMinMs;
+        // 429's cadence doubling is STICKY for the remainder of the turn
+        // (spec: "double the cadence for the remainder of the turn") —
+        // unlike the generic-error exponential backoff below, which resets
+        // once an edit succeeds again. This floor is what a post-429
+        // success resets tickerCadenceMs back down TO, instead of the
+        // ordinary jitter minimum.
+        let tickerCadenceFloorMs = tickerJitterMinMs;
+        let graceTimer: ReturnType<typeof setTimeout> | undefined;
+        let renderTimer: ReturnType<typeof setTimeout> | undefined;
+
+        function jitteredCadence(): number {
+          const span = tickerJitterMaxMs - tickerJitterMinMs;
+          return tickerCadenceMs + (span > 0 ? Math.floor(Math.random() * span) : 0);
+        }
+
+        // One ticker render: skip if the rendered text is unchanged (belt),
+        // and tolerate Telegram's 400 on an identical edit if it fires
+        // anyway (braces) — either way this must never throw into the drain
+        // loop or affect the turn.
+        async function renderTickerOnce(): Promise<void> {
+          if (tickerDone || tickerFrozen || tickerMessageId === null || tickerEditCount >= tickerMaxEdits) return;
+          const rendered = renderTickerLine(Date.now() - turnStartedMs, latestEvent);
+          if (rendered === lastSentTickerText) return;
+          try {
+            await editMessageText(config, tickerMessageId, rendered);
+            // The turn may have ended while this edit was in flight — the
+            // terminal-edit block below runs synchronously in the turn's
+            // finally chain and would have already seen tickerEditCount as
+            // it was before this call, so let its own edit stand rather than
+            // overwrite lastSentTickerText/tickerEditCount post-hoc here.
+            if (tickerDone) return;
+            lastSentTickerText = rendered;
+            tickerEditCount++;
+            tickerConsecutiveFailures = 0;
+            // Reset to the STICKY floor, not the ordinary jitter minimum —
+            // a prior 429 in this turn keeps the cadence doubled even after
+            // a subsequent edit succeeds.
+            tickerCadenceMs = tickerCadenceFloorMs;
+          } catch (err) {
+            if (err instanceof TelegramRetryAfterError) {
+              // Honour the hint, then double future cadence for the rest of
+              // the turn — the server just told us we're editing too fast,
+              // and the spec says this doubling is not a one-shot retry.
+              tickerCadenceFloorMs = Math.min(tickerCadenceFloorMs * 2, 60_000);
+              tickerCadenceMs = tickerCadenceFloorMs;
+              await new Promise((r) => setTimeout(r, err.retryAfterSeconds * 1000));
+              return;
+            }
+            // A "message not modified" 400 from Telegram (identical edit
+            // slipping past the local skip check) is not a real failure —
+            // don't let it count toward the freeze threshold.
+            if (err instanceof Error && /not modified/i.test(err.message)) return;
+            tickerConsecutiveFailures++;
+            tickerCadenceMs = Math.min(tickerCadenceMs * 2, 60_000);
+            if (tickerConsecutiveFailures >= tickerFreezeAfterFailures) tickerFrozen = true;
+          }
+        }
+
+        function scheduleNextRender(): void {
+          if (tickerDone || tickerFrozen || stopped) return;
+          renderTimer = setTimeout(() => {
+            void renderTickerOnce().finally(scheduleNextRender);
+          }, jitteredCadence());
+        }
+
+        graceTimer = setTimeout(() => {
+          void (async () => {
+            try {
+              const sentId = await sendSilentMessage(config, "working…");
+              // The turn may have ended while this send was in flight — the
+              // terminal-edit block below runs synchronously in the turn's
+              // finally chain and would have already seen tickerMessageId
+              // as null and skipped it, so setting it now would leave a
+              // "working…" placeholder that nothing ever edits again.
+              if (tickerDone) return;
+              tickerMessageId = sentId;
+              await renderTickerOnce();
+              scheduleNextRender();
+            } catch {
+              // Placeholder send failed — the ticker just never appears.
+              // Never affects the turn.
+            }
+          })();
+        }, tickerGraceMs);
+
         // Turn-level deadline. runTurn can await a hung upstream call forever,
         // and drainFifo is single-flight — so an unbounded turn wedges the whole
         // queue with no error ever surfacing. Abort it and move on, so the FIFO
@@ -907,7 +1060,16 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         try {
           await Promise.race([
             runTurn(input, (line, kind) => {
-              if (kind === "text") buffer.push(line);
+              if (kind === "text") {
+                buffer.push(line);
+                // The ticker's event is the most recent of a tool line OR
+                // the first line of the latest completed text block — a
+                // text-only turn must still show live ticker progress, not
+                // a frozen placeholder from before the first text block.
+                latestEvent = line.split("\n")[0]!.trim();
+              } else if (kind === "tool") {
+                latestEvent = line.trim();
+              }
             }, abortController.signal),
             deadline,
           ]);
@@ -915,10 +1077,45 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
           turnErrored = true;
           buffer.push(`[Rachel] error: ${err instanceof Error ? err.message : String(err)}`);
         } finally {
+          // Signal every ticker closure that the turn is over, including
+          // ones already suspended at an await — clearTimeout below only
+          // cancels a timer that hasn't fired yet, so this flag is the guard
+          // those in-flight callbacks actually check to bail out instead of
+          // resuming after the turn is over.
+          tickerDone = true;
           clearTimeout(watchdog);
           clearInterval(typingTimer);
+          clearTimeout(graceTimer);
+          clearTimeout(renderTimer);
           currentAbort = undefined;
           turnInFlightSince = null;
+        }
+
+        // Terminal ticker edit — fully exception-isolated, must never block,
+        // delay, or fail the turn or the final reply. Fires only if a ticker
+        // was actually started (tickerMessageId set), the ticker hasn't
+        // frozen (a frozen ticker is a broken one — one more attempt would
+        // just be a 4th failure, so freeze means freeze, no exception), and
+        // the edit cap hasn't already been reached (the cap is a hard
+        // ceiling on Telegram API usage for this turn, and the terminal
+        // edit is not exempt from it). The final reply below is sent
+        // immediately after, with no backoff sleep in between.
+        if (tickerMessageId !== null && !tickerFrozen && tickerEditCount < tickerMaxEdits) {
+          // Spec's three terminal strings are deliberately not uniform: done
+          // and failed carry the mm:ss elapsed reading ("done — 4m32s"), but
+          // timed out reports the fixed deadline in whole minutes only
+          // ("timed out at 10m") — it's the configured ceiling, not a
+          // measurement, so seconds precision would be misleading.
+          const terminalText = timedOut
+            ? `timed out at ${Math.round(turnTimeoutMs / 60000)}m`
+            : turnErrored
+              ? `failed — ${formatElapsed(Date.now() - turnStartedMs)}`
+              : `done — ${formatElapsed(Date.now() - turnStartedMs)}`;
+          try {
+            await editMessageText(config, tickerMessageId, terminalText);
+          } catch {
+            // Best-effort — never let the terminal edit affect the reply.
+          }
         }
 
         if (timedOut) {
