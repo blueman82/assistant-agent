@@ -4344,6 +4344,235 @@ test("checkLaunchAllowed: worktree path containing repo basename blocks launch (
 });
 
 // ---------------------------------------------------------------------------
+// Overlap rule (wake file vs watchdog exit ping)
+//
+// Spec: on loop exit the agent's OWN wake file is the primary report; the
+// watchdog's exit ping demotes to a crash fallback. The exit ping is skipped
+// when a slug-matching wake file (pending "<slug>.json" or consumed
+// "<slug>.done") NEWER than the loop's spawn_time exists. A loop that crashed
+// before writing one still gets the ping — that is what the watchdog is for.
+// Stall pings are NEVER suppressed, under any condition.
+// ---------------------------------------------------------------------------
+
+// Shared fixture: a watchdog entry plus an optional wake file at a chosen
+// mtime. mtime (not created_at) is the freshness source — it comes through
+// the same injectable fs.stat seam the rest of the watchdog already uses.
+function makeOverlapFixture(opts: {
+  slug: string;
+  spawnTime: number;
+  wakeFile?: { name: string; mtimeMs: number };
+  progressMtimeMs?: number;
+}) {
+  const watchdogDir = "/fake/watchdog";
+  const wakeDir = "/fake/wake";
+  const watchdogPath = `${watchdogDir}/${opts.slug}.watchdog.json`;
+  const progressPath = `/fake/${opts.slug}-progress.json`;
+
+  const entry = makeWatchdogEntry({
+    slug: opts.slug,
+    loop_name: `Loop ${opts.slug}`,
+    pid: 77777,
+    progress_json_path: progressPath,
+    spawn_time: opts.spawnTime,
+    last_check: null,
+    pinged_at: null,
+    done: false,
+  });
+
+  const files = new Map<string, string>([
+    [watchdogPath, JSON.stringify(entry)],
+    [progressPath, JSON.stringify({ status: "in_progress" })],
+  ]);
+  const mtimes = new Map<string, number>([
+    [progressPath, opts.progressMtimeMs ?? Date.now()],
+  ]);
+  if (opts.wakeFile) {
+    const wakePath = `${wakeDir}/${opts.wakeFile.name}`;
+    files.set(wakePath, JSON.stringify({ id: opts.slug, source: `adhoc:${opts.slug}`, mode: "narrate", message: "done" }));
+    mtimes.set(wakePath, opts.wakeFile.mtimeMs);
+  }
+
+  const fsFn = makeStubFs({ watchdogDir, files, mtimes });
+  // makeStubFs only pre-registers watchdogDir as existing; register wakeDir
+  // too, since the overlap check guards on existsSync before reading it.
+  fsFn.mkdirSync(wakeDir, { recursive: true });
+  return { watchdogDir, wakeDir, watchdogPath, fsFn };
+}
+
+async function runOverlapBridge(opts: {
+  watchdogDir: string;
+  wakeDir?: string;
+  fsFn: FsFunctions;
+  pidAlive: boolean;
+}): Promise<string[]> {
+  const { transport, calls } = makeStubTransport([{ ok: true, result: [] }]);
+  const pushSeams = basePushOpts();
+  const bridge = createBridge({
+    ...pushSeams,
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (_input, emit) => { emit("ok", "text"); },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    watchdogDir: opts.watchdogDir,
+    ...(opts.wakeDir !== undefined ? { wakeDir: opts.wakeDir } : {}),
+    fsFn: opts.fsFn,
+    isPidAliveFn: () => opts.pidAlive,
+  });
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await bridge.stop();
+  return calls
+    .filter((c) => c.url.includes("/sendMessage"))
+    .map((c) => String((c.body as Record<string, unknown>)["text"]));
+}
+
+test("overlap: exit ping is SUPPRESSED when a pending <slug>.json wake file newer than spawn_time exists", async () => {
+  const spawnTime = Date.now() - 30 * 60 * 1000;
+  const fx = makeOverlapFixture({
+    slug: "wake-pending",
+    spawnTime,
+    wakeFile: { name: "wake-pending.json", mtimeMs: spawnTime + 5 * 60 * 1000 },
+  });
+
+  const sent = await runOverlapBridge({ watchdogDir: fx.watchdogDir, wakeDir: fx.wakeDir, fsFn: fx.fsFn, pidAlive: false });
+
+  assert.ok(
+    !sent.some((s) => s.includes("[watchdog]") && s.includes("wake-pending") && /exited/i.test(s)),
+    `expected the exit ping to be suppressed by the pending wake file, got: ${JSON.stringify(sent)}`,
+  );
+  // Suppression must still CONSUME the watchdog entry, or it re-evaluates forever.
+  assert.ok(
+    (fx.fsFn as ReturnType<typeof makeStubFs>).unlinked.includes(fx.watchdogPath),
+    `expected the watchdog file to be consumed even when the ping is suppressed, got unlinked: ${JSON.stringify((fx.fsFn as ReturnType<typeof makeStubFs>).unlinked)}`,
+  );
+});
+
+test("overlap: exit ping is SUPPRESSED when a consumed <slug>.done wake file newer than spawn_time exists", async () => {
+  const spawnTime = Date.now() - 30 * 60 * 1000;
+  const fx = makeOverlapFixture({
+    slug: "wake-done",
+    spawnTime,
+    wakeFile: { name: "wake-done.done", mtimeMs: spawnTime + 5 * 60 * 1000 },
+  });
+
+  const sent = await runOverlapBridge({ watchdogDir: fx.watchdogDir, wakeDir: fx.wakeDir, fsFn: fx.fsFn, pidAlive: false });
+
+  assert.ok(
+    !sent.some((s) => s.includes("[watchdog]") && s.includes("wake-done") && /exited/i.test(s)),
+    `expected the exit ping to be suppressed by the consumed .done wake file, got: ${JSON.stringify(sent)}`,
+  );
+});
+
+test("overlap: exit ping FIRES when no wake file exists (the crash-before-wake case)", async () => {
+  const spawnTime = Date.now() - 30 * 60 * 1000;
+  const fx = makeOverlapFixture({ slug: "no-wake", spawnTime });
+
+  const sent = await runOverlapBridge({ watchdogDir: fx.watchdogDir, wakeDir: fx.wakeDir, fsFn: fx.fsFn, pidAlive: false });
+
+  assert.ok(
+    sent.some((s) => s.includes("[watchdog]") && s.includes("no-wake") && /exited/i.test(s)),
+    `expected the exit ping to fire with no wake file present, got: ${JSON.stringify(sent)}`,
+  );
+});
+
+test("overlap: exit ping FIRES when the wake file is OLDER than spawn_time (a previous run's leftover)", async () => {
+  const spawnTime = Date.now() - 30 * 60 * 1000;
+  const fx = makeOverlapFixture({
+    slug: "stale-wake",
+    spawnTime,
+    wakeFile: { name: "stale-wake.json", mtimeMs: spawnTime - 60 * 60 * 1000 },
+  });
+
+  const sent = await runOverlapBridge({ watchdogDir: fx.watchdogDir, wakeDir: fx.wakeDir, fsFn: fx.fsFn, pidAlive: false });
+
+  assert.ok(
+    sent.some((s) => s.includes("[watchdog]") && s.includes("stale-wake") && /exited/i.test(s)),
+    `expected the exit ping to fire when the only wake file predates spawn_time, got: ${JSON.stringify(sent)}`,
+  );
+});
+
+test("overlap: exit ping FIRES when only a NON-matching slug's wake file exists", async () => {
+  const spawnTime = Date.now() - 30 * 60 * 1000;
+  const fx = makeOverlapFixture({
+    slug: "mine",
+    spawnTime,
+    wakeFile: { name: "someone-else.json", mtimeMs: spawnTime + 5 * 60 * 1000 },
+  });
+
+  const sent = await runOverlapBridge({ watchdogDir: fx.watchdogDir, wakeDir: fx.wakeDir, fsFn: fx.fsFn, pidAlive: false });
+
+  assert.ok(
+    sent.some((s) => s.includes("[watchdog]") && s.includes("mine") && /exited/i.test(s)),
+    `expected another slug's wake file not to suppress this loop's exit ping, got: ${JSON.stringify(sent)}`,
+  );
+});
+
+test("overlap: exit ping FIRES when no wakeDir option is passed at all (default seam absent in tests)", async () => {
+  const spawnTime = Date.now() - 30 * 60 * 1000;
+  const fx = makeOverlapFixture({ slug: "no-wakedir", spawnTime });
+
+  const sent = await runOverlapBridge({ watchdogDir: fx.watchdogDir, fsFn: fx.fsFn, pidAlive: false });
+
+  assert.ok(
+    sent.some((s) => s.includes("[watchdog]") && s.includes("no-wakedir") && /exited/i.test(s)),
+    `an unreadable/absent wake dir must never suppress the ping, got: ${JSON.stringify(sent)}`,
+  );
+});
+
+test("overlap: STALL ping fires even when a slug-matching wake file newer than spawn_time exists", async () => {
+  const now = Date.now();
+  const spawnTime = now - 70 * 60 * 1000;
+  // pid ALIVE + progress.json silent for 61 min → the stall path.
+  const fx = makeOverlapFixture({
+    slug: "stall-with-wake",
+    spawnTime,
+    progressMtimeMs: now - 61 * 60 * 1000,
+    wakeFile: { name: "stall-with-wake.json", mtimeMs: now - 5 * 60 * 1000 },
+  });
+
+  const sent = await runOverlapBridge({ watchdogDir: fx.watchdogDir, wakeDir: fx.wakeDir, fsFn: fx.fsFn, pidAlive: true });
+
+  assert.ok(
+    sent.some((s) => /gone quiet/i.test(s) && s.includes("stall-with-wake")),
+    `stall pings are never suppressed by a wake file, got: ${JSON.stringify(sent)}`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Producer: the ad-hoc task template's wake-file step
+//
+// Frontmatter never reaches the spawned process — only the body does (the
+// same reason the report: path has to be restated in the constraints block).
+// So the wake instruction must live in the BODY text of the template.
+// ---------------------------------------------------------------------------
+
+test("producer: the ad-hoc task template instructs the spawned job to write a wake file, in the BODY", () => {
+  const systemMd = readFileSync(new URL("../prompts/system.md", import.meta.url), "utf8");
+
+  const adhocStart = systemMd.indexOf("## Ad-hoc backgrounding");
+  assert.ok(adhocStart >= 0, "expected an Ad-hoc backgrounding section in prompts/system.md");
+  const adhocEnd = systemMd.indexOf("\n## ", adhocStart + 1);
+  const section = systemMd.slice(adhocStart, adhocEnd === -1 ? undefined : adhocEnd);
+
+  assert.match(section, /\.rachel\/wake/, "the wake directory path must be spelled out literally in the template");
+  assert.match(section, /narrate/, "the default wake mode is narrate");
+
+  // The constraints block is part 3 of the BODY — the block the template says
+  // goes verbatim into every synthesised file. The wake step must be inside
+  // it, not in the frontmatter list under "Synthesising the task file".
+  const constraintsStart = section.indexOf("**The fixed constraints block**");
+  assert.ok(constraintsStart >= 0, "expected the fixed constraints block in the template");
+  const blockEnd = section.indexOf("\n\n", constraintsStart);
+  const constraintsBlock = section.slice(constraintsStart, blockEnd === -1 ? undefined : blockEnd);
+  assert.match(
+    constraintsBlock,
+    /\.rachel\/wake/,
+    "the wake-file step must live in the body's constraints block — frontmatter never reaches the spawned process",
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Wake channel consumer (spec Part B). These use REAL temp dirs rather than
 // the stub fs above: the whole point of the design is the .done/.bad rename
 // semantics, which are real filesystem behaviour.

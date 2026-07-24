@@ -351,8 +351,45 @@ async function checkWakeFiles(opts: {
   }
 }
 
+// Overlap rule (spec: streaming-relay-wake-channel §"Overlap rule").
+//
+// On loop exit the agent's OWN wake file is the primary report; the watchdog's
+// exit ping demotes to a crash fallback. Returns true when a slug-matching wake
+// file — pending "<slug>.json" or already-consumed "<slug>.done" — exists and
+// is NEWER than the loop's spawn_time, meaning this run reported for itself.
+//
+// Freshness is the file's mtime, read through the same injectable fs.stat seam
+// the rest of the watchdog uses: created_at inside the JSON is producer-written
+// and may be absent or malformed, and a .done file has been renamed after the
+// fact anyway. An older file is a previous run's leftover for a recycled slug.
+//
+// Any failure (no wake dir, unreadable dir, unstattable file) returns false, so
+// the ping FIRES — the crash-before-wake case is exactly what the watchdog is
+// for, and the safe default is one extra ping, never a silently swallowed exit.
+// This governs the EXIT ping only; stall pings are never suppressed.
+function hasFreshWakeFile(opts: {
+  wakeDir: string;
+  slug: string;
+  spawnTime: number;
+  fs: FsFunctions;
+}): boolean {
+  const { wakeDir, slug, spawnTime, fs } = opts;
+  try {
+    if (!fs.existsSync(wakeDir)) return false;
+    const candidates = [`${slug}.json`, `${slug}.done`];
+    for (const filename of fs.readdir(wakeDir)) {
+      if (!candidates.includes(filename)) continue;
+      try {
+        if (fs.stat(join(wakeDir, filename)).mtimeMs > spawnTime) return true;
+      } catch { /* unstattable — treat as no wake file */ }
+    }
+  } catch { /* wake dir unreadable — treat as no wake file */ }
+  return false;
+}
+
 async function checkWatchdogs(opts: {
   watchdogDir: string;
+  wakeDir: string;
   pollPeriodMs: number;
   fs: FsFunctions;
   isPidAlive: (pid: number, expectedCmd?: string) => boolean;  // injectable for tests (stress-test fix 1)
@@ -360,7 +397,7 @@ async function checkWatchdogs(opts: {
   // rejects — the caller wraps push() with a direct-send fallback).
   pushPing: (eventId: string, state: string, text: string) => Promise<void>;
 }): Promise<void> {
-  const { watchdogDir, pollPeriodMs, fs, isPidAlive: pidAliveCheck, pushPing } = opts;
+  const { watchdogDir, wakeDir, pollPeriodMs, fs, isPidAlive: pidAliveCheck, pushPing } = opts;
 
   if (!fs.existsSync(watchdogDir)) return;
 
@@ -388,6 +425,18 @@ async function checkWatchdogs(opts: {
 
     if (!pidAlive) {
       // EVENT PATH: pid-gone → read stop counts + log tail, inject synthetic turn.
+      //
+      // Overlap rule first: if this loop already wrote its own wake file after
+      // it started, that wake IS the report and the exit ping would be Gary's
+      // second copy of the same news. Skip the ping — but still consume the
+      // watchdog entry below, or it would be re-evaluated on every poll forever.
+      if (hasFreshWakeFile({ wakeDir, slug: entry.slug, spawnTime: entry.spawn_time, fs })) {
+        entry.done = true;
+        try { fs.writeFile(watchdogPath, JSON.stringify(entry, null, 2)); } catch { /* best-effort */ }
+        try { fs.unlink(watchdogPath); } catch { /* best-effort */ }
+        continue;
+      }
+
       const progressPath = entry.progress_json_path ?? resolveProgressPath(entry, fs);
       const counts = progressPath ? readLoopStopCounts(progressPath, fs) : {};
       const status = progressPath ? (() => {
@@ -567,7 +616,8 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
 
   // Tilde expansion: watchdogDir must be an absolute path — Node's fs never expands ~.
   const watchdogDir = options.watchdogDir ?? join(homedir(), ".rachel", "loops");
-  // Same rule: an expanded absolute path, never a "~" string.
+  // Same rule for the wake dir — the overlap rule reads it to decide whether a
+  // finished loop already reported for itself.
   const wakeDir = options.wakeDir ?? join(homedir(), ".rachel", "wake");
   const resolvedFs = options.fsFn ?? defaultFsFn();
   const resolvedIsPidAlive = options.isPidAliveFn ?? isPidAlive;
@@ -1009,6 +1059,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     await processUpdates(result ?? []);
     await checkWatchdogs({
       watchdogDir,
+      wakeDir,
       pollPeriodMs: pollIntervalMs,
       fs: resolvedFs,
       isPidAlive: resolvedIsPidAlive,
