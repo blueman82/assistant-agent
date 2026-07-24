@@ -911,6 +911,12 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
           turnErrored = true;
           buffer.push(`[Rachel] error: ${err instanceof Error ? err.message : String(err)}`);
         } finally {
+          // Signal every ticker closure that the turn is over, including
+          // ones already suspended at an await — clearTimeout below only
+          // cancels a timer that hasn't fired yet, so this flag is the guard
+          // those in-flight callbacks actually check to bail out instead of
+          // resuming after the turn is over.
+          tickerDone = true;
           clearTimeout(watchdog);
           clearInterval(typingTimer);
           clearTimeout(graceTimer);
