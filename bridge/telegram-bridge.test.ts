@@ -4135,6 +4135,70 @@ test("wake consumer: malformed JSON is renamed .bad and never crashes the poll l
   assert.deepEqual(sentTexts(calls), [], "a malformed wake produces no delivery");
 });
 
+test("wake consumer: a field that cannot coerce to a string is quarantined .bad, not replayed forever", async () => {
+  // Valid JSON, but wake.message's shape makes String() throw (no toString/
+  // valueOf primitive coercion path) — this used to escape checkWakeFiles
+  // uncaught, since the String() calls sat between the JSON.parse catch and
+  // the claiming rename, so the file was never renamed off .json and the
+  // outer poll-loop catch retried the same poison file forever.
+  const wakeDir = makeWakeDir();
+  writeWakeFile(wakeDir, "poison.json", '{"id":"p","source":"s","mode":"fyi","severity":"normal","message":{"toString":1,"valueOf":2},"created_at":"now"}');
+
+  const { transport, calls } = makeStubTransport([{ ok: true, result: [] }]);
+  const turnInputs: string[] = [];
+  const runTurnStub: BridgeRunTurn = async (input) => { turnInputs.push(input); };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    typingIntervalMs: 100000,
+    wakeDir,
+  });
+
+  // Must not throw — a poison field must not crash the poll loop.
+  await bridge.drainOnce();
+  await sleepMs(300);
+  await bridge.stop();
+
+  assert.deepEqual(realReaddirSync(wakeDir), ["poison.json.bad"], "the poison file must be quarantined, not left as .json to replay");
+  assert.deepEqual(turnInputs, []);
+  assert.deepEqual(sentTexts(calls), [], "a quarantined wake produces no delivery");
+});
+
+test("wake consumer: a top-level null wake file is quarantined .bad, not replayed forever", async () => {
+  // Valid JSON (the literal `null`), but every field access on it throws —
+  // same failure shape as the poison-object case above, different trigger.
+  const wakeDir = makeWakeDir();
+  writeWakeFile(wakeDir, "nullwake.json", "null");
+
+  const { transport, calls } = makeStubTransport([{ ok: true, result: [] }]);
+  const turnInputs: string[] = [];
+  const runTurnStub: BridgeRunTurn = async (input) => { turnInputs.push(input); };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    typingIntervalMs: 100000,
+    wakeDir,
+  });
+
+  await bridge.drainOnce();
+  await sleepMs(300);
+  await bridge.stop();
+
+  assert.deepEqual(realReaddirSync(wakeDir), ["nullwake.json.bad"], "a null wake file must be quarantined, not left as .json to replay");
+  assert.deepEqual(turnInputs, []);
+  assert.deepEqual(sentTexts(calls), [], "a quarantined wake produces no delivery");
+});
+
 test("wake consumer: the wake file is renamed .done BEFORE the turn is dispatched (at-most-once)", async () => {
   const wakeDir = makeWakeDir();
   writeWakeFile(wakeDir, "ordered.json", {
