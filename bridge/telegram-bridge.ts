@@ -97,6 +97,26 @@ const DEFAULT_TYPING_INTERVAL_MS = 5000;
 const DEFAULT_TURN_TIMEOUT_MS = 10 * 60 * 1000;
 const CONFLICT_BACKOFF_MS = 65_000;   // Telegram releases getUpdates lock in ~30-60s; 65s gives safe margin
 const CONFLICT_EXIT_THRESHOLD = 5;    // 5 consecutive 409s (~5 min) = genuine second consumer, not launchd race
+// Ceiling on the error detail copied into a synthesis-failure log line.
+// synthesize.py takes the reply text as an argv element, so an execFile
+// timeout error echoes the entire reply back in its message — one real
+// failure wrote a 9,696-char private reply into the bridge log
+// (RCA 2026-07-23, item 9). Long enough to keep the leading diagnostic.
+const SYNTH_ERROR_LOG_MAX_CHARS = 300;
+
+// Seeded into the NEXT turn's input after a turn is aborted — either by the
+// deadline watchdog or by an operator /stop. The harness injects "The user
+// doesn't want to proceed with this tool use" for the in-flight tool call as
+// an aborted turn dies (RCA 2026-07-23, mechanism A); that residue sits in
+// session context and reads as a real refusal on the following turn even
+// when the abort itself was requested. This tells the model what it is
+// actually looking at. Distinct from the user-facing cutoff notice, which
+// explains the same event to the operator rather than to the model.
+const ABORT_ARTIFACT_PREFIX =
+  "[bridge note] Your previous turn was aborted by the bridge — either the turn deadline or an operator /stop. " +
+  "Any \"The user doesn't want to proceed with this tool use\" or \"[Request interrupted by user for tool use]\" text " +
+  "from that turn is a machine-generated artifact of that abort, not a semantic refusal. Do not attribute it to the operator, " +
+  "and do not apologise for it. The operator's actual message follows.\n\n";
 
 export interface Bridge {
   // Runs one getUpdates cycle (and processes whatever it returns) — the
@@ -154,6 +174,15 @@ export function defaultFsFn(): FsFunctions {
   };
 }
 
+// Caps an error detail before it reaches the log. The leading characters
+// carry the diagnostic ("synthesize failed (exit 1): …"); the tail is where a
+// leaked reply body lives. Marks itself truncated so a short message is never
+// mistaken for a clipped one.
+export function truncateErrorDetail(detail: string, maxChars: number = SYNTH_ERROR_LOG_MAX_CHARS): string {
+  if (detail.length <= maxChars) return detail;
+  return `${detail.slice(0, maxChars)}… [truncated, ${detail.length} chars total]`;
+}
+
 export function isPidAlive(pid: number, expectedCmd?: string): boolean {
   try {
     execSync(`kill -0 ${pid}`, { stdio: "ignore" });
@@ -208,6 +237,118 @@ function readLoopStopCounts(progressPath: string, fs: FsFunctions): Record<strin
     }
   } catch { /* progress.json absent or malformed */ }
   return {};
+}
+
+// A completion→wake file dropped by a producer into the wake dir
+// (~/.rachel/wake/<id>.json). Every field is PRODUCER-supplied and therefore
+// untrusted — `mode` and `severity` are both validated before use.
+export interface WakeFile {
+  id: string;
+  source: string;
+  mode: string;
+  severity: string;
+  message: string;
+  created_at: string;
+}
+
+// Flood guard: at most this many wake files are consumed per poll iteration.
+// The rest wait for the next getUpdates cycle (≤30s later).
+const WAKE_ITERATION_CAP = 5;
+
+const WAKE_SEVERITIES: readonly Severity[] = ["urgent", "normal", "digest"];
+
+// The producer's severity is untrusted: anything outside push.ts's own union
+// (including the spec schema's example value "info") becomes "normal".
+function coerceWakeSeverity(value: unknown): Severity {
+  return WAKE_SEVERITIES.includes(value as Severity) ? (value as Severity) : "normal";
+}
+
+// Scans the wake dir once per poll iteration and dispatches each wake file.
+// Same shape and error posture as checkWatchdogs above: an unreadable dir, a
+// malformed file, or a failed dispatch never propagates out of the poll loop.
+async function checkWakeFiles(opts: {
+  wakeDir: string;
+  fs: FsFunctions;
+  log: (msg: string) => void;
+  logError: (msg: string) => void;
+  // Queues a narrate wake as a synthetic FIFO message and kicks the drain.
+  enqueueTurn: (text: string) => void;
+  // Delivers an fyi wake through the push() chokepoint (quiet hours, dedup, budget).
+  pushFyi: (eventId: string, severity: Severity, text: string) => Promise<void>;
+}): Promise<void> {
+  const { wakeDir, fs, log, logError, enqueueTurn, pushFyi } = opts;
+
+  if (!fs.existsSync(wakeDir)) return;
+
+  let files: string[];
+  try {
+    files = fs.readdir(wakeDir).filter((f) => f.endsWith(".json")).sort();
+  } catch { return; }
+
+  for (const filename of files.slice(0, WAKE_ITERATION_CAP)) {
+    const wakePath = join(wakeDir, filename);
+
+    let wake: WakeFile;
+    try {
+      wake = JSON.parse(fs.readFile(wakePath)) as WakeFile;
+    } catch (err) {
+      // Malformed JSON is quarantined rather than retried forever.
+      try { fs.rename(wakePath, `${wakePath}.bad`); } catch { /* best-effort */ }
+      logError(`[telegram-bridge] malformed wake file ${filename} quarantined as .bad: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
+
+    // Valid JSON does not guarantee `wake` is a safely readable object — a
+    // top-level `null` (or any non-object) throws on property access below,
+    // and a field shaped like {"toString":1,"valueOf":2} makes String()
+    // throw (no primitive coercion path exists). Guard the same way as the
+    // JSON.parse above: quarantine rather than let the throw escape
+    // checkWakeFiles uncaught. An uncaught throw here would propagate past
+    // the un-renamed file (still .json) all the way to pollOnce's outer
+    // catch, which backs off and retries the SAME poll cycle — replaying the
+    // poison file forever instead of the at-most-once semantics the rename
+    // below is meant to guarantee.
+    let source: string, message: string, id: string;
+    try {
+      if (wake === null || typeof wake !== "object") throw new Error("wake file is not a JSON object");
+      source = String(wake.source ?? "unknown");
+      message = String(wake.message ?? "");
+      id = String(wake.id ?? filename.replace(/\.json$/, ""));
+    } catch (err) {
+      try { fs.rename(wakePath, `${wakePath}.bad`); } catch { /* best-effort */ }
+      logError(`[telegram-bridge] wake file ${filename} is not a usable object, quarantined as .bad: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
+
+    // AT-MOST-ONCE: the consumed file is renamed to .done BEFORE anything is
+    // dispatched. A crash between the rename and the dispatch loses one wake
+    // rather than replaying it on every subsequent poll forever.
+    try {
+      fs.rename(wakePath, join(wakeDir, `${filename.replace(/\.json$/, "")}.done`));
+    } catch (err) {
+      // Could not claim the file — skip it rather than risk a replay storm.
+      logError(`[telegram-bridge] could not claim wake file ${filename}: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
+
+    // Only an explicitly tagged "narrate" may start a billed Rachel turn.
+    // Missing OR invalid mode falls through to the prefixed FYI path — an
+    // unknown producer must never be able to trigger SDK spend.
+    if (wake.mode === "narrate") {
+      log(`[telegram-bridge] wake (narrate) from ${source}: queuing a turn`);
+      enqueueTurn(`[wake: ${source}] ${message}`);
+      continue;
+    }
+
+    const severity = coerceWakeSeverity(wake.severity);
+    if (wake.mode === "fyi") {
+      log(`[telegram-bridge] wake (fyi) from ${source}`);
+      await pushFyi(`wake:${id}`, severity, message);
+    } else {
+      log(`[telegram-bridge] wake (untagged, mode=${JSON.stringify(wake.mode)}) from ${source}`);
+      await pushFyi(`wake:${id}`, severity, `[untagged wake: ${source}] ${message}`);
+    }
+  }
 }
 
 // Overlap rule (spec: streaming-relay-wake-channel §"Overlap rule").
@@ -506,6 +647,9 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   // staleness as "poll loop silent", and the 10-minute threshold there
   // clears the legitimate 5x65s backoff window.
   let turnInFlightSince: Date | null = null;   // set while drainFifo has a turn running
+  // Set when the deadline or /stop aborts a turn; consumed by the next
+  // turn's input.
+  let pendingAbortNotice = false;
   let lastHeartbeatMs = 0;
   let heartbeatWriteFailing = false;
 
@@ -598,6 +742,10 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
 
     if (text === "/reset") {
       resetSession();
+      // A fresh session holds none of the aborted turn's residue, so there is
+      // nothing left to explain — carrying the note across would assert an
+      // abort into a context that has no trace of one.
+      pendingAbortNotice = false;
       await reply("Session reset.");
       return;
     }
@@ -620,6 +768,11 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     if (text === "/stop") {
       if (currentAbort) {
         currentAbort.abort();
+        // /stop aborts the same in-flight tool call the deadline watchdog
+        // would, producing the identical SDK rejection-residue string —
+        // inoculate the next turn against it exactly as the timeout path
+        // does.
+        pendingAbortNotice = true;
         await reply("Stopped.");
       } else {
         await reply("No turn in flight.");
@@ -756,6 +909,16 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     try {
       while (fifo.length > 0) {
         const { text, voice } = fifo.shift()!;
+        // Abort inoculation: consumed here so it applies to exactly one turn —
+        // the one immediately after the abort. Left sticky it would assert an
+        // abort that didn't happen, which is a ghost of its own.
+        const input = pendingAbortNotice ? ABORT_ARTIFACT_PREFIX + text : text;
+        pendingAbortNotice = false;
+        // Turn start, with the backlog still queued behind this one. Before
+        // this line only completion/abort were logged, so establishing when a
+        // turn began meant cross-referencing SDK session JSONL (RCA
+        // 2026-07-23, item 8).
+        log(`[telegram-bridge] turn started (queue depth ${fifo.length})`);
         const abortController = new AbortController();
         currentAbort = abortController;
         turnInFlightSince = nowFn();
@@ -793,7 +956,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         });
         try {
           await Promise.race([
-            runTurn(text, (line, kind) => {
+            runTurn(input, (line, kind) => {
               if (kind === "text") buffer.push(line);
             }, abortController.signal),
             deadline,
@@ -812,6 +975,8 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
           // Say it plainly rather than delivering a truncated turn as if it
           // were a complete answer.
           logError(`[telegram-bridge] turn exceeded ${turnTimeoutMs}ms — aborted, draining next message.`);
+          // Inoculate the next turn against this abort's rejection residue.
+          pendingAbortNotice = true;
           buffer.push(`[Rachel] That turn ran past ${Math.round(turnTimeoutMs / 60000)} minutes and I cut it off. Ask again if you still need it, or say "background it" and I'll run it as a detached loop and ping you when it's done.`);
         } else if (turnErrored) {
           // A crashed turn is not a completed one — logging it as "completed"
@@ -840,7 +1005,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
             await convertToOggFn(wavPath, oggPath);
             await sendVoiceFn(config, oggPath, charCount);
           } catch (err) {
-            logError(`[telegram-bridge] voice reply synthesis failed, falling back to text: ${err instanceof Error ? err.message : String(err)}`);
+            logError(`[telegram-bridge] voice reply synthesis failed, falling back to text: ${truncateErrorDetail(err instanceof Error ? err.message : String(err))}`);
             await reply(replyText || "(no output)");
           } finally {
             try { resolvedFs.unlink(wavPath); } catch { /* already gone or never written */ }
@@ -899,6 +1064,25 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
       fs: resolvedFs,
       isPidAlive: resolvedIsPidAlive,
       pushPing: (eventId, state, text) => pushAlert("loop-watchdog", eventId, state, "normal", text),
+    });
+    // Completion→wake channel. Deliberately here in the poll loop (once per
+    // getUpdates iteration, ≤30s latency) and NOT in the 30-minute sweep —
+    // sweep latency would defeat the point of "she comes back to you".
+    await checkWakeFiles({
+      wakeDir,
+      fs: resolvedFs,
+      log,
+      logError,
+      enqueueTurn: (text) => {
+        fifo.push({ text, voice: false });
+        // Safe kick: drainFifo is single-flight, so if a turn is already
+        // running this no-ops and the RUNNING loop's `while (fifo.length > 0)`
+        // picks the message up when that turn finishes. Nothing is lost.
+        void drainFifo().catch((err) => {
+          logError(`[telegram-bridge] wake drain error: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      },
+      pushFyi: (eventId, severity, text) => pushAlert("wake", eventId, "fired", severity, text),
     });
     writeHeartbeat();
   }

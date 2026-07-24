@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "scope": "pr",
+  "task_ref": "worktree-streaming-ticker-wake",
+  "tier": 1,
+  "tier_justification": "Tier 1: 3 work-units in this PR (the wake-file schema; the consumer scan inside the bridge poll loop with its rename-before-dispatch and 5-per-iteration cap; the untagged-mode routing rule), but no tier-2 outward predicate fires at merge — nothing is published, deployed, migrated or deleted, and no external send happens at merge time. It is above tier 0 because the goal state names something Gary receives on his phone (a narrated report arriving unprompted after detached work), which is an outward surface for the tier-0 predicate and carries rule 6's >=1 P0 drive-the-artifact eval.",
+  "frozen_at": "2026-07-24T00:51:49Z",
+  "frozen_sha": "bc708f7",
+  "amendments": [
+    {
+      "eval": "E1,E2",
+      "when": "2026-07-24T10:50:00Z",
+      "why": "GATE-DEFECT FIX: post_evals smoke-verify at the gate checks out the PR head into a fresh bare `git worktree add --detach` with no `npm install` and no untracked files. E1's cmd (`node --experimental-strip-types .evals/harness-wake.ts`) needs no devDependency — the harness imports only bridge/telegram-bridge.ts's public createBridge seam plus node: builtins (verified: grep -nE '^import' found zero bare npm specifiers), and --experimental-strip-types needs nothing beyond Node itself (present at the gate). The ONLY reason E1 was failing at the gate is that .evals/ did not exist in this branch's own tree at all — the harness was authored in a sibling worktree for the shared wake-channel eval spec (PRs #74/#75/#76 share task_ref worktree-streaming-ticker-wake) and was never committed to THIS branch — so harness-wake.ts and control-wake.ts were absent from the gate's bare checkout of this branch. Same 127-class failure as PRs #72/#73/#74's untracked driver scripts, here manifesting as a module-not-found error rather than command-not-found. FIX: located the harness in the sibling worktree, copied it in, and force-added exactly the two files E1's cmd/negative_control name (`git add -f .evals/harness-wake.ts .evals/control-wake.ts`; this evals.json stays uncommitted working material) rather than reducing E1 to a structural grep. Verified via a real probe: a fresh `git worktree add --detach` at this PR's pre-fix head, with only the two harness files copied in (no node_modules present) — `node --experimental-strip-types .evals/harness-wake.ts` ran in 1.585s wall time (comfortably under the gate's 10s scripted-command cap) and exited 0 with 'WAKE EVAL PASS'; the negative control ran in 1.574s and exited 1 with the expected content-failure messages. E1's cmd, negative_control, and assert text are UNCHANGED from original authoring — this fix required no reduction in behavioral coverage. E2's original cmd (`npm run typecheck`) needed the tsc devDependency binary, absent from the bare checkout (confirmed on PR #72/#73/#74 by the task owner and this reviewer against the real gate; same defect class). Node has no built-in typecheck (--experimental-strip-types strips types without checking them), so E2 could not be rescued the way E1 was. Repurposed, per the same task-owner authorization already exercised on PR #72/#73/#74, to the strongest available substantive property: the coercion-throw quarantine guard that IS this PR's headline Critical-bug fix, per this artifact's own human-reader note — a wake object whose fields throw on String() coercion (or a bare top-level null) is now caught and quarantined to .bad exactly like the pre-existing malformed-JSON path, instead of escaping checkWakeFiles uncaught and replaying forever. This property is explicitly NOT covered by E1 (whose harness only tests syntactically-invalid JSON, a different code path already handled correctly per the note) nor by E4 (which covers wiring/ordering/cap, not this specific coercion guard) — so E2 closes a real, disclosed coverage gap rather than re-testing what E1/E4 already prove. Verified as a genuine fix via `git show 0826537:bridge/telegram-bridge.ts` (0826537 is the direct parent commit touching this file before the guard was added — the real pre-fix MERGE-BLOCKER state, confirmed absent) vs current (present). assert text updated to describe the new check; frozen_sha and frozen_at left untouched. No eval's meaning was weakened for E1 (unchanged, still fully behavioral) or E2 (a real, disclosed substitution for a property E1/E4 do not cover, not a re-test of the same thing under a weaker check)."
+    }
+  ],
+  "evals": [
+    {
+      "id": "E1",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "The running bridge consumes wake files from its wake directory and routes them per the spec: a tagged narrate wake starts a real Rachel turn carrying its source and message; a tagged fyi wake reaches Telegram without starting a turn; an untagged wake is delivered FYI with an '[untagged wake: ...]' prefix and NEVER starts a turn; consumed files are renamed out of the pending set (at-most-once) and malformed JSON is quarantined as .bad.",
+      "cmd": "node --experimental-strip-types .evals/harness-wake.ts",
+      "negative_control": "node --experimental-strip-types .evals/control-wake.ts",
+      "expected_outcome": "Exit 0 with 'WAKE EVAL PASS'. The harness drives the real bridge through its public createBridge seam with a fake fetch-shaped transport, a stub runTurn that records what turns were started, and a real temp wake directory seeded with four files (narrate, fyi, untagged, malformed). It asserts on observable end state only — what the transport recorded, what turns were started, and what happened to the files on disk. The negative control points the identical bridge at an EMPTY wake dir, running the identical assertions with the triggering condition removed, so it fails on content both at freeze and after the feature is built. The untagged-rule assertions are the SDK-spend guard: an unknown producer must never be able to start a billed turn.",
+      "seam_contract_note": "This frozen harness passes the wake directory to createBridge under three candidate option names — wakeDir, wakeDirPath, wakePath — because the eval author was blind to the implementation. PR 2 MUST accept one of those three names as its injectable wake-directory seam. A seam named anything else leaves the harness driving the operator's real ~/.rachel/wake and this eval can never pass. Assertion 5 in the harness pins this by failing if the real ~/.rachel/wake was written to.",
+      "smoke": {
+        "cmd_exit": 0,
+        "negative_control_exit": 1,
+        "cmd_output": "",
+        "negative_control_output": ""
+      },
+      "status": "pass",
+      "evidence": "(verified) Re-probed against a fresh bare `git worktree add --detach` checkout at this PR's head (no node_modules, matching the gate exactly): `node --experimental-strip-types .evals/harness-wake.ts` -> exit 0, 'WAKE EVAL PASS: narrate->turn, fyi->push-only, untagged->prefixed fyi, consumed renamed, malformed quarantined', wall time 1.585s (under the gate's 10s cap). `node --experimental-strip-types .evals/control-wake.ts` -> exit 1, fails on content (empty wake dir triggers no turn/no send, as expected), wall time 1.574s. harness-wake.ts and control-wake.ts are now force-added (git add -f) to the branch so the gate's checkout has them. createBridge's wakeDir option name (confirmed at bridge/telegram-bridge.ts:68, 542) matches one of the three candidate names the harness tries."
+    },
+    {
+      "id": "E2",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "The coercion-throw quarantine guard is present and wired: a wake file that is syntactically valid JSON but not a safely readable object (a bare top-level null, or a field shaped so String() coercion throws) is caught and quarantined to .bad exactly like the pre-existing malformed-JSON path, instead of escaping checkWakeFiles uncaught and replaying forever on every poll retry — this PR's headline Critical-bug fix, and a property E1's syntactically-malformed-JSON-only harness and E4's wiring/ordering/cap checks do not exercise.",
+      "cmd": "grep -q 'if (wake === null || typeof wake !== \"object\") throw new Error' bridge/telegram-bridge.ts && grep -A20 'if (wake === null || typeof wake !== \"object\") throw new Error' bridge/telegram-bridge.ts | grep -q 'fs.rename(wakePath, `${wakePath}.bad`)' && grep -A20 'if (wake === null || typeof wake !== \"object\") throw new Error' bridge/telegram-bridge.ts | grep -q 'not a usable object, quarantined as .bad'",
+      "negative_control": "git show 0826537:bridge/telegram-bridge.ts | grep -q 'if (wake === null || typeof wake !== \"object\") throw new Error' && git show 0826537:bridge/telegram-bridge.ts | grep -A20 'if (wake === null || typeof wake !== \"object\") throw new Error' | grep -q 'fs.rename(wakePath, `${wakePath}.bad`)' && git show 0826537:bridge/telegram-bridge.ts | grep -A20 'if (wake === null || typeof wake !== \"object\") throw new Error' | grep -q 'not a usable object, quarantined as .bad'",
+      "smoke": {
+        "cmd_exit": 0,
+        "negative_control_exit": 1,
+        "cmd_output": "",
+        "negative_control_output": ""
+      },
+      "status": "pass",
+      "evidence": "Asserts the coercion-throw guard is present in bridge/telegram-bridge.ts: the type guard (`if (wake === null || typeof wake !== \"object\") throw new Error(...)`) that catches a non-object wake before any field coercion runs, AND the quarantine-to-.bad rename inside its catch block, AND the distinguishing log message ('not a usable object, quarantined as .bad') that separates this guard from the pre-existing malformed-JSON quarantine. -> exit 0. Negative control checks out 0826537 (the direct parent commit to bridge/telegram-bridge.ts, immediately before this guard was added — confirmed via `git show 0826537:... | grep -c` returning 0 matches, the real pre-fix MERGE-BLOCKER state) and re-runs the identical three-part check -> exit 1 on the first leg, confirming the check is content-sensitive and the fixture is a genuine prior defect state, not fabricated. Repurposed from the original 'npm run typecheck' (devDependency binary, exit 127 in the gate's bare checkout) per the same task-owner authorization already exercised on PR #72/#73/#74, chosen specifically because it is the PR's own stated headline Critical fix and is not covered by E1 or E4."
+    },
+    {
+      "id": "E3",
+      "priority": "P0",
+      "mode": "agent-run",
+      "surface": "merged-state",
+      "assert": "Merged state does not regress the frozen baseline: typecheck is clean and the full suite still reports fail 0 with at least the 521 tests that passed at bc708f7. This is a regression guard only — it deliberately does NOT stand as proof the feature works, because `npm test` runs the implementation's own tests and would share its oracle. E1's harness carries that proof independently.",
+      "expected_outcome": "PASS: typecheck clean and `fail 0` with count >= 521, quoted from a run the grader performed itself. Agent-run rather than scripted because the suite takes ~41s and the merge gate's scripted-command cap is 10s — a scripted invocation is killed and recorded as an environmental failure (observed at freeze: cmd_exit 142), which is exactly the broken-instrument shape the gate refuses. Agent-run evals are exempt from that cap.",
+      "verifier_instruction": "You are grading one frozen eval. You have not seen the implementation conversation and must not accept any agent's summary, PR description, or CI badge as evidence — RUN THE COMMANDS YOURSELF and grade only what you observe. From the repository root run `npm run typecheck` and `npm test` as SEPARATE commands. Never join them with `&&` (the combined invocation is known to hang in this repo) and never wrap either in `timeout`/`gtimeout` (macOS has no such binary). Read the tail of each. PASS requires: typecheck exits clean with no diagnostics, AND the test run reports `fail 0` with a test count of at least 521 — the baseline frozen at bc708f7. A lower count means tests were lost and is a FAIL even if nothing reports as failing. Quote the actual summary lines you saw. Label each claim (verified) with that quoted output, or (inferred).",
+      "status": "pass",
+      "evidence": "(verified) Ran `npm run typecheck` and `npm test` as separate commands (never chained, no timeout wrapper) at b285331. Typecheck: exit 0, clean. Test summary quoted verbatim: \"tests 560\", \"pass 560\", \"fail 0\" — 560 >= the 521 baseline frozen at bc708f7 (the +2 over the 558 seen pre-fix is two new regression tests this review added for the wake-file coercion-throw fix; no test was removed or skipped). NOT re-run for this gate-defect fix pass: E3 is agent-run mode, exempt from smoke-verify's scripted re-execution (confirmed: smoke_verify only re-runs mode==\"scripted\" evals), and this fix touched no application code — only added two eval harness files under .evals/, which does not affect typecheck or test count."
+    },
+    {
+      "id": "E4",
+      "priority": "P1",
+      "mode": "agent-run",
+      "surface": "merged-state",
+      "assert": "The wake consumer is wired into the bridge's poll loop (not the 30-minute sweep), renames each consumed file BEFORE dispatching it, and caps work at 5 files per iteration — the three durability properties the spec fixes and that a behaviour harness cannot fully observe.",
+      "verifier_instruction": "You are grading one frozen eval. You have not seen the implementation conversation and must not ask for it. Read the merged bridge source and answer three questions with file:line evidence. (1) Is the wake-directory scan invoked once per getUpdates poll iteration, rather than from proactive/sweep.ts? The spec is explicit that the 30-minute sweep must NOT be the consumer, because its latency would defeat the goal. (2) On the consume path, does the atomic rename to .done happen BEFORE the wake is dispatched? The spec chooses at-most-once deliberately: a crash between rename and dispatch must lose one wake rather than replay it forever. Quote the ordering. (3) Is there a cap of 5 files processed per iteration as a flood guard? Report PASS only if all three hold. Label each claim (verified) with file:line evidence, or (inferred).",
+      "expected_outcome": "PASS on all three. P1 because these are durability properties behind the user-visible behaviour E1 already gates; a failure here is real debt but does not block the ticker/wake UX from working.",
+      "status": "pass",
+      "evidence": "(verified) All three durability properties confirmed by direct source read at b285331. (1) checkWakeFiles is called from pollOnce() at bridge/telegram-bridge.ts:967, in the poll loop alongside checkWatchdogs — NOT from proactive/sweep.ts (grepped sweep.ts for wakeDir/checkWakeFiles, zero matches, confirming the consumer is not in the 30-minute sweep). (2) The claiming rename (fs.rename(wakePath, ...done)) happens at telegram-bridge.ts:298, inside checkWakeFiles per-file loop, BEFORE the mode===\"narrate\" dispatch check that follows it in source order — rename precedes dispatch. (3) WAKE_ITERATION_CAP = 5 at telegram-bridge.ts:227, applied via files.slice(0, WAKE_ITERATION_CAP) at telegram-bridge.ts:259 — also empirically confirmed by the existing passing test \"wake consumer: at most 5 wake files are processed per poll iteration\" (5 .done + 3 still-pending .json out of 8 written). NOT re-run for this gate-defect fix pass: E4 is agent-run mode, exempt from smoke-verify's scripted re-execution, and this fix touched no application code."
+    }
+  ],
+  "result": null,
+  "graded_at": "2026-07-24T09:22:05Z",
+  "head_sha": "25c069c23242fdd88c8a14ea72d50e34e0db402a"
+}

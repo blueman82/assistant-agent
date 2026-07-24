@@ -4,11 +4,13 @@
 // store directly; every delivery decision (dedup, quiet, budget) lives in the
 // chokepoint. Tick order is fixed: deferred flush FIRST, then bridge-liveness,
 // then PR-red, then calendar (escalation then one-shot spawn), then the
-// memory-lint store scan. Each family runs in its own try/catch so one
-// broken family never blocks the others and the tick still exits 0.
+// memory-lint store scan, then the ~/.rachel/tmp hygiene sweep. Each family
+// runs in its own try/catch so one broken family never blocks the others and
+// the tick still exits 0.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, mkdirSync, readdirSync, lstatSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import type { Stats } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,6 +37,11 @@ export interface SweepDeps {
   readFileFn: (path: string) => string | undefined;
   writeFileFn: (path: string, content: string) => void;
   lintFn: (memoryDir: string) => Finding[];
+  // tmp-sweep seams. readDirFn returns undefined for a missing directory (a
+  // no-op, not an error); lstatFn returns undefined for a vanished entry.
+  readDirFn: (path: string) => string[] | undefined;
+  lstatFn: (path: string) => Stats | undefined;
+  unlinkFn: (path: string) => void;
   // Push-deps passthrough: forwarded to pushFn/flushFn/getStateFn so an
   // injected baseDir/clock/sendFn reaches the real chokepoint unchanged.
   sendFn?: PushDeps["sendFn"];
@@ -110,6 +117,31 @@ function defaultWriteFile(path: string, content: string): void {
   writeFileSync(path, content);
 }
 
+// tmp-sweep default seams. Exported for sweep.test.ts, which injects a
+// mkdtemp homeDir and then exercises these against the real filesystem —
+// production callers go through SweepDeps like every other seam.
+export function defaultReadDirFn(path: string): string[] | undefined {
+  try {
+    return readdirSync(path);
+  } catch (err) {
+    // A tmp dir that was never created is the normal state on a fresh host.
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    throw err;
+  }
+}
+
+// lstat, never stat: it reports on the symlink itself rather than its target,
+// so isFile() rejects symlinks and directories in one check.
+export function defaultLstatFn(path: string): Stats | undefined {
+  return lstatSync(path, { throwIfNoEntry: false });
+}
+
+export function defaultUnlinkFn(path: string): void {
+  unlinkSync(path);
+}
+
 const REPO_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 
 function resolveSweepDeps(overrides?: Partial<SweepDeps>): SweepDeps {
@@ -124,6 +156,9 @@ function resolveSweepDeps(overrides?: Partial<SweepDeps>): SweepDeps {
     readFileFn: overrides?.readFileFn ?? defaultReadFile,
     writeFileFn: overrides?.writeFileFn ?? defaultWriteFile,
     lintFn: overrides?.lintFn ?? ((memoryDir: string) => lintMemoryStore(memoryDir)),
+    readDirFn: overrides?.readDirFn ?? defaultReadDirFn,
+    lstatFn: overrides?.lstatFn ?? defaultLstatFn,
+    unlinkFn: overrides?.unlinkFn ?? defaultUnlinkFn,
     sendFn: overrides?.sendFn,
     baseDir: overrides?.baseDir ?? join(homedir(), ".rachel", "proactive"),
     homeDir: overrides?.homeDir ?? homedir(),
@@ -657,6 +692,59 @@ async function checkMemoryLint(d: SweepDeps, pushDeps: Partial<PushDeps>): Promi
   );
 }
 
+// --- tmp sweep (RCA 2026-07-23 item 16) ---
+//
+// ~/.rachel/tmp accumulates voice artifacts and downloaded images. The
+// bridge's own per-turn cleanup is CORRECT and is deliberately untouched
+// here; the debris comes from direct test invocations of the speech scripts
+// and from processes killed mid-synthesis, between writing the .wav and
+// reaching their cleanup finally-block. Neither can be fixed at the bridge,
+// so a periodic sweep is the robust answer.
+//
+// Age threshold: 1 hour. The longest a tmp file can legitimately still be in
+// use is bounded by the bridge's 10-minute turn deadline
+// (DEFAULT_TURN_TIMEOUT_MS) — a downloaded image is read across a turn, and
+// synthesis (a 300s cap at most) is strictly inside one turn. 1h is 6x that
+// ceiling, so this can never race a live turn, while still keeping the
+// directory from accumulating for days.
+const TMP_MAX_AGE_MS = 60 * 60_000;
+
+// Deliberately silent: routine hygiene must not consume the daily interrupt
+// budget or ping Gary. Outcome goes to the launchd log only. Every delete is
+// constrained to direct children of ~/.rachel/tmp that lstat as regular
+// files — non-recursive, never a directory, never following a symlink out.
+function sweepTmpDir(d: SweepDeps): void {
+  const tmpDir = join(d.homeDir, ".rachel", "tmp");
+  const entries = d.readDirFn(tmpDir);
+  if (entries === undefined) {
+    return;
+  }
+  const cutoff = d.now().getTime() - TMP_MAX_AGE_MS;
+  let removed = 0;
+  for (const name of entries) {
+    const path = join(tmpDir, name);
+    const st = d.lstatFn(path);
+    // Skips directories AND symlinks in one check: lstat describes the entry
+    // itself, so a symlink is never a regular file and is never followed.
+    if (st === undefined || !st.isFile()) {
+      continue;
+    }
+    if (st.mtime.getTime() >= cutoff) {
+      continue;
+    }
+    try {
+      d.unlinkFn(path);
+      removed += 1;
+    } catch (err) {
+      // Best-effort: one unremovable file never aborts the sweep.
+      d.log(`[sweep] tmp-sweep could not remove ${path}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  if (removed > 0) {
+    d.log(`[sweep] tmp-sweep removed ${removed} stale file${removed === 1 ? "" : "s"} from ${tmpDir}`);
+  }
+}
+
 // Exported for the cross-check test pinning this as a subset of rachel.ts's
 // DEFAULT_ALLOWED_TOOLS — a narrowing entry outside the default list would
 // be silently dropped by resolveAllowedTools.
@@ -795,6 +883,10 @@ export async function sweepTick(overrides?: Partial<SweepDeps>): Promise<Record<
     "calendar-escalation": await runFamily("calendar-escalation", d, errors, () => checkCalendarEscalation(d, cfg, pushDeps)),
     calendar: await runFamily("calendar", d, errors, () => runCalendarOneshot(d, cfg)),
     "memory-lint": await runFamily("memory-lint", d, errors, () => checkMemoryLint(d, pushDeps)),
+    // Last: pure local hygiene, alerts nobody, and nothing else depends on it.
+    "tmp-sweep": await runFamily("tmp-sweep", d, errors, async () => {
+      sweepTmpDir(d);
+    }),
   };
   try {
     await escalateSweepFailures(d, cfg, results, errors);
