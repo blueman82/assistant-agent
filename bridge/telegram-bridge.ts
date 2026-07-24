@@ -172,6 +172,15 @@ export function defaultFsFn(): FsFunctions {
   };
 }
 
+// Caps an error detail before it reaches the log. The leading characters
+// carry the diagnostic ("synthesize failed (exit 1): …"); the tail is where a
+// leaked reply body lives. Marks itself truncated so a short message is never
+// mistaken for a clipped one.
+export function truncateErrorDetail(detail: string, maxChars: number = SYNTH_ERROR_LOG_MAX_CHARS): string {
+  if (detail.length <= maxChars) return detail;
+  return `${detail.slice(0, maxChars)}… [truncated, ${detail.length} chars total]`;
+}
+
 export function isPidAlive(pid: number, expectedCmd?: string): boolean {
   try {
     execSync(`kill -0 ${pid}`, { stdio: "ignore" });
