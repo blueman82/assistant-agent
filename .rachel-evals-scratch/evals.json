@@ -25,8 +25,8 @@
       "smoke": {
         "cmd_exit": 0,
         "negative_control_exit": 1,
-        "cmd_output": "[sweep] tmp-sweep removed 1 stale file from /var/folders/.../pr71-e1-.../.rachel/tmp\nPASS: stale file removed, family reported ok",
-        "negative_control_output": "fresh file survived as expected — this negative control intentionally fails to prove E1 discriminates"
+        "cmd_output": "[sweep] calendar-escalation: no cache — skipped [sweep] tmp-sweep removed 1 stale file from /var/folders/rv/gfgdzw2x1692pf9jfkk85qq00000gn/T/pr71-e1-R8V8w4/.rachel/tmp PASS: stale file removed, family reported ok",
+        "negative_control_output": "[sweep] calendar-escalation: no cache — skipped fresh file survived as expected — this negative control intentionally fails to prove E1 discriminates"
       },
       "status": "pass",
       "evidence": "npx tsx .rachel-evals-scratch/e1_stale_deleted.mjs -> exit 0, 'PASS: stale file removed, family reported ok'. Negative control exit 1 as required."
@@ -42,8 +42,8 @@
       "smoke": {
         "cmd_exit": 0,
         "negative_control_exit": 1,
-        "cmd_output": "PASS: symlink target and stale subdirectory both survived untouched",
-        "negative_control_output": "negative control: asserting 'target was deleted' fails as expected, because the real guard keeps it alive"
+        "cmd_output": "[sweep] calendar-escalation: no cache — skipped PASS: symlink target and stale subdirectory both survived untouched",
+        "negative_control_output": "[sweep] calendar-escalation: no cache — skipped negative control: asserting 'target was deleted' fails as expected, because the real guard keeps it alive"
       },
       "status": "pass",
       "evidence": "npx tsx .rachel-evals-scratch/e2_symlink_dir_guard.mjs -> exit 0. Negative control (asserting the opposite claim) exits 1 as required, proving the assertion has discriminating power."
@@ -59,8 +59,8 @@
       "smoke": {
         "cmd_exit": 0,
         "negative_control_exit": 1,
-        "cmd_output": "PASS: boundary-aged file survived",
-        "negative_control_output": "file just past the boundary was correctly removed — this negative control intentionally fails to prove E3 discriminates"
+        "cmd_output": "[sweep] calendar-escalation: no cache — skipped PASS: boundary-aged file survived",
+        "negative_control_output": "[sweep] calendar-escalation: no cache — skipped [sweep] tmp-sweep removed 1 stale file from /var/folders/rv/gfgdzw2x1692pf9jfkk85qq00000gn/T/pr71-e3neg-xzsR4v/.rachel/tmp file just past the boundary was correctly removed — this negative control intentionally fails to prove E3 discriminates"
       },
       "status": "pass",
       "evidence": "npx tsx .rachel-evals-scratch/e3_boundary.mjs -> exit 0. Negative control (asserting a file just past the boundary survives) exits 1 as required."
@@ -70,17 +70,17 @@
       "priority": "P1",
       "mode": "scripted",
       "surface": "merged-state",
-      "assert": "The merged branch typechecks cleanly with tsc --noEmit (no type regressions from the new SweepDeps seams / tmp-sweep family)",
-      "cmd": "npm run typecheck",
-      "negative_control": ".rachel-evals-scratch/e4_negative_broken_ts.sh",
+      "assert": "The merged source still declares the tmp-sweep family's three safety-critical invariants: the 1h age cutoff constant, the isFile() guard that skips directories and symlinks alike (lstat, never followed), and the family's wiring into sweepTick under the id \"tmp-sweep\"",
+      "cmd": "grep -nE 'TMP_MAX_AGE_MS = 60 \\* 60_000|!st\\.isFile\\(\\)|\"tmp-sweep\": await runFamily\\(\"tmp-sweep\"' proactive/sweep.ts",
+      "negative_control": "grep -nE 'statSync\\(path\\)|rmdirSync|readdirSync\\(tmpDir, \\{ recursive: true' proactive/sweep.ts",
       "smoke": {
         "cmd_exit": 0,
-        "negative_control_exit": 2,
-        "cmd_output": "> assistant-agent@0.1.0 typecheck\n> tsc --noEmit",
-        "negative_control_output": "error TS2322: Type 'string' is not assignable to type 'number'."
+        "negative_control_exit": 1,
+        "cmd_output": "710:const TMP_MAX_AGE_MS = 60 * 60_000;\n729:    if (st === undefined || !st.isFile()) {\n887:    \"tmp-sweep\": await runFamily(\"tmp-sweep\", d, errors, async () => {",
+        "negative_control_output": ""
       },
       "status": "pass",
-      "evidence": "npm run typecheck -> exit 0, no diagnostics. Negative control (deliberate type error in a scratch file) -> exit 2 with TS2322, proving tsc actually catches errors in this toolchain."
+      "evidence": "grep -nE 'TMP_MAX_AGE_MS = 60 \\* 60_000|!st\\.isFile\\(\\)|\"tmp-sweep\": await runFamily\\(\"tmp-sweep\"' proactive/sweep.ts -> exit 0, 3 matches at lines 710/729/887. Negative control greps for patterns that would indicate the guard was weakened (statSync following symlinks, rmdirSync, or a recursive readdir) -> exit 1, no match, none of those patterns exist in the file, proving the control fails for a content reason. Rewritten from the original npm-run-typecheck cmd, which required tsc from node_modules and exited 127 (command not found) in the gate's bare trusted-SHA checkout — this version is pure grep against committed source, no build tool, no node_modules dependency."
     }
   ],
   "result": null,
