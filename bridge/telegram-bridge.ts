@@ -820,7 +820,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
             await convertToOggFn(wavPath, oggPath);
             await sendVoiceFn(config, oggPath, charCount);
           } catch (err) {
-            logError(`[telegram-bridge] voice reply synthesis failed, falling back to text: ${err instanceof Error ? err.message : String(err)}`);
+            logError(`[telegram-bridge] voice reply synthesis failed, falling back to text: ${truncateErrorDetail(err instanceof Error ? err.message : String(err))}`);
             await reply(replyText || "(no output)");
           } finally {
             try { resolvedFs.unlink(wavPath); } catch { /* already gone or never written */ }
