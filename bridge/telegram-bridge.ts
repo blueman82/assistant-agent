@@ -887,12 +887,14 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
 
         // Terminal ticker edit — fully exception-isolated, must never block,
         // delay, or fail the turn or the final reply. Fires only if a ticker
-        // was actually started (tickerMessageId set) AND the ticker hasn't
+        // was actually started (tickerMessageId set), the ticker hasn't
         // frozen (a frozen ticker is a broken one — one more attempt would
-        // just be a 4th failure, so freeze means freeze, no exception). The
-        // final reply below is sent immediately after, with no backoff sleep
-        // in between.
-        if (tickerMessageId !== null && !tickerFrozen) {
+        // just be a 4th failure, so freeze means freeze, no exception), and
+        // the edit cap hasn't already been reached (the cap is a hard
+        // ceiling on Telegram API usage for this turn, and the terminal
+        // edit is not exempt from it). The final reply below is sent
+        // immediately after, with no backoff sleep in between.
+        if (tickerMessageId !== null && !tickerFrozen && tickerEditCount < tickerMaxEdits) {
           const terminalText = timedOut
             ? `timed out — ${formatElapsed(Date.now() - turnStartedMs)}`
             : turnErrored
