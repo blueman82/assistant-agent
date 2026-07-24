@@ -1,0 +1,305 @@
+// Tests for the MEMORY.md write lock. Two layers:
+//  1. Primitive-level: acquire/release/staleness/timeout behaviour of the
+//     lock itself, with real fs in a temp dir (no real concurrency needed —
+//     these are single-process, deterministic).
+//  2. Lost-update demonstration: a controllable read-modify-write append
+//     simulates two interleaved writers. Run WITHOUT the lock first to prove
+//     the loss is real (SO-15 — a green test that would also pass unlocked
+//     proves nothing), then WITH the lock to prove both survive.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { acquireMemoryLock, releaseMemoryLock, withMemoryLock, LockContentionError } from "./memoryLock.ts";
+
+function tmpDir(): string {
+  return mkdtempSync(join(tmpdir(), "rachel-test-memlock-"));
+}
+
+// A deferred promise gives an external test full control over when an
+// in-flight async step resumes — the only way to force a genuine A-reads,
+// B-reads, A-writes, B-writes interleaving instead of accidental
+// serialization from a synchronous fs call completing before the next
+// microtask runs (the exact trap the advisor flagged: a synchronous
+// openSync has no await point, so Promise.all([a(), b()]) can silently
+// serialize and prove nothing).
+function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => (resolve = r));
+  return { promise, resolve };
+}
+
+// Simulates the real MEMORY.md read-modify-write append that Rachel performs
+// freehand: read whole file, append a pointer line, write back. `gate` lets
+// the caller suspend the writer between read and write to force interleaving.
+async function unlockedAppend(path: string, line: string, gate?: Promise<void>): Promise<void> {
+  const before = existsSync(path) ? readFileSync(path, "utf8") : "";
+  if (gate) await gate;
+  writeFileSync(path, `${before}${line}\n`);
+}
+
+test("lost update: two interleaved unlocked appends silently drop one pointer line", async () => {
+  const dir = tmpDir();
+  const path = join(dir, "MEMORY.md");
+  writeFileSync(path, "# Memory Index\n\n");
+
+  // Force the real race: A reads, B reads (both see the original file),
+  // THEN A writes, THEN B writes — B's write has no knowledge of A's line.
+  const releaseA = deferred<void>();
+  const writerA = unlockedAppend(path, "- [A](a.md) — fact a", releaseA.promise);
+  // Let A's read (the synchronous part before the gate) run first.
+  await Promise.resolve();
+  const writerB = unlockedAppend(path, "- [B](b.md) — fact b");
+  await writerB; // B reads (sees no A yet) and writes immediately, no gate.
+  releaseA.resolve();
+  await writerA; // A now writes, using the read it took BEFORE B's write.
+
+  const final = readFileSync(path, "utf8");
+  const hasA = final.includes("- [A](a.md)");
+  const hasB = final.includes("- [B](b.md)");
+  // This is the failing-for-the-right-reason assertion: without a lock,
+  // exactly one of the two pointer lines survives — proving the loss is
+  // real, not a fixture artifact.
+  assert.ok(!(hasA && hasB), `expected a lost update (only one line survives), but both present: ${final}`);
+});
+
+test("lost update is prevented when both appends go through withMemoryLock", async () => {
+  const dir = tmpDir();
+  const path = join(dir, "MEMORY.md");
+  writeFileSync(path, "# Memory Index\n\n");
+  const lockPath = `${path}.lock`;
+
+  const releaseA = deferred<void>();
+  const writerA = withMemoryLock(
+    lockPath,
+    async () => {
+      await unlockedAppend(path, "- [A](a.md) — fact a", releaseA.promise);
+    },
+    { staleMs: 30_000, timeoutMs: 5_000, pollMs: 5, now: () => new Date(), pid: process.pid },
+  );
+  // Give A's acquire + read a tick to run and take the lock before B tries.
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const writerB = withMemoryLock(
+    lockPath,
+    async () => {
+      await unlockedAppend(path, "- [B](b.md) — fact b");
+    },
+    { staleMs: 30_000, timeoutMs: 5_000, pollMs: 5, now: () => new Date(), pid: process.pid },
+  );
+
+  // B is blocked acquiring the lock (A holds it) until A releases.
+  releaseA.resolve();
+  await Promise.all([writerA, writerB]);
+
+  const final = readFileSync(path, "utf8");
+  assert.ok(final.includes("- [A](a.md)"), `A's line missing: ${final}`);
+  assert.ok(final.includes("- [B](b.md)"), `B's line missing: ${final}`);
+});
+
+test("acquireMemoryLock creates a lockfile that a second acquire cannot take", async () => {
+  const dir = tmpDir();
+  const lockPath = join(dir, "MEMORY.md.lock");
+  // Use this test process's own pid so the default isPidAlive genuinely
+  // reports it as live — an arbitrary fixed number risks colliding with a
+  // real-but-unrelated dead pid on the machine and silently reclaiming it,
+  // which would defeat the point of this test.
+  const handle = acquireMemoryLock(lockPath, { staleMs: 30_000, pid: process.pid, now: () => new Date() });
+  assert.ok(existsSync(lockPath));
+
+  // A second acquire with a short timeout must fail loud (not silently
+  // proceed unlocked) while the first holder's lock is live.
+  await assert.rejects(
+    () =>
+      withMemoryLock(lockPath, async () => {}, {
+        staleMs: 30_000,
+        timeoutMs: 50,
+        pollMs: 10,
+        now: () => new Date(),
+        pid: 888888,
+      }),
+    /timed out/i,
+  );
+
+  releaseMemoryLock(lockPath, handle);
+  assert.ok(!existsSync(lockPath));
+});
+
+test("a stale lock (dead pid) is broken and reclaimed rather than blocking forever", async () => {
+  const dir = tmpDir();
+  const lockPath = join(dir, "MEMORY.md.lock");
+  // Simulate a crashed holder: a lockfile naming a pid that isn't alive.
+  writeFileSync(lockPath, JSON.stringify({ pid: 999999999, acquired_at: new Date().toISOString() }));
+
+  let ran = false;
+  await withMemoryLock(
+    lockPath,
+    async () => {
+      ran = true;
+    },
+    { staleMs: 30_000, timeoutMs: 2_000, pollMs: 10, now: () => new Date(), pid: process.pid, isPidAlive: () => false },
+  );
+  assert.ok(ran, "callback should have run after the stale lock was reclaimed");
+});
+
+test("a live-pid lock past the mtime staleness window is also reclaimed (mtime backstop)", async () => {
+  const dir = tmpDir();
+  const lockPath = join(dir, "MEMORY.md.lock");
+  const oldAcquiredAt = new Date(Date.now() - 60_000).toISOString();
+  // pid is "alive" per the injected check, but the lock is far older than
+  // staleMs — covers a holder that's alive but wedged (e.g. hung forever on
+  // an unrelated await), not just a dead process.
+  writeFileSync(lockPath, JSON.stringify({ pid: 123, acquired_at: oldAcquiredAt }));
+
+  let ran = false;
+  await withMemoryLock(
+    lockPath,
+    async () => {
+      ran = true;
+    },
+    { staleMs: 30_000, timeoutMs: 2_000, pollMs: 10, now: () => new Date(), pid: process.pid, isPidAlive: () => true },
+  );
+  assert.ok(ran, "callback should have run after the mtime-stale lock was reclaimed");
+});
+
+test("withMemoryLock throws loud on timeout rather than proceeding unlocked", async () => {
+  const dir = tmpDir();
+  const lockPath = join(dir, "MEMORY.md.lock");
+  writeFileSync(lockPath, JSON.stringify({ pid: process.pid, acquired_at: new Date().toISOString() }));
+
+  let ran = false;
+  await assert.rejects(
+    () =>
+      withMemoryLock(
+        lockPath,
+        async () => {
+          ran = true;
+        },
+        { staleMs: 30_000, timeoutMs: 50, pollMs: 10, now: () => new Date(), pid: 42, isPidAlive: () => true },
+      ),
+    /timed out/i,
+  );
+  assert.equal(ran, false, "callback must never run when the lock could not be acquired");
+});
+
+test("withMemoryLock releases the lock even when the callback throws", async () => {
+  const dir = tmpDir();
+  const lockPath = join(dir, "MEMORY.md.lock");
+
+  await assert.rejects(
+    () =>
+      withMemoryLock(
+        lockPath,
+        async () => {
+          throw new Error("boom");
+        },
+        { staleMs: 30_000, timeoutMs: 2_000, pollMs: 10, now: () => new Date(), pid: process.pid },
+      ),
+    /boom/,
+  );
+  assert.ok(!existsSync(lockPath), "lockfile must be cleaned up after a callback failure");
+});
+
+test("withMemoryLock leaves no leftover files in the lock's directory", async () => {
+  const dir = tmpDir();
+  const lockPath = join(dir, "MEMORY.md.lock");
+  await withMemoryLock(lockPath, async () => {}, { staleMs: 30_000, timeoutMs: 2_000, pollMs: 10, now: () => new Date(), pid: process.pid });
+  assert.deepEqual(readdirSync(dir), []);
+});
+
+// --- Critical 2 companion (reviewer-found): a non-contention acquire
+// failure (e.g. the lockfile's parent directory doesn't exist — ENOENT) must
+// fail FAST, not be swallowed as ordinary contention and busy-polled for the
+// full timeout. Distinguishing acquireMemoryLock's own LockContentionError
+// from every other thrown error is what makes that possible — this matters
+// independently of memoryAppend.ts's mkdirSync-before-lock fix, because a
+// poll loop that retries on ANY error masks the next unexpected failure the
+// same way (see memoryLock.ts's withMemoryLock header comment).
+test("acquireMemoryLock throws LockContentionError specifically when the lock is held and live", () => {
+  const dir = tmpDir();
+  const lockPath = join(dir, "MEMORY.md.lock");
+  acquireMemoryLock(lockPath, { staleMs: 30_000, pid: process.pid, now: () => new Date() });
+  assert.throws(() => acquireMemoryLock(lockPath, { staleMs: 30_000, pid: 888888, now: () => new Date() }), LockContentionError);
+});
+
+test("withMemoryLock fails fast (not after the full timeout) on a non-contention acquire error", async () => {
+  const dir = tmpDir();
+  // The lockfile's parent directory does not exist — openSync throws ENOENT,
+  // which is not contention and will never clear by waiting.
+  const lockPath = join(dir, "does-not-exist", "MEMORY.md.lock");
+  const start = Date.now();
+  await assert.rejects(
+    () =>
+      withMemoryLock(lockPath, async () => {}, {
+        staleMs: 30_000,
+        timeoutMs: 10_000,
+        pollMs: 50,
+        now: () => new Date(),
+        pid: process.pid,
+      }),
+    (err: unknown) => {
+      // Must be the raw ENOENT (or an error naming it), not the generic
+      // "lock timed out" message that hides the real cause.
+      assert.ok(!(err instanceof Error) || !/timed out/i.test(err.message), `expected a fail-fast ENOENT, got: ${String(err)}`);
+      return true;
+    },
+  );
+  const elapsedMs = Date.now() - start;
+  assert.ok(elapsedMs < 2_000, `expected a fast failure, took ${elapsedMs}ms (a swallowed-error regression would take ~10s)`);
+});
+
+// --- Important (reviewer-found, delta review): the stale-lock-reclaim retry
+// swallows a non-ENOENT rmSync failure. Sequence: first tryCreate -> EEXIST
+// (a lock is present) -> isStale -> true (dead pid) -> rmSync throws EACCES
+// (the containing dir is read-only) but the bare `catch {}` discards it ->
+// the lockfile is STILL on disk -> the retry tryCreate legitimately sees
+// EEXIST again (the file never actually got removed) -> LockContentionError
+// -> withMemoryLock's poll loop retries it as ordinary contention and
+// busy-polls the full timeout. The permissions problem never surfaces; the
+// caller sees a misleading "timed out" that hides the real EACCES. This is
+// the exact failure mode the ENOENT-vs-other distinction elsewhere in this
+// file (isStale's readLockFile, withMemoryLock's LockContentionError check)
+// already guards against — the rmSync catch here was the one spot that
+// hadn't been brought in line with that idiom.
+test("a stale-lock reclaim that cannot remove the lockfile (EACCES) fails fast with the real error, not a busy-polled timeout", async () => {
+  const dir = tmpDir();
+  const lockPath = join(dir, "MEMORY.md.lock");
+  // Seed a stale lock: dead pid, so isStale is true and a reclaim is attempted.
+  writeFileSync(lockPath, JSON.stringify({ pid: 999999999, acquired_at: new Date().toISOString() }));
+  // Read-only dir: rmSync of the lockfile fails EACCES instead of succeeding
+  // or ENOENT — the one errno the existing "ignore ENOENT" comment does not
+  // cover.
+  chmodSync(dir, 0o500);
+  const start = Date.now();
+  try {
+    await assert.rejects(
+      () =>
+        withMemoryLock(lockPath, async () => {}, {
+          staleMs: 30_000,
+          timeoutMs: 3_000,
+          pollMs: 100,
+          now: () => new Date(),
+          pid: process.pid,
+          isPidAlive: () => false,
+        }),
+      (err: unknown) => {
+        assert.ok(
+          err instanceof Error && !/timed out/i.test(err.message),
+          `expected a fail-fast EACCES, got a masked timeout: ${String(err)}`,
+        );
+        assert.ok(
+          err instanceof Error && /EACCES|permission/i.test(err.message),
+          `expected the real errno to be visible, got: ${String(err)}`,
+        );
+        return true;
+      },
+    );
+  } finally {
+    // Restore write permission so the temp dir can be cleaned up normally.
+    chmodSync(dir, 0o700);
+  }
+  const elapsedMs = Date.now() - start;
+  assert.ok(elapsedMs < 2_000, `expected a fast failure, took ${elapsedMs}ms (the swallowed-EACCES regression takes ~3000ms, the full timeout)`);
+});
