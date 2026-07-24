@@ -101,17 +101,17 @@ interface TelegramUpdate {
 // with elapsed time + the latest live event, so Gary sees the bridge is
 // alive instead of Telegram-side silence on a long-running turn. A turn
 // that finishes inside the grace window shows no ticker at all.
-const TICKER_GRACE_MS = 3000;
-const TICKER_JITTER_MIN_MS = 4000;
-const TICKER_JITTER_MAX_MS = 8000;
+const DEFAULT_TICKER_GRACE_MS = 3000;
+const DEFAULT_TICKER_JITTER_MIN_MS = 4000;
+const DEFAULT_TICKER_JITTER_MAX_MS = 8000;
 // Belt-and-braces cap: even a legitimately long turn (the 10-minute
 // timeout) must not edit forever — 120 edits bounds Telegram API usage
 // regardless of jitter/backoff shape.
-const TICKER_MAX_EDITS = 120;
+const DEFAULT_TICKER_MAX_EDITS = 120;
 // After 3 consecutive edit failures (any reason), stop trying — a ticker
 // that's clearly broken must not keep hammering the API for the rest of a
 // long turn. The turn itself is never affected either way.
-const TICKER_FREEZE_AFTER_FAILURES = 3;
+const DEFAULT_TICKER_FREEZE_AFTER_FAILURES = 3;
 const TICKER_EVENT_MAX_CHARS = 100;
 const TICKER_LINE_MAX_CHARS = 200;
 
