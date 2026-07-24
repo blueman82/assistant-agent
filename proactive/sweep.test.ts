@@ -1553,7 +1553,7 @@ test("staleness is measured against commits touching rachel.ts, bridge/ and prom
   assert.ok(args.includes("HEAD"), "the comparison is against the checked-out HEAD, not a remote ref");
 });
 
-test("a merge touching only irrelevant paths yields no relevant commit and triggers no restart", async () => {
+test("a history where no commit has ever touched the watched paths has nothing to be stale against", async () => {
   const h = makeHarness();
   // git finds nothing touching the watched paths since forever: empty stdout.
   h.deps.execFn = async (cmd, args, opts) => {
