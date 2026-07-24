@@ -916,7 +916,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
           // cancels a timer that hasn't fired yet, so this flag is the guard
           // those in-flight callbacks actually check to bail out instead of
           // resuming after the turn is over.
-          // MUTATION A: tickerDone disabled
+          tickerDone = true;
           clearTimeout(watchdog);
           clearInterval(typingTimer);
           clearTimeout(graceTimer);
