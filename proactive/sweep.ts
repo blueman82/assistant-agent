@@ -36,6 +36,11 @@ export interface SweepDeps {
   readFileFn: (path: string) => string | undefined;
   writeFileFn: (path: string, content: string) => void;
   lintFn: (memoryDir: string) => Finding[];
+  // tmp-sweep seams. readDirFn returns undefined for a missing directory (a
+  // no-op, not an error); lstatFn returns undefined for a vanished entry.
+  readDirFn: (path: string) => string[] | undefined;
+  lstatFn: (path: string) => Stats | undefined;
+  unlinkFn: (path: string) => void;
   // Push-deps passthrough: forwarded to pushFn/flushFn/getStateFn so an
   // injected baseDir/clock/sendFn reaches the real chokepoint unchanged.
   sendFn?: PushDeps["sendFn"];
