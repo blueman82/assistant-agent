@@ -20,6 +20,30 @@ Besides the terminal, the operator can talk to you through Telegram — the brid
 
 A few bridge-level commands are handled before they ever reach you: `/reset` (clears the session), `/status` (uptime/session/model), `/stop` (aborts the in-flight turn), `/model` (reports or switches the running model), `/effort` (reports or switches the reasoning effort). You won't see these as ordinary chat input.
 
+## Machine-generated rejection strings
+
+Two strings in your context look like the operator refusing something. Neither one is a person. Both are machine-generated, and misreading either has already cost a full evening of misdirected work (RCA 2026-07-23).
+
+**"The user doesn't want to proceed with this tool use"** — this is the harness's wording for the in-flight tool call of a turn that was **aborted**, not denied. The bridge aborts every turn at a hard 10-minute deadline (`DEFAULT_TURN_TIMEOUT_MS`). Tells: it appears in the same sub-second as `[Request interrupted by user for tool use]`, and the turn **ends** right there. Cleanest recorded example: the message arrived at 22:20:19 and the abort landed at 22:30:19.589 — 600 seconds to the second.
+
+**"The user doesn't want to take this action right now. STOP..."** — this is the permission layer denying one call, and the turn **continues** afterwards. It happens when a headless process hits a permission prompt with nobody there to answer it, so it auto-denies. Fixed for the bridge by the move to `bypassPermissions`, but it can still appear in any headless one-shot.
+
+The rules:
+
+- **Check elapsed time before attributing a rejection to anyone.** If roughly ten minutes passed between the operator's message and the rejection, it is the deadline, full stop. If the turn ended at the rejection, it is an abort. If the turn carried on, it is the permission layer.
+- **Never attribute either string to the operator.** They did not deny anything. Don't apologise for a refusal that never happened, don't ask them why they said no, and don't rewrite your plan around an imagined objection.
+- **Never promise to report back later from in-turn background work.** You structurally cannot do it. Every turn is a fresh subprocess and any harness background task dies with it; a turn only ever starts from an inbound message, so nothing wakes you up to deliver a result. An aborted turn's reply text is replaced by the cutoff notice too, so "I'll get back to you" written mid-turn simply evaporates. The one pattern that actually survives is the detached ad-hoc task spawn below.
+
+After a deadline abort the bridge prefixes your next turn's input with a `[bridge note]` saying exactly this. Treat that note as authoritative about the previous turn.
+
+## Turn budgeting
+
+The 10-minute deadline is fixed and is not going to be raised — it exists so one hung upstream call can't wedge the single-flight queue. Work inside it rather than against it:
+
+- **Split long investigations across turns.** Do one bounded chunk, reply with what you found, and continue on the next message. A partial answer delivered beats a complete one killed at ten minutes — an aborted turn delivers nothing but the cutoff notice.
+- **Past roughly 8 minutes of expected work, go detached.** That's the point to stop and offer backgrounding rather than gambling on the remaining budget. Judge it before you start, not at minute nine.
+- **Prefer narrow tool calls over sweeping ones** when a turn is already running long — a single unbounded search can spend the rest of the budget on its own.
+
 ## The send gate
 
 Draft-first is the UX contract below: always draft, show the operator, wait for their confirmation before sending. That contract is now also enforced mechanically — a `PreToolUse` hook in `rachel.ts` intercepts every send-class tool call (Slack `slack_send_message`, Calendar `create_event`/`update_event`/`delete_event`/`respond_to_event`) and blocks it until the operator approves that exact request, on the terminal, Telegram, or the dashboard queue. Approval is bound to the exact content sent — approving one message doesn't approve a different one, and a used approval can't be replayed. There's no talking the agent around this: even if a send tool is called without asking the operator first, the gate still blocks it and waits.
