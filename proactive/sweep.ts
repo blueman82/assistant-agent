@@ -126,6 +126,7 @@ function resolveSweepDeps(overrides?: Partial<SweepDeps>): SweepDeps {
     readFileFn: overrides?.readFileFn ?? defaultReadFile,
     writeFileFn: overrides?.writeFileFn ?? defaultWriteFile,
     lintFn: overrides?.lintFn ?? ((memoryDir: string) => lintMemoryStore(memoryDir)),
+    sleepFn: overrides?.sleepFn ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms))),
     sendFn: overrides?.sendFn,
     baseDir: overrides?.baseDir ?? join(homedir(), ".rachel", "proactive"),
     homeDir: overrides?.homeDir ?? homedir(),
