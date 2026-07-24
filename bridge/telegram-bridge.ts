@@ -1093,7 +1093,12 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
           logError(`[telegram-bridge] drain error: ${err instanceof Error ? err.message : String(err)}`);
         });
       },
-      pushFyi: (eventId, severity, text) => pushAlert("wake", eventId, "fired", isSeverity(severity) ? severity : "normal", text),
+      // The wake file's severity field is producer-supplied and untrusted —
+      // push() only accepts urgent|normal|digest, so anything else (e.g. the
+      // spec example's "info") falls back to "normal", same as any other
+      // FYI push (per Gary's rollout note: normal unless the wake says
+      // otherwise, and "otherwise" must still be one push() recognises).
+      pushFyi: (eventId, severity, text) => pushAlert("wake", eventId, "fired", VALID_SEVERITIES.has(severity) ? (severity as Severity) : "normal", text),
       log,
     });
     writeHeartbeat();
