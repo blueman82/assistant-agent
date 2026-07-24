@@ -467,6 +467,11 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   const pollIntervalMs = options.pollIntervalMs ?? 2000;
   const typingIntervalMs = options.typingIntervalMs ?? DEFAULT_TYPING_INTERVAL_MS;
   const turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
+  const tickerGraceMs = options.tickerGraceMs ?? DEFAULT_TICKER_GRACE_MS;
+  const tickerJitterMinMs = options.tickerJitterMinMs ?? DEFAULT_TICKER_JITTER_MIN_MS;
+  const tickerJitterMaxMs = options.tickerJitterMaxMs ?? DEFAULT_TICKER_JITTER_MAX_MS;
+  const tickerMaxEdits = options.tickerMaxEdits ?? DEFAULT_TICKER_MAX_EDITS;
+  const tickerFreezeAfterFailures = options.tickerFreezeAfterFailures ?? DEFAULT_TICKER_FREEZE_AFTER_FAILURES;
 
   // Tilde expansion: watchdogDir must be an absolute path — Node's fs never expands ~.
   const watchdogDir = options.watchdogDir ?? join(homedir(), ".rachel", "loops");
