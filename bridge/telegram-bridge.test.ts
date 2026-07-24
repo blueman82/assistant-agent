@@ -3936,3 +3936,45 @@ test("checkLaunchAllowed: worktree path containing repo basename blocks launch (
 
   assert.equal(result.allowed, false, `expected worktree slug to block launch for repo "coderails", got allowed=true`);
 });
+
+// ---------------------------------------------------------------------------
+// Streaming ticker (Part A of the wake-channel spec): a turn that outruns a
+// 3s grace window gets a silent placeholder message that edits in place with
+// elapsed time + the latest live event, so Gary sees the bridge is alive on
+// a long-running turn instead of Telegram-side silence. A turn that finishes
+// inside the grace window shows no ticker at all — that's the point of the
+// grace window, not an oversight.
+// ---------------------------------------------------------------------------
+
+test("ticker: a turn that finishes inside the 3s grace window sends no placeholder and no edits", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "quick question"),
+    { ok: true, result: [] },
+  ]);
+
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("instant answer", "text");
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  // Wait past the 3s grace window to prove the grace timer was cleared on
+  // turn completion, not merely that no ticker had fired yet by 30ms.
+  await new Promise((resolve) => setTimeout(resolve, 3300));
+  await bridge.stop();
+
+  const sends = calls.filter((c) => c.url.includes("/sendMessage"));
+  const edits = calls.filter((c) => c.url.includes("/editMessageText"));
+  const silentSends = sends.filter((c) => (c.body as Record<string, unknown>)["disable_notification"] === true);
+
+  assert.equal(silentSends.length, 0, "no ticker placeholder should be sent for a turn inside the grace window");
+  assert.equal(edits.length, 0, "no ticker edits should occur for a turn inside the grace window");
+});
