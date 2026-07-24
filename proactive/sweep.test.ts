@@ -1417,6 +1417,149 @@ test("integration: an unchanged violation set dedups through the real chokepoint
   assert.notEqual(getEventState("memory-lint", "memory:lint", { baseDir: h.baseDir }), stateAfterFirst);
 });
 
+// --- tmp sweep: 7th family (RCA item 16) ---
+//
+// SAFETY: every test here writes to and deletes from the mkdtemp homeDir the
+// harness injects, never the operator's real ~/.rachel/tmp. The production
+// path is derived from SweepDeps.homeDir precisely so an injected home makes
+// the real directory unreachable from this file.
+
+function tmpSweepDir(h: ReturnType<typeof makeHarness>): string {
+  const dir = join(h.homeDir, ".rachel", "tmp");
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+// Write a file into the injected tmp dir and stamp its mtime ageMinutes in
+// the past relative to DAYTIME (the sweep's injected clock).
+function seedTmpFile(dir: string, name: string, ageMinutes: number): string {
+  const path = join(dir, name);
+  writeFileSync(path, "artifact");
+  const when = new Date(DAYTIME().getTime() - ageMinutes * 60_000);
+  utimesSync(path, when, when);
+  return path;
+}
+
+test("a tmp artifact older than the age threshold is removed", async () => {
+  const h = makeHarness();
+  const dir = tmpSweepDir(h);
+  const stale = seedTmpFile(dir, "reply-stale.wav", 24 * 60);
+  await sweepTick(h.deps);
+  assert.equal(existsSync(stale), false, "a 24h-old artifact should have been swept");
+});
+
+test("a tmp artifact newer than the age threshold survives — the anti-race guard", async () => {
+  const h = makeHarness();
+  const dir = tmpSweepDir(h);
+  // 9 minutes old: inside the bridge's 10-minute turn deadline, so this
+  // could be a file an in-flight turn is still writing or reading.
+  const live = seedTmpFile(dir, "reply-inflight.wav", 9);
+  await sweepTick(h.deps);
+  assert.equal(existsSync(live), true, "a file younger than the threshold must never be deleted");
+});
+
+test("a file exactly at the threshold boundary survives — the sweep deletes strictly older", async () => {
+  const h = makeHarness();
+  const dir = tmpSweepDir(h);
+  const boundary = seedTmpFile(dir, "boundary.wav", 60);
+  await sweepTick(h.deps);
+  assert.equal(existsSync(boundary), true, "age == threshold is not older than the threshold");
+});
+
+test("a missing tmp directory is a no-op, not a family failure", async () => {
+  const h = makeHarness();
+  // homeDir exists but ~/.rachel/tmp was never created.
+  const results = await sweepTick(h.deps);
+  assert.equal(results["tmp-sweep"], "ok");
+  assert.equal(h.logs.some((line) => line.includes("tmp-sweep error")), false, `expected no error log: ${JSON.stringify(h.logs)}`);
+});
+
+test("a failing unlink is logged and does not throw or abort the family", async () => {
+  const h = makeHarness();
+  const dir = tmpSweepDir(h);
+  seedTmpFile(dir, "undeletable.wav", 24 * 60);
+  const survivor = seedTmpFile(dir, "also-stale.wav", 24 * 60);
+  const realUnlink = h.deps.unlinkFn;
+  h.deps.unlinkFn = (path) => {
+    if (path.endsWith("undeletable.wav")) {
+      throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+    }
+    realUnlink(path);
+  };
+  const results = await sweepTick(h.deps);
+  assert.equal(results["tmp-sweep"], "ok", "one failing unlink must not fail the family");
+  assert.equal(existsSync(survivor), false, "the sweep continues past a failing unlink");
+  assert.ok(
+    h.logs.some((line) => line.includes("undeletable.wav")),
+    `expected the failing unlink to be logged: ${JSON.stringify(h.logs)}`,
+  );
+});
+
+test("subdirectories under tmp are never removed and are never recursed into", async () => {
+  const h = makeHarness();
+  const dir = tmpSweepDir(h);
+  const sub = join(dir, "nested");
+  mkdirSync(sub, { recursive: true });
+  const nestedStale = seedTmpFile(sub, "deep.wav", 24 * 60);
+  const when = new Date(DAYTIME().getTime() - 24 * 60 * 60_000);
+  utimesSync(sub, when, when);
+  await sweepTick(h.deps);
+  assert.equal(existsSync(sub), true, "a stale directory is never unlinked");
+  assert.equal(existsSync(nestedStale), true, "the sweep is not recursive");
+});
+
+test("a symlink in tmp is never followed and never removed", async () => {
+  const h = makeHarness();
+  const dir = tmpSweepDir(h);
+  // The target lives OUTSIDE the tmp dir: following the link would delete
+  // an unrelated file in the operator's home.
+  const outside = join(h.homeDir, "precious.txt");
+  writeFileSync(outside, "do not delete");
+  const when = new Date(DAYTIME().getTime() - 24 * 60 * 60_000);
+  utimesSync(outside, when, when);
+  const link = join(dir, "escape-hatch");
+  symlinkSync(outside, link);
+  await sweepTick(h.deps);
+  assert.equal(existsSync(outside), true, "the symlink target outside tmp must survive");
+  assert.equal(lstatSync(link).isSymbolicLink(), true, "the symlink itself is skipped, not removed");
+});
+
+test("the tmp sweep never pushes — routine hygiene must not spend the interrupt budget", async () => {
+  const h = makeHarness();
+  const dir = tmpSweepDir(h);
+  seedTmpFile(dir, "old.wav", 24 * 60);
+  await sweepTick(h.deps);
+  assert.deepEqual(h.pushes.filter((p) => p.family === "tmp-sweep"), []);
+});
+
+test("a failing readdir is contained to the tmp-sweep family and never blocks the others", async () => {
+  const h = makeHarness();
+  h.deps.readDirFn = () => {
+    throw new Error("EIO: readdir blew up");
+  };
+  const results = await sweepTick(h.deps);
+  assert.equal(results["tmp-sweep"], "failed");
+  assert.ok(h.logs.some((line) => line.includes("tmp-sweep error")), `expected a tmp-sweep error log: ${JSON.stringify(h.logs)}`);
+  assert.equal(results["memory-lint"], "ok", "the later family still ran after tmp-sweep failed");
+});
+
+test("the tmp sweep only ever touches paths under the injected homeDir's .rachel/tmp", async () => {
+  const h = makeHarness();
+  const dir = tmpSweepDir(h);
+  seedTmpFile(dir, "old.wav", 24 * 60);
+  const unlinked: string[] = [];
+  const realUnlink = h.deps.unlinkFn;
+  h.deps.unlinkFn = (path) => {
+    unlinked.push(path);
+    realUnlink(path);
+  };
+  await sweepTick(h.deps);
+  assert.ok(unlinked.length > 0, "the stale file was swept");
+  for (const path of unlinked) {
+    assert.ok(path.startsWith(join(h.homeDir, ".rachel", "tmp") + "/"), `unlink escaped the tmp dir: ${path}`);
+  }
+});
+
 test("grep guard for proactive/sweep.test.ts: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
   const source = await (await import("node:fs/promises")).readFile(new URL("./sweep.test.ts", import.meta.url), "utf8");
   const realFetchCall = /fetch\(\s*["'`]https:\/\/api\.telegram\.org/;
