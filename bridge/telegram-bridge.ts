@@ -65,6 +65,7 @@ export interface CreateBridgeOptions {
   convertToOggFn?: (wavPath: string, oggPath: string) => Promise<void>;
   sendVoiceFn?: (config: ApiConfig, audioPath: string, caption?: string) => Promise<void>;
   watchdogDir?: string;                              // defaults to ~/.rachel/loops (expanded, not ~)
+  wakeDir?: string;                                  // defaults to ~/.rachel/wake (expanded, not ~)
   fsFn?: FsFunctions;                               // defaults to real node:fs wrappers
   isPidAliveFn?: (pid: number, expectedCmd?: string) => boolean;  // defaults to kill -0 check; injectable for tests
   conflictBackoffMs?: number;  // defaults to CONFLICT_BACKOFF_MS (65s); injectable for tests to avoid real waits
