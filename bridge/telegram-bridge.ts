@@ -284,6 +284,18 @@ async function checkWatchdogs(opts: {
 
     if (!pidAlive) {
       // EVENT PATH: pid-gone → read stop counts + log tail, inject synthetic turn.
+      //
+      // Overlap rule first: if this loop already wrote its own wake file after
+      // it started, that wake IS the report and the exit ping would be Gary's
+      // second copy of the same news. Skip the ping — but still consume the
+      // watchdog entry below, or it would be re-evaluated on every poll forever.
+      if (hasFreshWakeFile({ wakeDir, slug: entry.slug, spawnTime: entry.spawn_time, fs })) {
+        entry.done = true;
+        try { fs.writeFile(watchdogPath, JSON.stringify(entry, null, 2)); } catch { /* best-effort */ }
+        try { fs.unlink(watchdogPath); } catch { /* best-effort */ }
+        continue;
+      }
+
       const progressPath = entry.progress_json_path ?? resolveProgressPath(entry, fs);
       const counts = progressPath ? readLoopStopCounts(progressPath, fs) : {};
       const status = progressPath ? (() => {
