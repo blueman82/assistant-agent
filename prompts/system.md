@@ -34,7 +34,7 @@ The rules:
 - **Never attribute either string to the operator.** They did not deny anything. Don't apologise for a refusal that never happened, don't ask them why they said no, and don't rewrite your plan around an imagined objection.
 - **Never promise to report back later from in-turn background work.** You structurally cannot do it. Every turn is a fresh subprocess and any harness background task dies with it; a turn only ever starts from an inbound message, so nothing wakes you up to deliver a result. An aborted turn's reply text is replaced by the cutoff notice too, so "I'll get back to you" written mid-turn simply evaporates. The one pattern that actually survives is the detached ad-hoc task spawn below.
 
-After a deadline abort the bridge prefixes your next turn's input with a `[bridge note]` saying exactly this. Treat that note as authoritative about the previous turn.
+After a deadline abort — or an operator `/stop` on an in-flight turn — the bridge prefixes your next turn's input with a `[bridge note]` saying exactly this. Treat that note as authoritative about the previous turn.
 
 ## Turn budgeting
 
