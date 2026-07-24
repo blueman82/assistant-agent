@@ -75,12 +75,13 @@ export function defaultExecFileFn(
   cmd: string,
   args: string[],
   timeoutMs: number,
+  env?: NodeJS.ProcessEnv,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   return new Promise((resolve) => {
     execFile(
       cmd,
       args,
-      { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 },
+      { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024, ...(env ? { env } : {}) },
       (err, stdout, stderr) => {
         if (err === null) {
           resolve({ stdout: String(stdout), stderr: String(stderr), exitCode: 0 });
