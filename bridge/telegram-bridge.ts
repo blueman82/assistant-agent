@@ -816,7 +816,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
             // finally chain and would have already seen tickerEditCount as
             // it was before this call, so let its own edit stand rather than
             // overwrite lastSentTickerText/tickerEditCount post-hoc here.
-            // MUTATION C: tickerDone check removed
+            if (tickerDone) return;
             lastSentTickerText = rendered;
             tickerEditCount++;
             tickerConsecutiveFailures = 0;
