@@ -4247,11 +4247,14 @@ test("ticker: a 429 with retry_after is honoured, and the gap before the next ed
 
   // Deterministic zero-span jitter (min=max) makes the post-429 cadence
   // exactly 2x the base — the doubling is the thing under test, not the
-  // jitter shape (already covered by the jitter-bounds test).
+  // jitter shape (already covered by the jitter-bounds test). The turn
+  // stays alive long enough for a 4th edit attempt so the test can prove
+  // the doubling is STICKY across a subsequent success (spec: "double the
+  // cadence for the remainder of the turn"), not just the one retry gap.
   const baseCadenceMs = 100;
   const runTurnStub: BridgeRunTurn = async (_input, emit) => {
     emit("  [Bash] event-a", "tool");
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 900));
     emit("done text", "text");
   };
 
@@ -4266,19 +4269,26 @@ test("ticker: a 429 with retry_after is honoured, and the gap before the next ed
     tickerGraceMs: 10,
     tickerJitterMinMs: baseCadenceMs,
     tickerJitterMaxMs: baseCadenceMs,
+    tickerMaxEdits: 100,
   });
 
   await bridge.drainOnce();
-  await new Promise((resolve) => setTimeout(resolve, 700));
+  await new Promise((resolve) => setTimeout(resolve, 1100));
   await bridge.stop();
 
-  assert.ok(editAttempts >= 2, `expected the ticker to retry after honouring retry_after, got ${editAttempts} attempt(s)`);
-  const gapMs = editAttemptTimestamps[1]! - editAttemptTimestamps[0]!;
+  assert.ok(editAttempts >= 3, `expected several retries after the 429, got ${editAttempts} attempt(s)`);
+  const gap1 = editAttemptTimestamps[1]! - editAttemptTimestamps[0]!;
   // retry_after=0 contributes ~0ms wait; the doubled cadence (200ms) is what
   // must separate attempt 1 from attempt 2 — assert it's clearly past the
   // un-doubled base (100ms) and in the right ballpark, with generous slack
   // for test-runner scheduling jitter.
-  assert.ok(gapMs >= baseCadenceMs * 1.5, `expected the gap before the retry to reflect doubled cadence (~${baseCadenceMs * 2}ms), got ${gapMs}ms`);
+  assert.ok(gap1 >= baseCadenceMs * 1.5, `expected the gap before the retry to reflect doubled cadence (~${baseCadenceMs * 2}ms), got ${gap1}ms`);
+
+  // The gap between attempts 2 and 3 (both AFTER the 429, both successful)
+  // must ALSO reflect the doubled cadence — proving the doubling is sticky
+  // for the rest of the turn rather than reset by the first success.
+  const gap2 = editAttemptTimestamps[2]! - editAttemptTimestamps[1]!;
+  assert.ok(gap2 >= baseCadenceMs * 1.5, `expected the cadence to STAY doubled after a successful edit (~${baseCadenceMs * 2}ms), got ${gap2}ms — cadence must not reset to base until the turn ends`);
 
   const successfulEdits = calls.filter((c) => c.url.includes("/editMessageText"));
   assert.ok(successfulEdits.length >= 1, "expected at least one successful edit after the 429 was honoured");
