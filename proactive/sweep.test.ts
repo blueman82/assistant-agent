@@ -986,9 +986,12 @@ test("two families failing simultaneously escalate independently, each naming it
   await sweepTick(h.deps);
   await sweepTick(h.deps);
   const esc = escalations(sent);
-  assert.equal(esc.length, 2, `one escalation per failing family: ${JSON.stringify(esc)}`);
+  // Three families depend on launchctl now: bridge-liveness and bridge-stale
+  // both consult it, and the flush is broken independently.
+  assert.equal(esc.length, 3, `one escalation per failing family: ${JSON.stringify(esc)}`);
   assert.ok(esc.some((t) => t.includes("flush: corrupt deferred queue")));
   assert.ok(esc.some((t) => t.includes("bridge-liveness: launchctl exploded")));
+  assert.ok(esc.some((t) => t.includes("bridge-stale: launchctl exploded")));
 });
 
 test("an escalation bookkeeping failure (state file unreadable) is logged and never rejects the tick", async () => {
