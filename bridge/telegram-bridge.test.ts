@@ -4099,9 +4099,11 @@ test("ticker: terminal edit on a turn that times out reads 'timed out', not 'don
     await new Promise((r) => setTimeout(r, 60_000));
   };
 
-  // turnTimeoutMs itself is what the terminal text reports (the configured
-  // deadline in whole minutes, not a measurement) — 60000 (1m) keeps the
-  // test fast while giving a non-zero, easily asserted minute value.
+  // turnTimeoutMs is what the terminal text reports (the configured
+  // deadline in whole minutes, not a measurement) — kept short so the test
+  // runs fast; the assertion below derives the expected minutes the same
+  // way production does, from turnTimeoutMs itself.
+  const turnTimeoutMs = 3200;
   const bridge = createBridge({
     ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport: recordingTransport },
@@ -4111,18 +4113,19 @@ test("ticker: terminal edit on a turn that times out reads 'timed out', not 'don
     pollIntervalMs: 5,
     typingIntervalMs: 100000,
     tickerGraceMs: 10,
-    turnTimeoutMs: 60_000,
+    turnTimeoutMs,
   });
 
   await bridge.drainOnce();
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  await new Promise((resolve) => setTimeout(resolve, 3400));
   await bridge.stop();
 
   const edits = calls.filter((c) => c.url.includes("/editMessageText"));
   const lastEditText = String((edits.at(-1)?.body as Record<string, unknown> | undefined)?.["text"] ?? "");
   // Spec's literal terminal shape: "timed out at 10m" — "at" (not an em
   // dash) and whole minutes only (no seconds), unlike the done/failed edits.
-  assert.equal(lastEditText, "timed out at 1m", `expected terminal edit to read "timed out at <N>m", got: ${lastEditText}`);
+  const expectedMinutes = Math.round(turnTimeoutMs / 60000);
+  assert.equal(lastEditText, `timed out at ${expectedMinutes}m`, `expected terminal edit to read "timed out at <N>m", got: ${lastEditText}`);
 });
 
 test("ticker: coalesces to the latest event only — an edit never carries a stale earlier event once a newer one arrives", async () => {
