@@ -472,6 +472,8 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   // staleness as "poll loop silent", and the 10-minute threshold there
   // clears the legitimate 5x65s backoff window.
   let turnInFlightSince: Date | null = null;   // set while drainFifo has a turn running
+  // Set when the deadline aborts a turn; consumed by the next turn's input.
+  let pendingAbortNotice = false;
   let lastHeartbeatMs = 0;
   let heartbeatWriteFailing = false;
 
