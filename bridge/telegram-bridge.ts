@@ -895,8 +895,13 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         // edit is not exempt from it). The final reply below is sent
         // immediately after, with no backoff sleep in between.
         if (tickerMessageId !== null && !tickerFrozen && tickerEditCount < tickerMaxEdits) {
+          // Spec's three terminal strings are deliberately not uniform: done
+          // and failed carry the mm:ss elapsed reading ("done — 4m32s"), but
+          // timed out reports the fixed deadline in whole minutes only
+          // ("timed out at 10m") — it's the configured ceiling, not a
+          // measurement, so seconds precision would be misleading.
           const terminalText = timedOut
-            ? `timed out — ${formatElapsed(Date.now() - turnStartedMs)}`
+            ? `timed out at ${Math.round(turnTimeoutMs / 60000)}m`
             : turnErrored
               ? `failed — ${formatElapsed(Date.now() - turnStartedMs)}`
               : `done — ${formatElapsed(Date.now() - turnStartedMs)}`;
