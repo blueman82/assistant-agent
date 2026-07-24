@@ -4750,17 +4750,21 @@ test("ticker: coalesces to the latest event only — an edit never carries a sta
   const bridge = createBridge({
     ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport: recordingTransport },
-    wakeDir,
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    typingIntervalMs: 100000,
   });
 
-  // Must not throw — a poison field must not crash the poll loop.
   await bridge.drainOnce();
-  await sleepMs(300);
+  await new Promise((resolve) => setTimeout(resolve, 3700));
   await bridge.stop();
 
-  assert.deepEqual(realReaddirSync(wakeDir), ["poison.json.bad"], "the poison file must be quarantined, not left as .json to replay");
-  assert.deepEqual(turnInputs, []);
-  assert.deepEqual(sentTexts(calls), [], "a quarantined wake produces no delivery");
+  const edits = calls.filter((c) => c.url.includes("/editMessageText"));
+  const editTexts = edits.map((c) => String((c.body as Record<string, unknown>)["text"] ?? ""));
+  assert.ok(editTexts.some((t) => t.includes("second-event")), `expected an edit carrying the latest event, got: ${JSON.stringify(editTexts)}`);
+  assert.ok(!editTexts.some((t) => t.includes("first-event")), `no edit should carry the stale first event once a newer one has arrived, got: ${JSON.stringify(editTexts)}`);
 });
 
 test("wake consumer: a top-level null wake file is quarantined .bad, not replayed forever", async () => {
