@@ -667,6 +667,242 @@ async function checkCalendarEscalation(d: SweepDeps, cfg: ProactiveConfig, pushD
   }
 }
 
+// --- bridge-stale: the auto-remediating stale-process family (RCA item 11) ---
+//
+// The launchd bridge runs whatever code it booted with; a merge to main does
+// not restart it. On 2026-07-23 the mechanism-B fix sat merged-but-dead for
+// six hours — the second occurrence of "merged is not deployed". This family
+// closes that loop WITHOUT asking: per Gary's explicit instruction it must
+// "fix it — restart the bridge (bootout -> poll-until-gone -> bootstrap) —
+// then tell him it was done". So the push is an after-the-fact FYI naming the
+// SHA, emitted only once the bootstrap has succeeded. Never a request.
+//
+// Comparison is against the WORKING TREE's HEAD, not origin/main. A restart
+// reloads whatever is checked out on disk — it does not pull. Comparing
+// against a remote ref the local checkout is behind would restart into the
+// same old code, staleness would never clear, and the remediator would burn
+// its whole attempt budget every time. HEAD is exactly the code a restart
+// loads, which makes the trigger self-clearing.
+//
+// Relevance is the three paths whose code the bridge process actually holds
+// in memory: rachel.ts (the turn loop), bridge/ (the transport), prompts/
+// (the system prompt, composed per turn but read from the process's repo).
+// A docs-only or unrelated merge must never cost Gary a restart.
+const STALE_WATCH_PATHS = ["rachel.ts", "bridge/", "prompts/"];
+
+// Restart attempts spent on one unchanging target commit before the family
+// gives up and alerts instead. The 30-minute tick spacing is the backoff.
+const STALE_RESTART_ATTEMPT_CAP = 3;
+
+// Bound on the post-bootout teardown poll. launchctl bootout is ASYNCHRONOUS:
+// it returns while the old job may still be draining (the bridge sits in a
+// 30s Telegram long-poll, and an immediate bootstrap fails with exit 5
+// "Input/output error"). scripts/install.sh learned this on the first real
+// deploy and polls `print` until the label is genuinely absent; this family
+// does the same, bounded so a job that never dies cannot wedge the tick.
+const TEARDOWN_POLL_INTERVAL_MS = 500;
+const TEARDOWN_POLL_BUDGET_MS = 30_000;
+
+// A turn_in_flight_since younger than this is treated as a LIVE turn and the
+// restart is deferred to the next tick. Matches the bridge's own 10-minute
+// turn ceiling plus slack: past that the bridge has already aborted the turn,
+// so the timestamp is stale bookkeeping rather than work we would kill.
+const TURN_IN_FLIGHT_WINDOW_MS = 11 * 60_000;
+
+// Parses `ps -o etime=` output: [[dd-]hh:]mm:ss. Deliberately NOT lstart —
+// on macOS that renders in the local (Irish) locale as "Thu 23 Jul 22:56:31
+// 2026", which has broken date parsing in this project before. etime is
+// locale-free. (`etimes` is Linux procps only and does not exist on macOS.)
+export function parseEtimeMs(etime: string): number | undefined {
+  const trimmed = etime.trim();
+  const match = /^(?:(\d+)-)?(?:(\d+):)?(\d{1,2}):(\d{2})$/.exec(trimmed);
+  if (match === null) {
+    return undefined;
+  }
+  const [, dd, hh, mm, ss] = match;
+  return ((Number(dd ?? 0) * 24 + Number(hh ?? 0)) * 60 + Number(mm)) * 60_000 + Number(ss) * 1000;
+}
+
+function bridgeLabelDomain(): { uid: number; label: string; target: string } {
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  const label = "com.rachel.telegram-bridge";
+  return { uid, label, target: `gui/${uid}/${label}` };
+}
+
+// Positive evidence only. A missing, corrupt or unparseable heartbeat is NOT
+// treated as a turn in flight: skipping on unknown would permanently disable
+// remediation on exactly the bridge most likely to be stale (an old one whose
+// heartbeat format predates the reader).
+function turnInFlight(d: SweepDeps, nowMs: number): boolean {
+  const raw = d.readFileFn(join(d.homeDir, ".rachel", "bridge-heartbeat.json"));
+  if (raw === undefined) {
+    return false;
+  }
+  try {
+    const heartbeat = JSON.parse(raw) as BridgeHeartbeat;
+    if (typeof heartbeat.turn_in_flight_since !== "string") {
+      return false;
+    }
+    const sinceMs = Date.parse(heartbeat.turn_in_flight_since);
+    return !Number.isNaN(sinceMs) && nowMs - sinceMs < TURN_IN_FLIGHT_WINDOW_MS;
+  } catch {
+    return false;
+  }
+}
+
+// bootout -> poll until genuinely absent -> bootstrap. Returns an error
+// string on failure, undefined on success. Never throws: every failure is
+// data the caller folds into the attempt counter.
+async function restartBridge(d: SweepDeps): Promise<string | undefined> {
+  const { uid, label, target } = bridgeLabelDomain();
+  const bootout = await d.execFn("launchctl", ["bootout", target]);
+  // Exit 3 = "no such process" — already gone, nothing to tear down.
+  if (bootout.exitCode !== 0 && bootout.exitCode !== 3) {
+    return `bootout exited ${bootout.exitCode}: ${bootout.stderr.trim()}`;
+  }
+  if (bootout.exitCode === 0) {
+    const deadline = d.now().getTime() + TEARDOWN_POLL_BUDGET_MS;
+    let gone = false;
+    while (d.now().getTime() < deadline) {
+      const probe = await d.execFn("launchctl", ["print", target]);
+      if (probe.exitCode !== 0) {
+        gone = true;
+        break;
+      }
+      await d.sleepFn(TEARDOWN_POLL_INTERVAL_MS);
+    }
+    // Bootstrapping on top of a still-draining job is what produces a
+    // half-loaded service, so a job that never goes away is left alone
+    // entirely rather than bootstrapped over.
+    if (!gone) {
+      return `service still draining after ${TEARDOWN_POLL_BUDGET_MS / 1000}s teardown wait`;
+    }
+  }
+  const plist = join(d.homeDir, "Library", "LaunchAgents", `${label}.plist`);
+  let bootstrap = await d.execFn("launchctl", ["bootstrap", `gui/${uid}`, plist]);
+  if (bootstrap.exitCode === 5) {
+    // Exit 5 right after a clean teardown-wait: launchd occasionally needs a
+    // beat longer. One bounded retry, exactly as scripts/install.sh does.
+    await d.sleepFn(2000);
+    bootstrap = await d.execFn("launchctl", ["bootstrap", `gui/${uid}`, plist]);
+  }
+  if (bootstrap.exitCode !== 0) {
+    return `bootstrap exited ${bootstrap.exitCode}: ${bootstrap.stderr.trim()}`;
+  }
+  return undefined;
+}
+
+async function checkBridgeStale(d: SweepDeps, cfg: ProactiveConfig, pushDeps: Partial<PushDeps>): Promise<void> {
+  const { target } = bridgeLabelDomain();
+  const print = await d.execFn("launchctl", ["print", target]);
+  // A bridge launchd reports as down is bridge-liveness's business — that
+  // family already pushes an urgent bridge-down. Restarting a job that is not
+  // running is not "remediating staleness", so this family only ever acts on
+  // a running-but-stale bridge.
+  if (print.exitCode !== 0 || !print.stdout.includes("state = running")) {
+    d.log("[sweep] bridge-stale: bridge not running — left to bridge-liveness");
+    return;
+  }
+  const pid = /^\s*pid = (\d+)$/m.exec(print.stdout)?.[1];
+  if (pid === undefined) {
+    d.log("[sweep] bridge-stale: no pid in launchctl print output — skipped");
+    return;
+  }
+
+  // Newest commit touching the watched paths, on the checked-out HEAD.
+  const log = await d.execFn("git", ["-C", d.repoDir, "log", "-1", "--format=%cI\t%h", "HEAD", "--", ...STALE_WATCH_PATHS]);
+  if (log.exitCode !== 0) {
+    d.log(`[sweep] bridge-stale: git log exited ${log.exitCode}: ${log.stderr.trim()} — skipped`);
+    return;
+  }
+  const [commitISO, commitSha] = log.stdout.trim().split("\t");
+  if (!commitISO || !commitSha) {
+    // No commit has ever touched the watched paths — nothing to be stale
+    // against. A docs-only history lands here, and so does an empty repo.
+    d.log("[sweep] bridge-stale: no commit touching the watched paths — nothing to compare");
+    return;
+  }
+  const commitMs = Date.parse(commitISO);
+  if (Number.isNaN(commitMs)) {
+    d.log(`[sweep] bridge-stale: unparseable commit date ${commitISO} — skipped`);
+    return;
+  }
+
+  const ps = await d.execFn("ps", ["-o", "etime=", "-p", pid]);
+  const elapsedMs = ps.exitCode === 0 ? parseEtimeMs(ps.stdout) : undefined;
+  if (elapsedMs === undefined) {
+    // An unreadable start time is never grounds for a restart — the whole
+    // point is to act only on proven staleness.
+    d.log(`[sweep] bridge-stale: unreadable etime for pid ${pid} (exit ${ps.exitCode}, ${JSON.stringify(ps.stdout.trim())}) — skipped`);
+    return;
+  }
+  const nowMs = d.now().getTime();
+  const startMs = nowMs - elapsedMs;
+  if (startMs >= commitMs) {
+    return;
+  }
+
+  // Stale. Before touching a live service, check nothing is in flight.
+  if (turnInFlight(d, nowMs)) {
+    d.log(`[sweep] bridge-stale: stale against ${commitSha} but a turn is mid-turn — deferring restart to the next tick`);
+    return;
+  }
+
+  // Thrash cap, keyed on the target SHA so a newer commit re-arms the budget.
+  const statePath = sweepStatePath(d);
+  const today = zonedDateString(d.now(), cfg.timezone);
+  const state = readSweepState(d, statePath, today);
+  const sameTarget = state.stale_restart_sha === commitSha;
+  const attempts = sameTarget ? Number(state.stale_restart_attempts) || 0 : 0;
+  if (attempts >= STALE_RESTART_ATTEMPT_CAP) {
+    if (state.stale_restart_alerted !== true) {
+      await d.pushFn(
+        "bridge-stale",
+        "bridge:stale-restart",
+        `${commitSha}:failed`,
+        "normal",
+        `[bridge] Bridge is running code older than ${commitSha} and ${STALE_RESTART_ATTEMPT_CAP} auto-restart attempts failed. Not retrying — needs a look.`,
+        pushDeps,
+      );
+      d.writeFileFn(statePath, JSON.stringify({ ...state, date: today, stale_restart_alerted: true } satisfies SweepState, null, 2));
+    }
+    return;
+  }
+
+  // The attempt is BANKED BEFORE it is made: a restart that hangs or crashes
+  // the tick still burns its budget, so a crash-looping remediator cannot
+  // bootout the bridge every 30 minutes forever.
+  d.writeFileFn(
+    statePath,
+    JSON.stringify(
+      { ...state, date: today, stale_restart_sha: commitSha, stale_restart_attempts: attempts + 1, stale_restart_alerted: false } satisfies SweepState,
+      null,
+      2,
+    ),
+  );
+
+  const startedAgo = Math.floor(elapsedMs / 60_000);
+  const failure = await restartBridge(d);
+  if (failure !== undefined) {
+    d.log(`[sweep] bridge-stale: restart attempt ${attempts + 1}/${STALE_RESTART_ATTEMPT_CAP} onto ${commitSha} failed: ${failure}`);
+    return;
+  }
+
+  // Act-then-FYI. Dedup state is the SHA restarted onto, which does double
+  // duty: it names the SHA in the message (Gary's requirement) and guarantees
+  // a genuine second restart, onto a different commit, is never silently
+  // deduped away — while a repeat push for the same SHA correctly collapses.
+  d.log(`[sweep] bridge-stale: restarted bridge onto ${commitSha} (was ${startedAgo}m old)`);
+  await d.pushFn(
+    "bridge-stale",
+    "bridge:stale-restart",
+    commitSha,
+    "normal",
+    `[bridge] Restarted the bridge onto ${commitSha}. It had been running for ${startedAgo}m on code older than that commit. Already done — no action needed.`,
+    pushDeps,
+  );
+}
+
 // --- Memory store lint: periodic detection of prompts/system.md's Memory
 // contract (proactive/memoryLint.ts owns the checks; this just wires the
 // sweep to it). Dedup key is a hash of the violation SET ({file, code,
