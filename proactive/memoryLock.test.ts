@@ -249,3 +249,57 @@ test("withMemoryLock fails fast (not after the full timeout) on a non-contention
   const elapsedMs = Date.now() - start;
   assert.ok(elapsedMs < 2_000, `expected a fast failure, took ${elapsedMs}ms (a swallowed-error regression would take ~10s)`);
 });
+
+// --- Important (reviewer-found, delta review): the stale-lock-reclaim retry
+// swallows a non-ENOENT rmSync failure. Sequence: first tryCreate -> EEXIST
+// (a lock is present) -> isStale -> true (dead pid) -> rmSync throws EACCES
+// (the containing dir is read-only) but the bare `catch {}` discards it ->
+// the lockfile is STILL on disk -> the retry tryCreate legitimately sees
+// EEXIST again (the file never actually got removed) -> LockContentionError
+// -> withMemoryLock's poll loop retries it as ordinary contention and
+// busy-polls the full timeout. The permissions problem never surfaces; the
+// caller sees a misleading "timed out" that hides the real EACCES. This is
+// the exact failure mode the ENOENT-vs-other distinction elsewhere in this
+// file (isStale's readLockFile, withMemoryLock's LockContentionError check)
+// already guards against — the rmSync catch here was the one spot that
+// hadn't been brought in line with that idiom.
+test("a stale-lock reclaim that cannot remove the lockfile (EACCES) fails fast with the real error, not a busy-polled timeout", async () => {
+  const dir = tmpDir();
+  const lockPath = join(dir, "MEMORY.md.lock");
+  // Seed a stale lock: dead pid, so isStale is true and a reclaim is attempted.
+  writeFileSync(lockPath, JSON.stringify({ pid: 999999999, acquired_at: new Date().toISOString() }));
+  // Read-only dir: rmSync of the lockfile fails EACCES instead of succeeding
+  // or ENOENT — the one errno the existing "ignore ENOENT" comment does not
+  // cover.
+  chmodSync(dir, 0o500);
+  const start = Date.now();
+  try {
+    await assert.rejects(
+      () =>
+        withMemoryLock(lockPath, async () => {}, {
+          staleMs: 30_000,
+          timeoutMs: 3_000,
+          pollMs: 100,
+          now: () => new Date(),
+          pid: process.pid,
+          isPidAlive: () => false,
+        }),
+      (err: unknown) => {
+        assert.ok(
+          err instanceof Error && !/timed out/i.test(err.message),
+          `expected a fail-fast EACCES, got a masked timeout: ${String(err)}`,
+        );
+        assert.ok(
+          err instanceof Error && /EACCES|permission/i.test(err.message),
+          `expected the real errno to be visible, got: ${String(err)}`,
+        );
+        return true;
+      },
+    );
+  } finally {
+    // Restore write permission so the temp dir can be cleaned up normally.
+    chmodSync(dir, 0o700);
+  }
+  const elapsedMs = Date.now() - start;
+  assert.ok(elapsedMs < 2_000, `expected a fast failure, took ${elapsedMs}ms (the swallowed-EACCES regression takes ~3000ms, the full timeout)`);
+});
