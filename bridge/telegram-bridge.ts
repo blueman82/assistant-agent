@@ -806,12 +806,17 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
             lastSentTickerText = rendered;
             tickerEditCount++;
             tickerConsecutiveFailures = 0;
-            tickerCadenceMs = tickerJitterMinMs;
+            // Reset to the STICKY floor, not the ordinary jitter minimum —
+            // a prior 429 in this turn keeps the cadence doubled even after
+            // a subsequent edit succeeds.
+            tickerCadenceMs = tickerCadenceFloorMs;
           } catch (err) {
             if (err instanceof TelegramRetryAfterError) {
-              // Honour the hint, then double future cadence — the server
-              // just told us we're editing too fast.
-              tickerCadenceMs = Math.min(tickerCadenceMs * 2, 60_000);
+              // Honour the hint, then double future cadence for the rest of
+              // the turn — the server just told us we're editing too fast,
+              // and the spec says this doubling is not a one-shot retry.
+              tickerCadenceFloorMs = Math.min(tickerCadenceFloorMs * 2, 60_000);
+              tickerCadenceMs = tickerCadenceFloorMs;
               await new Promise((r) => setTimeout(r, err.retryAfterSeconds * 1000));
               return;
             }
