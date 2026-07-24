@@ -1859,7 +1859,6 @@ test("an exploding launchctl in the stale family is caught and the rest of the t
   const results = await sweepTick(h.deps);
   assert.equal(results["bridge-stale"], "failed", "the failure is recorded, not propagated");
   assert.equal(results["memory-lint"], "ok", "later families still ran");
->>>>>>> 16e5bc4 (Update TypeScript: sweep.test.ts via Edit [2026-07-24 02:33])
 });
 
 test("grep guard for proactive/sweep.test.ts: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
