@@ -72,6 +72,9 @@ function makeHarness(config: object = { calendar_oneshot_hours: [], pr_watch_rep
     readDirFn: defaultReadDirFn,
     lstatFn: defaultLstatFn,
     unlinkFn: defaultUnlinkFn,
+    // No test ever really sleeps: the bridge-stale teardown poll would
+    // otherwise add wall-clock seconds to every tick.
+    sleepFn: async () => {},
     baseDir,
     homeDir,
     repoDir: "/repo",
