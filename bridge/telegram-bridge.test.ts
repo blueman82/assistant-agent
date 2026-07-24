@@ -4432,6 +4432,319 @@ test("ticker: jitter cadence stays within the configured [min, max) bounds acros
   }
 });
 
+// ---------------------------------------------------------------------------
+// Wake channel consumer (Part B of the wake-channel spec): the bridge scans
+// a wake dir once per getUpdates iteration for completion-report files
+// dropped by detached ad-hoc jobs and sweep families. mode "narrate" starts
+// a real Rachel turn via the FIFO; mode "fyi" (and anything untagged) goes
+// through push() without ever starting a turn — the untagged case is the
+// SDK-spend guard so an unknown producer can never trigger a narrating turn.
+// Real temp dirs throughout (not makeStubFs) — the at-most-once rename
+// contract (.json -> .done / .bad) is real filesystem behaviour.
+// ---------------------------------------------------------------------------
+
+function writeWakeFile(dir: string, filename: string, content: string): void {
+  writeFileSync(join(dir, filename), content, "utf8");
+}
+
+test("wake: a tagged narrate wake enqueues a synthetic FIFO message and starts a real Rachel turn", async () => {
+  const wakeDir = mkdtempSync(join(tmpdir(), "rachel-wake-test-"));
+  const created_at = new Date().toISOString();
+  writeWakeFile(wakeDir, "adhoc-tunnel.json", JSON.stringify({
+    id: "adhoc-tunnel", source: "adhoc:tunnel", mode: "narrate",
+    severity: "info", message: "Tunnel task finished: 3 files changed.", created_at,
+  }));
+
+  const capturedInputs: string[] = [];
+  const runTurnStub: BridgeRunTurn = async (input, emit) => {
+    capturedInputs.push(input);
+    emit("handled", "text");
+  };
+
+  const { transport } = makeStubTransport([{ ok: true, result: [] }]);
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    wakeDir,
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await bridge.stop();
+
+  assert.equal(capturedInputs.length, 1, `expected exactly one Rachel turn, got: ${JSON.stringify(capturedInputs)}`);
+  assert.equal(capturedInputs[0], "[wake: adhoc:tunnel] Tunnel task finished: 3 files changed.");
+});
+
+test("wake: a tagged fyi wake reaches Telegram through push() without ever starting a turn", async () => {
+  const wakeDir = mkdtempSync(join(tmpdir(), "rachel-wake-test-"));
+  const created_at = new Date().toISOString();
+  writeWakeFile(wakeDir, "sweep-restart.json", JSON.stringify({
+    id: "sweep-restart", source: "sweep:stale-process", mode: "fyi",
+    severity: "info", message: "restarted bridge onto abc1234", created_at,
+  }));
+
+  const capturedInputs: string[] = [];
+  const runTurnStub: BridgeRunTurn = async (input, emit) => {
+    capturedInputs.push(input);
+    emit("handled", "text");
+  };
+
+  const { transport, calls } = makeStubTransport([{ ok: true, result: [] }]);
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    wakeDir,
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await bridge.stop();
+
+  assert.equal(capturedInputs.length, 0, `an fyi wake must never start a turn, got: ${JSON.stringify(capturedInputs)}`);
+  const sendTexts = calls.filter((c) => c.url.includes("/sendMessage")).map((c) => JSON.stringify(c.body));
+  assert.ok(
+    sendTexts.some((t) => t.includes("restarted bridge onto abc1234")),
+    `expected the fyi message to reach Telegram, got sends: ${JSON.stringify(sendTexts)}`,
+  );
+});
+
+test("wake: a wake file with no mode field is delivered FYI with an [untagged wake: <source>] prefix and never starts a turn", async () => {
+  const wakeDir = mkdtempSync(join(tmpdir(), "rachel-wake-test-"));
+  const created_at = new Date().toISOString();
+  writeWakeFile(wakeDir, "mystery.json", JSON.stringify({
+    id: "mystery", source: "unknown:thing",
+    severity: "info", message: "something happened", created_at,
+  }));
+
+  const capturedInputs: string[] = [];
+  const runTurnStub: BridgeRunTurn = async (input, emit) => {
+    capturedInputs.push(input);
+    emit("handled", "text");
+  };
+
+  const { transport, calls } = makeStubTransport([{ ok: true, result: [] }]);
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    wakeDir,
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await bridge.stop();
+
+  assert.equal(capturedInputs.length, 0, `an untagged wake must never start a turn (SDK-spend guard), got: ${JSON.stringify(capturedInputs)}`);
+  const sendTexts = calls.filter((c) => c.url.includes("/sendMessage")).map((c) => JSON.stringify(c.body));
+  assert.ok(
+    sendTexts.some((t) => t.includes("[untagged wake: unknown:thing]") && t.includes("something happened")),
+    `expected an [untagged wake: ...] prefixed message, got sends: ${JSON.stringify(sendTexts)}`,
+  );
+});
+
+test("wake: a wake file with an invalid (non narrate/fyi) mode is treated as untagged, never starts a turn", async () => {
+  const wakeDir = mkdtempSync(join(tmpdir(), "rachel-wake-test-"));
+  const created_at = new Date().toISOString();
+  writeWakeFile(wakeDir, "bogus-mode.json", JSON.stringify({
+    id: "bogus-mode", source: "some:producer", mode: "explode",
+    severity: "info", message: "bad mode value", created_at,
+  }));
+
+  const capturedInputs: string[] = [];
+  const runTurnStub: BridgeRunTurn = async (input, emit) => {
+    capturedInputs.push(input);
+    emit("handled", "text");
+  };
+
+  const { transport, calls } = makeStubTransport([{ ok: true, result: [] }]);
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    wakeDir,
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await bridge.stop();
+
+  assert.equal(capturedInputs.length, 0, `an invalid-mode wake must never start a turn, got: ${JSON.stringify(capturedInputs)}`);
+  const sendTexts = calls.filter((c) => c.url.includes("/sendMessage")).map((c) => JSON.stringify(c.body));
+  assert.ok(
+    sendTexts.some((t) => t.includes("[untagged wake: some:producer]")),
+    `expected an invalid mode to be treated as untagged, got sends: ${JSON.stringify(sendTexts)}`,
+  );
+});
+
+test("wake: malformed JSON is renamed to .bad, logged, and does not crash the poll loop", async () => {
+  const wakeDir = mkdtempSync(join(tmpdir(), "rachel-wake-test-"));
+  writeWakeFile(wakeDir, "broken.json", "{ this is not json");
+
+  const capturedInputs: string[] = [];
+  const runTurnStub: BridgeRunTurn = async (input, emit) => {
+    capturedInputs.push(input);
+    emit("handled", "text");
+  };
+
+  const { transport } = makeStubTransport([{ ok: true, result: [] }]);
+
+  let threw = false;
+  try {
+    const bridge = createBridge({
+      ...basePushOpts(),
+      wakeDir,
+      config: { token: "t", chatId: "12345", transport },
+      runTurn: runTurnStub,
+      getSessionId: () => undefined,
+      resetSession: () => {},
+      pollIntervalMs: 5,
+    });
+
+    await bridge.drainOnce();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await bridge.stop();
+  } catch {
+    threw = true;
+  }
+
+  assert.equal(threw, false, "malformed wake JSON must never crash the poll loop");
+  assert.equal(capturedInputs.length, 0, "malformed wake JSON must never start a turn");
+  const remaining = readdirSync(wakeDir);
+  assert.ok(!remaining.includes("broken.json"), `expected broken.json to be renamed away, got: ${JSON.stringify(remaining)}`);
+  assert.ok(remaining.some((f) => f.endsWith(".bad")), `expected a .bad file, got: ${JSON.stringify(remaining)}`);
+});
+
+test("wake: consumed files are renamed to .done BEFORE dispatch (at-most-once), and are gone from the pending set", async () => {
+  const wakeDir = mkdtempSync(join(tmpdir(), "rachel-wake-test-"));
+  const created_at = new Date().toISOString();
+  writeWakeFile(wakeDir, "adhoc-tunnel.json", JSON.stringify({
+    id: "adhoc-tunnel", source: "adhoc:tunnel", mode: "narrate",
+    severity: "info", message: "done", created_at,
+  }));
+  writeWakeFile(wakeDir, "sweep-restart.json", JSON.stringify({
+    id: "sweep-restart", source: "sweep:stale-process", mode: "fyi",
+    severity: "info", message: "restarted", created_at,
+  }));
+
+  // The runTurn stub observes the wake dir's on-disk state AT DISPATCH TIME —
+  // if rename-before-dispatch is violated, the .json would still be present
+  // (pending) when this fires.
+  const stateAtDispatch: string[][] = [];
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    stateAtDispatch.push(readdirSync(wakeDir));
+    emit("handled", "text");
+  };
+
+  const { transport } = makeStubTransport([{ ok: true, result: [] }]);
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    wakeDir,
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await bridge.stop();
+
+  assert.equal(stateAtDispatch.length, 1, `expected exactly one narrate dispatch, got: ${JSON.stringify(stateAtDispatch)}`);
+  assert.ok(
+    !stateAtDispatch[0]!.includes("adhoc-tunnel.json"),
+    `expected adhoc-tunnel.json already renamed away at dispatch time, got dir state: ${JSON.stringify(stateAtDispatch[0])}`,
+  );
+
+  const remaining = readdirSync(wakeDir);
+  assert.ok(!remaining.includes("adhoc-tunnel.json"), `expected adhoc-tunnel.json gone from pending set, got: ${JSON.stringify(remaining)}`);
+  assert.ok(!remaining.includes("sweep-restart.json"), `expected sweep-restart.json gone from pending set, got: ${JSON.stringify(remaining)}`);
+  assert.ok(remaining.some((f) => f.endsWith(".done")), `expected consumed files renamed to .done, got: ${JSON.stringify(remaining)}`);
+});
+
+test("wake: per-iteration cap of 5 — a 6th file waits for the next getUpdates iteration", async () => {
+  const wakeDir = mkdtempSync(join(tmpdir(), "rachel-wake-test-"));
+  const created_at = new Date().toISOString();
+  for (let i = 0; i < 6; i++) {
+    writeWakeFile(wakeDir, `fyi-${i}.json`, JSON.stringify({
+      id: `fyi-${i}`, source: "sweep:test", mode: "fyi",
+      severity: "info", message: `event ${i}`, created_at,
+    }));
+  }
+
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => { emit("ok", "text"); };
+  const { transport } = makeStubTransport([{ ok: true, result: [] }]);
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    wakeDir,
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await bridge.stop();
+
+  const remaining = readdirSync(wakeDir).filter((f) => f.endsWith(".json"));
+  assert.equal(remaining.length, 1, `expected exactly 1 file left pending after a single iteration's 5-file cap, got: ${JSON.stringify(remaining)}`);
+});
+
+test("wake: an empty (or absent) wake dir produces no error and no dispatch", async () => {
+  const wakeDir = mkdtempSync(join(tmpdir(), "rachel-wake-test-"));
+  const capturedInputs: string[] = [];
+  const runTurnStub: BridgeRunTurn = async (input, emit) => {
+    capturedInputs.push(input);
+    emit("ok", "text");
+  };
+  const { transport } = makeStubTransport([{ ok: true, result: [] }]);
+
+  let threw = false;
+  try {
+    const bridge = createBridge({
+      ...basePushOpts(),
+      wakeDir: join(wakeDir, "does-not-exist"),
+      config: { token: "t", chatId: "12345", transport },
+      runTurn: runTurnStub,
+      getSessionId: () => undefined,
+      resetSession: () => {},
+      pollIntervalMs: 5,
+    });
+
+    await bridge.drainOnce();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await bridge.stop();
+  } catch {
+    threw = true;
+  }
+
+  assert.equal(threw, false, "expected no error for a missing wake dir");
+  assert.equal(capturedInputs.length, 0, `expected no dispatch for an empty/absent wake dir, got: ${JSON.stringify(capturedInputs)}`);
+});
+
 test("ticker: a ticker edit that throws never propagates into the drain loop — the turn still completes and the reply still sends", async () => {
   const { transport, calls } = makeStubTransport([
     messageUpdate(1, "run a long job"),
