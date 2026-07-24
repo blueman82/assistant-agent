@@ -2816,7 +2816,7 @@ test("RCA item 6: after a deadline abort the NEXT turn's input is prefixed with 
   assert.equal(seen[0], "hung");
   // The next turn is, and the operator's own words survive intact after it.
   assert.ok(
-    seen[1]!.includes("auto-aborted"),
+    seen[1]!.includes("aborted by the bridge"),
     `expected the next turn's input to carry an abort-artifact note, got: ${JSON.stringify(seen[1])}`,
   );
   assert.ok(
