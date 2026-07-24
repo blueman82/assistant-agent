@@ -3984,16 +3984,16 @@ test("ticker: a turn that outruns the grace window sends a silent placeholder, t
     messageUpdate(1, "run a long job"),
     { ok: true, result: [] },
   ]);
-  for (const c of calls) void c; // keep lint quiet if calls unused before assertions below
 
-  const sendMessageIds: number[] = [];
+  // sendMessage must return a message_id so the ticker can issue edits
+  // against it — the stub transport's default response doesn't carry one.
   const wrappedTransport: typeof transport = async (input, init) => {
-    const res = await transport(input, init);
     const url = String(input);
-    if (url.includes("/sendMessage")) sendMessageIds.push(9001);
-    return url.includes("/sendMessage")
-      ? ({ ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response)
-      : res;
+    if (url.includes("/sendMessage")) {
+      await transport(input, init); // still records the call
+      return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
+    }
+    return transport(input, init);
   };
 
   const runTurnStub: BridgeRunTurn = async (_input, emit) => {
