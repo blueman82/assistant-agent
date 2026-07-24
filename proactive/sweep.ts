@@ -459,6 +459,16 @@ interface SweepState {
   // Whether the current streak's escalation has been DELIVERED (a failed
   // send stays false and is retried next tick). Cleared on family success.
   escalation_sent?: Record<string, boolean>;
+  // bridge-stale thrash cap: how many restart attempts have been spent on the
+  // CURRENT target commit, and which commit that is. Keyed on the SHA so a
+  // newer relevant commit re-arms the budget, while repeated failure against
+  // one unchanging target stops after STALE_RESTART_ATTEMPT_CAP. Survives the
+  // date rollover — a crash-looping remediator is worse than a stale bridge.
+  stale_restart_sha?: string;
+  stale_restart_attempts?: number;
+  // Whether the capped-out failure alert for the current target has been
+  // pushed, so the operator is told once rather than every 30 minutes.
+  stale_restart_alerted?: boolean;
 }
 
 // Sweep-owned state, deliberately OUTSIDE the push store dir — that dir is
