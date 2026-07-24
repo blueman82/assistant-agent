@@ -36,7 +36,7 @@ const CALENDAR_EVENTS_PATTERN = /googleapis\.com\/calendar\/v3\/calendars\/[^/]+
 // `-D`/`--dump-header`, a read flag, while the long-flag markers above stay
 // case-insensitive.
 const POST_METHOD_PATTERN = /-X\s*POST|--request\s+POST|--data\b|--json\b|--form\b/i;
-const SHORT_DATA_FLAG_PATTERN = /(^|\s)-d/;
+const SHORT_DATA_FLAG_PATTERN = /(^|\s)-(?!-)[a-zA-Z]*d/;
 const SHORT_FORM_FLAG_PATTERN = /(^|\s)-(?!-)[a-zA-Z]*F/;
 
 function sendsRequestBody(command: string): boolean {
