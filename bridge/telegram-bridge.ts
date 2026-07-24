@@ -269,9 +269,25 @@ async function checkWakeFiles(opts: {
       continue;
     }
 
-    const source = String(wake.source ?? "unknown");
-    const message = String(wake.message ?? "");
-    const id = String(wake.id ?? filename.replace(/\.json$/, ""));
+    // Valid JSON does not guarantee these coerce safely — e.g. a message
+    // field shaped like {"toString":1,"valueOf":2} makes String() throw
+    // (no primitive coercion path exists), and a top-level `null` throws on
+    // property access. Guard the same way as the JSON.parse above: quarantine
+    // rather than let the throw escape checkWakeFiles uncaught. An uncaught
+    // throw here would propagate past the un-renamed file (still .json) all
+    // the way to pollOnce's outer catch, which backs off and retries the
+    // SAME poll cycle — replaying the poison file forever instead of the
+    // at-most-once semantics the rename below is meant to guarantee.
+    let source: string, message: string, id: string;
+    try {
+      source = String(wake?.source ?? "unknown");
+      message = String(wake?.message ?? "");
+      id = String(wake?.id ?? filename.replace(/\.json$/, ""));
+    } catch (err) {
+      try { fs.rename(wakePath, `${wakePath}.bad`); } catch { /* best-effort */ }
+      logError(`[telegram-bridge] wake file ${filename} has fields that cannot be read as strings, quarantined as .bad: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
 
     // AT-MOST-ONCE: the consumed file is renamed to .done BEFORE anything is
     // dispatched. A crash between the rename and the dispatch loses one wake
