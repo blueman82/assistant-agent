@@ -943,6 +943,25 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
       isPidAlive: resolvedIsPidAlive,
       pushPing: (eventId, state, text) => pushAlert("loop-watchdog", eventId, state, "normal", text),
     });
+    // Completion→wake channel. Deliberately here in the poll loop (once per
+    // getUpdates iteration, ≤30s latency) and NOT in the 30-minute sweep —
+    // sweep latency would defeat the point of "she comes back to you".
+    await checkWakeFiles({
+      wakeDir,
+      fs: resolvedFs,
+      log,
+      logError,
+      enqueueTurn: (text) => {
+        fifo.push({ text, voice: false });
+        // Safe kick: drainFifo is single-flight, so if a turn is already
+        // running this no-ops and the RUNNING loop's `while (fifo.length > 0)`
+        // picks the message up when that turn finishes. Nothing is lost.
+        void drainFifo().catch((err) => {
+          logError(`[telegram-bridge] wake drain error: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      },
+      pushFyi: (eventId, severity, text) => pushAlert("wake", eventId, "fired", severity, text),
+    });
     writeHeartbeat();
   }
 
