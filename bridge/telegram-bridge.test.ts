@@ -4158,7 +4158,7 @@ test("ticker: coalesces to the latest event only — an edit never carries a sta
   assert.ok(!editTexts.some((t) => t.includes("first-event")), `no edit should carry the stale first event once a newer one has arrived, got: ${JSON.stringify(editTexts)}`);
 });
 
-test("ticker: skips an edit when the rendered text is unchanged from the last sent edit", async () => {
+test("ticker: skips an edit when the rendered text is unchanged since the last sent edit", async () => {
   const { transport, calls } = makeStubTransport([
     messageUpdate(1, "run a long job"),
     { ok: true, result: [] },
@@ -4169,19 +4169,15 @@ test("ticker: skips an edit when the rendered text is unchanged from the last se
     return transport(input, init);
   };
 
-  // A single event with no further emits: the elapsed-time component of the
-  // rendered text changes every render, so identical-text skip is proven by
-  // asserting no TWO consecutive edits carry byte-identical text, which
-  // would only happen if elapsed also failed to change — not exercised
-  // directly here since elapsed always advances. Instead we assert the
-  // stronger, directly-testable property: every recorded edit's text is
-  // unique (no back-to-back duplicate), proving the skip-if-unchanged guard
-  // doesn't itself produce duplicate sends when nothing changed within a
-  // render tick's rounding window.
+  // Deterministic zero jitter (min=max=50ms) fires many renders per real
+  // second, while elapsed only advances once per second — so most renders
+  // within the same second MUST produce byte-identical text, and the
+  // skip-if-unchanged guard must suppress the edit call for them. Without
+  // that guard, editAttempts would roughly track render attempts (~1:1);
+  // with it, edits are bounded by elapsed-seconds, not by render count.
   const runTurnStub: BridgeRunTurn = async (_input, emit) => {
     emit("  [Bash] steady-event", "tool");
-    await new Promise((r) => setTimeout(r, 3300));
-    emit("done text", "text");
+    await new Promise((r) => setTimeout(r, 600));
   };
 
   const bridge = createBridge({
@@ -4192,37 +4188,47 @@ test("ticker: skips an edit when the rendered text is unchanged from the last se
     resetSession: () => {},
     pollIntervalMs: 5,
     typingIntervalMs: 100000,
+    tickerGraceMs: 10,
+    tickerJitterMinMs: 50,
+    tickerJitterMaxMs: 50,
   });
 
   await bridge.drainOnce();
-  await new Promise((resolve) => setTimeout(resolve, 3500));
+  await new Promise((resolve) => setTimeout(resolve, 700));
   await bridge.stop();
 
   const edits = calls.filter((c) => c.url.includes("/editMessageText"));
   const editTexts = edits.map((c) => String((c.body as Record<string, unknown>)["text"] ?? ""));
+  // ~600ms at a 50ms render cadence is ~12 render attempts, but elapsed only
+  // advances in whole seconds, so an un-guarded ticker would send ~12
+  // edits; a guarded one sends at most a couple (grace-expiry render + the
+  // terminal edit once elapsed crosses a second boundary or the turn ends).
+  assert.ok(edits.length <= 3, `expected skip-if-unchanged to suppress most same-second renders, got ${edits.length} edits: ${JSON.stringify(editTexts)}`);
   for (let i = 1; i < editTexts.length; i++) {
     assert.notEqual(editTexts[i], editTexts[i - 1], `expected no two consecutive edits with identical text, got: ${JSON.stringify(editTexts)}`);
   }
 });
 
-test("ticker: a 429 with retry_after is honoured (waited out) and future cadence is doubled, without throwing into the drain loop", async () => {
+test("ticker: a 429 with retry_after is honoured, and the gap before the next edit attempt reflects the doubled cadence", async () => {
   const { transport, calls } = makeStubTransport([
     messageUpdate(1, "run a long job"),
     { ok: true, result: [] },
   ]);
   let editAttempts = 0;
+  const editAttemptTimestamps: number[] = [];
   const recordingTransport: typeof transport = async (input, init) => {
     const url = String(input);
     if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
     if (url.includes("/editMessageText")) {
       editAttempts++;
+      editAttemptTimestamps.push(Date.now());
       await transport(input, init); // records the call
       if (editAttempts === 1) {
         // First edit (fires at grace expiry) is rate-limited.
         return {
           ok: false,
           status: 429,
-          json: async () => ({ ok: false, description: "Too Many Requests", parameters: { retry_after: 1 } }),
+          json: async () => ({ ok: false, description: "Too Many Requests", parameters: { retry_after: 0 } }),
         } as Response;
       }
       return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
@@ -4230,9 +4236,13 @@ test("ticker: a 429 with retry_after is honoured (waited out) and future cadence
     return transport(input, init);
   };
 
+  // Deterministic zero-span jitter (min=max) makes the post-429 cadence
+  // exactly 2x the base — the doubling is the thing under test, not the
+  // jitter shape (already covered by the jitter-bounds test).
+  const baseCadenceMs = 100;
   const runTurnStub: BridgeRunTurn = async (_input, emit) => {
     emit("  [Bash] event-a", "tool");
-    await new Promise((r) => setTimeout(r, 5200));
+    await new Promise((r) => setTimeout(r, 500));
     emit("done text", "text");
   };
 
@@ -4244,18 +4254,28 @@ test("ticker: a 429 with retry_after is honoured (waited out) and future cadence
     resetSession: () => {},
     pollIntervalMs: 5,
     typingIntervalMs: 100000,
+    tickerGraceMs: 10,
+    tickerJitterMinMs: baseCadenceMs,
+    tickerJitterMaxMs: baseCadenceMs,
   });
 
   await bridge.drainOnce();
-  await new Promise((resolve) => setTimeout(resolve, 5700));
+  await new Promise((resolve) => setTimeout(resolve, 700));
   await bridge.stop();
 
   assert.ok(editAttempts >= 2, `expected the ticker to retry after honouring retry_after, got ${editAttempts} attempt(s)`);
+  const gapMs = editAttemptTimestamps[1]! - editAttemptTimestamps[0]!;
+  // retry_after=0 contributes ~0ms wait; the doubled cadence (200ms) is what
+  // must separate attempt 1 from attempt 2 — assert it's clearly past the
+  // un-doubled base (100ms) and in the right ballpark, with generous slack
+  // for test-runner scheduling jitter.
+  assert.ok(gapMs >= baseCadenceMs * 1.5, `expected the gap before the retry to reflect doubled cadence (~${baseCadenceMs * 2}ms), got ${gapMs}ms`);
+
   const successfulEdits = calls.filter((c) => c.url.includes("/editMessageText"));
   assert.ok(successfulEdits.length >= 1, "expected at least one successful edit after the 429 was honoured");
 });
 
-test("ticker: exponential backoff freezes after 3 consecutive edit failures and never throws into the drain loop", async () => {
+test("ticker: exponential backoff freezes after 3 consecutive edit failures, and the terminal edit is also skipped once frozen", async () => {
   const { transport } = makeStubTransport([
     messageUpdate(1, "run a long job"),
     { ok: true, result: [] },
@@ -4273,9 +4293,7 @@ test("ticker: exponential backoff freezes after 3 consecutive edit failures and 
 
   const runTurnStub: BridgeRunTurn = async (_input, emit) => {
     emit("  [Bash] event-a", "tool");
-    await new Promise((r) => setTimeout(r, 3300));
-    emit("  [Bash] event-b", "tool");
-    await new Promise((r) => setTimeout(r, 3300));
+    await new Promise((r) => setTimeout(r, 400));
     emit("done text", "text");
   };
 
@@ -4293,20 +4311,24 @@ test("ticker: exponential backoff freezes after 3 consecutive edit failures and 
     resetSession: () => {},
     pollIntervalMs: 5,
     typingIntervalMs: 100000,
+    tickerGraceMs: 10,
+    tickerJitterMinMs: 20,
+    tickerJitterMaxMs: 20,
   });
 
   await bridge.drainOnce();
-  await new Promise((resolve) => setTimeout(resolve, 6800));
+  await new Promise((resolve) => setTimeout(resolve, 700));
   await bridge.stop();
 
   assert.ok(dispatchedTurnCompleted, "a failing ticker must never prevent the turn itself from completing");
-  // Exactly 3 consecutive failures freeze the ticker (no terminal edit
-  // attempt either, since it shares the same frozen guard) — proving the
-  // branch was entered, not merely that nothing threw.
-  assert.equal(editAttempts, 3, `expected the ticker to stop after exactly 3 consecutive failures, got ${editAttempts} attempts`);
+  // Exactly 3 consecutive failures freeze the ticker, and the terminal edit
+  // respects the same frozen guard — proving the branch was entered AND
+  // that freezing actually stops further attempts, not merely that nothing
+  // threw.
+  assert.equal(editAttempts, 3, `expected the ticker (including its terminal edit) to stop after exactly 3 consecutive failures, got ${editAttempts} attempts`);
 });
 
-test("ticker: never fires under 120 edits — the edit cap is enforced even on an extremely long turn", async () => {
+test("ticker: the edit cap stops further edits once tickerMaxEdits is reached, even though the turn is still running", async () => {
   const { transport, calls } = makeStubTransport([
     messageUpdate(1, "run a long job"),
     { ok: true, result: [] },
@@ -4317,17 +4339,14 @@ test("ticker: never fires under 120 edits — the edit cap is enforced even on a
     return transport(input, init);
   };
 
-  // Simulate 130 renders directly against the cap constant rather than
-  // waiting out a real multi-hour turn: this test exercises the SAME
-  // drainFifo/ticker code path with a turn that emits 130 distinct tool
-  // events in rapid succession, each forcing a distinct rendered line so
-  // skip-if-unchanged never suppresses one — proving the cap is on EDIT
-  // COUNT, not on some other proxy.
+  // A tiny cap (3) with fast, deterministic cadence and a distinct event
+  // per render (so skip-if-unchanged never suppresses one) proves the cap
+  // fires ON EDIT COUNT while the turn is still going, not merely that a
+  // long turn happens to produce few edits.
   const runTurnStub: BridgeRunTurn = async (_input, emit) => {
-    emit("  [Bash] event-0", "tool");
-    for (let i = 1; i <= 130; i++) {
-      await new Promise((r) => setTimeout(r, 40));
+    for (let i = 0; i < 20; i++) {
       emit(`  [Bash] event-${i}`, "tool");
+      await new Promise((r) => setTimeout(r, 30));
     }
   };
 
@@ -4339,19 +4358,69 @@ test("ticker: never fires under 120 edits — the edit cap is enforced even on a
     resetSession: () => {},
     pollIntervalMs: 5,
     typingIntervalMs: 100000,
-    turnTimeoutMs: 10 * 60 * 1000,
+    tickerGraceMs: 10,
+    tickerJitterMinMs: 20,
+    tickerJitterMaxMs: 20,
+    tickerMaxEdits: 3,
   });
 
   await bridge.drainOnce();
-  // 130 events * 40ms ≈ 5.2s of emits, but the cadence floor is 4-8s, so
-  // this test cannot realistically observe 120 real edits within a bounded
-  // test run — that requires the earlier grace+jitter timing, which is
-  // already exercised. This test instead pins that the cap constant exists
-  // and is wired into the render guard by asserting it is never exceeded
-  // over a generous wait.
-  await new Promise((resolve) => setTimeout(resolve, 6000));
+  await new Promise((resolve) => setTimeout(resolve, 700));
   await bridge.stop();
 
   const edits = calls.filter((c) => c.url.includes("/editMessageText"));
-  assert.ok(edits.length <= 120, `expected edits capped at 120, got ${edits.length}`);
+  assert.equal(edits.length, 3, `expected exactly tickerMaxEdits (3) edits despite a much longer turn, got ${edits.length}`);
+});
+
+test("ticker: jitter cadence stays within the configured [min, max) bounds across several renders", async () => {
+  const { transport } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
+  const editAttemptTimestamps: number[] = [];
+  const recordingTransport: typeof transport = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
+    if (url.includes("/editMessageText")) {
+      editAttemptTimestamps.push(Date.now());
+      return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+    }
+    return transport(input, init);
+  };
+
+  const jitterMin = 40;
+  const jitterMax = 80;
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    for (let i = 0; i < 20; i++) {
+      emit(`  [Bash] event-${i}`, "tool");
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    typingIntervalMs: 100000,
+    tickerGraceMs: 10,
+    tickerJitterMinMs: jitterMin,
+    tickerJitterMaxMs: jitterMax,
+    tickerMaxEdits: 6,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await bridge.stop();
+
+  assert.ok(editAttemptTimestamps.length >= 3, `expected several ticker edits to sample the jitter distribution, got ${editAttemptTimestamps.length}`);
+  for (let i = 1; i < editAttemptTimestamps.length; i++) {
+    const gap = editAttemptTimestamps[i]! - editAttemptTimestamps[i - 1]!;
+    // Generous slack (20ms) for test-runner scheduling noise around the
+    // configured [40, 80) bounds.
+    assert.ok(gap >= jitterMin - 20, `expected inter-edit gap >= ~${jitterMin}ms, got ${gap}ms`);
+    assert.ok(gap <= jitterMax + 20, `expected inter-edit gap <= ~${jitterMax}ms, got ${gap}ms`);
+  }
 });
