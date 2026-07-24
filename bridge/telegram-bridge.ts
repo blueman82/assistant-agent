@@ -998,27 +998,6 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
       isPidAlive: resolvedIsPidAlive,
       pushPing: (eventId, state, text) => pushAlert("loop-watchdog", eventId, state, "normal", text),
     });
-    await checkWakeFiles({
-      wakeDir,
-      fs: resolvedFs,
-      // narrate wakes queue behind live conversation in the FIFO, same as
-      // any inbound Telegram message — drainFifo is single-flight, and if a
-      // turn is already running this call no-ops while the running drain
-      // loop's while-loop picks the new entry up once that turn finishes.
-      enqueueNarrate: (text) => {
-        fifo.push({ text, voice: false });
-        void drainFifo().catch((err) => {
-          logError(`[telegram-bridge] drain error: ${err instanceof Error ? err.message : String(err)}`);
-        });
-      },
-      // The wake file's severity field is producer-supplied and untrusted —
-      // push() only accepts urgent|normal|digest, so anything else (e.g. the
-      // spec example's "info") falls back to "normal", same as any other
-      // FYI push (per Gary's rollout note: normal unless the wake says
-      // otherwise, and "otherwise" must still be one push() recognises).
-      pushFyi: (eventId, severity, text) => pushAlert("wake", eventId, "fired", VALID_SEVERITIES.has(severity) ? (severity as Severity) : "normal", text),
-      log,
-    });
     writeHeartbeat();
   }
 
