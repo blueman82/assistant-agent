@@ -1856,7 +1856,19 @@ test("an unparseable ps etime is a logged skip, never a restart and never a fami
   assert.equal(subs.includes("bootout"), false, "an unreadable start time is never grounds for a restart");
 });
 
-test("an exploding launchctl in the stale family is caught and the rest of the tick still runs", async () => {
+test("a docs-only merge since the last restart leaves the newest relevant commit unmoved, so nothing is restarted", async () => {
+  // `git log -1 -- <paths>` reports the newest commit TOUCHING those paths,
+  // so a docs-only merge does not move the timestamp at all. The bridge
+  // started after that unchanged commit, so it stays fresh and untouched —
+  // this is what stops an unrelated merge costing Gary a restart.
+  const h = staleHarness({ etime: "01:00:00", commitISO: "2026-07-15T09:00:00Z", commitSha: "old1234" });
+  await sweepTick(h.deps);
+  const subs = h.execCalls.filter((c) => c.cmd === "launchctl").map((c) => c.args[0]);
+  assert.equal(subs.includes("bootout"), false, "an unrelated merge must never trigger a restart");
+  assert.equal(h.pushes.filter((p) => p.family === "bridge-stale").length, 0);
+});
+
+test("an exploding git in the stale family is caught and the rest of the tick still runs", async () => {
   const h = staleHarness({ etime: "05:00:00" });
   const base = h.deps.execFn;
   h.deps.execFn = async (cmd, args, opts) => {
