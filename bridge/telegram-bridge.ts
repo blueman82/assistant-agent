@@ -840,7 +840,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         }
 
         function scheduleNextRender(): void {
-          if (tickerDone || tickerFrozen || stopped) return;
+          if (/*TEMP-REVERT tickerDone ||*/ tickerFrozen || stopped) return;
           renderTimer = setTimeout(() => {
             void renderTickerOnce().finally(scheduleNextRender);
           }, jitteredCadence());
