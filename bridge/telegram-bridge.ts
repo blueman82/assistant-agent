@@ -806,10 +806,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
             lastSentTickerText = rendered;
             tickerEditCount++;
             tickerConsecutiveFailures = 0;
-            // Reset to the STICKY floor, not the ordinary jitter minimum —
-            // a prior 429 in this turn keeps the cadence doubled even after
-            // a subsequent edit succeeds.
-            tickerCadenceMs = tickerCadenceFloorMs;
+            tickerCadenceMs = tickerJitterMinMs; // TEMP: reintroduce bug to verify test catches it
           } catch (err) {
             if (err instanceof TelegramRetryAfterError) {
               // Honour the hint, then double future cadence for the rest of
