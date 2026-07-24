@@ -22,10 +22,11 @@ const CALENDAR_EVENTS_PATTERN = /googleapis\.com\/calendar\/v3\/calendars\/[^/]+
 // curl infers POST from any body flag, so an explicit method marker is not the
 // only signal of a write. `--data\b` also covers --data-raw/-binary/-urlencode,
 // since the boundary sits before the hyphen. Short `-d` is matched separately:
-// it must start a word, and its value may be attached (-d@file, -d'{...}',
-// -dkey=value) as well as space-separated. The lookahead keeps --dump-header
-// and other long flags from tripping it.
-const POST_METHOD_PATTERN = /-X\s*POST|--request\s+POST|--data\b|(^|\s)-d(?=[\s@'"=]|$)/i;
+// it must start a word with a single leading hyphen, and everything after it is
+// curl's value, whether attached (-d@file, -d'{...}', -dkey=value) or
+// space-separated. Requiring a single hyphen keeps --dump-header and every
+// other long flag from tripping it.
+const POST_METHOD_PATTERN = /-X\s*POST|--request\s+POST|--data\b|(^|\s)-d/i;
 
 export function matchesBashSendPattern(command: string): boolean {
   if (SEND_PATTERNS.some((pattern) => pattern.test(command))) {
