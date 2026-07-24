@@ -99,15 +99,19 @@ function isInsideMemoryDirPermissive(filePath: string): boolean {
 // the hook fired at all (security review finding, 2026-07-24).
 export function createMemoryGateHook(auditLogPath: string): HookCallback {
   return async (input) => {
-    // Captured before the PreToolUse narrowing below so the catch block —
-    // which runs on any exception, including ones thrown before narrowing
-    // completes — can still log which tool call triggered it.
-    const toolName = input.hook_event_name === "PreToolUse" ? input.tool_name : input.hook_event_name;
-    const hash = input.hook_event_name === "PreToolUse" ? hashInput(input.tool_input) : "n/a";
+    // Best-effort context for the catch block's audit row — deliberately
+    // reassigned (not read) inside the try, so a throw from reading `input`
+    // itself (a hostile or malformed hook input) still lands in the catch
+    // with these safe defaults rather than escaping the try/catch entirely.
+    let toolName = "unknown";
+    let hash = "unknown";
     try {
       if (input.hook_event_name !== "PreToolUse") {
         return {};
       }
+
+      toolName = input.tool_name;
+      hash = hashInput(input.tool_input);
 
       if (process.env["RACHEL_UNTRUSTED_CONTENT"]) {
         const untrustedReason =
