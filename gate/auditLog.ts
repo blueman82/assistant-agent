@@ -8,6 +8,8 @@ export interface AuditRow {
   hash: string;
   surface: string;
   decision?: "allow" | "deny";
+  errorCode?: string;
+  errorMessage?: string;
 }
 
 // Append-only: never rewrites, one JSON object per line.

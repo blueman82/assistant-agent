@@ -7,13 +7,14 @@ process.env["RACHEL_TELEGRAM_TOKEN"] = "000000000:FAKE-TEST-TOKEN";
 process.env["RACHEL_TELEGRAM_CHAT_ID"] = "1";
 process.env["RACHEL_GATE_TIMEOUT_MS"] = "200";
 
-import { mkdtempSync, mkdirSync, symlinkSync, unlinkSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, symlinkSync, unlinkSync, chmodSync, readFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join as joinPath } from "node:path";
 
 const testQueueDir = mkdtempSync(joinPath(tmpdir(), "rachel-test-queue-"));
 process.env["RACHEL_QUEUE_DIR"] = testQueueDir;
-process.env["RACHEL_AUDIT_LOG_PATH"] = joinPath(testQueueDir, "audit.jsonl");
+const testAuditLogPath = joinPath(testQueueDir, "audit.jsonl");
+process.env["RACHEL_AUDIT_LOG_PATH"] = testAuditLogPath;
 process.env["RACHEL_MEMORY_PATH"] = joinPath(testQueueDir, "memory", "MEMORY.md");
 
 globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
@@ -65,7 +66,7 @@ function withUntrustedFlag(fn: () => Promise<void>): Promise<void> {
 
 test("RACHEL_UNTRUSTED_CONTENT set + Write into memory dir -> deny", async () => {
   await withUntrustedFlag(async () => {
-    const hook = createMemoryGateHook();
+    const hook = createMemoryGateHook(testAuditLogPath);
     const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", "---\nname: some-fact\n---\n");
     const result = await hook(input, undefined, { signal: new AbortController().signal });
     assert.equal(permissionDecisionOf(result), "deny");
@@ -77,7 +78,7 @@ test("RACHEL_UNTRUSTED_CONTENT unset + Write into memory dir -> pass-through (no
   const original = process.env["RACHEL_UNTRUSTED_CONTENT"];
   delete process.env["RACHEL_UNTRUSTED_CONTENT"];
   try {
-    const hook = createMemoryGateHook();
+    const hook = createMemoryGateHook(testAuditLogPath);
     const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", "---\nname: some-fact\ndescription: x\ntype: preference\n---\nbody");
     const result = await hook(input, undefined, { signal: new AbortController().signal });
     assert.deepEqual(result, {});
@@ -90,7 +91,7 @@ test("RACHEL_UNTRUSTED_CONTENT unset + Write into memory dir -> pass-through (no
 
 test("RACHEL_UNTRUSTED_CONTENT set + Write OUTSIDE memory dir -> pass-through", async () => {
   await withUntrustedFlag(async () => {
-    const hook = createMemoryGateHook();
+    const hook = createMemoryGateHook(testAuditLogPath);
     const input = makeWriteInput("/Users/harrison/Github/assistant-agent/tasks/2026-07-23-something.md", "content");
     const result = await hook(input, undefined, { signal: new AbortController().signal });
     assert.deepEqual(result, {});
@@ -108,7 +109,7 @@ test("RACHEL_UNTRUSTED_CONTENT set + Write OUTSIDE memory dir -> pass-through", 
 
 test("RACHEL_UNTRUSTED_CONTENT set + Write via dot-segment path (~/.rachel/./memory/x.md) -> deny", async () => {
   await withUntrustedFlag(async () => {
-    const hook = createMemoryGateHook();
+    const hook = createMemoryGateHook(testAuditLogPath);
     // Built as a raw template string, NOT via path.join/joinPath — join()
     // normalises the "." segment away during construction, which would
     // make this fixture already-canonical and never exercise the bypass
@@ -122,7 +123,7 @@ test("RACHEL_UNTRUSTED_CONTENT set + Write via dot-segment path (~/.rachel/./mem
 
 test("RACHEL_UNTRUSTED_CONTENT set + Write via doubled-slash path (~/.rachel//memory/x.md) -> deny", async () => {
   await withUntrustedFlag(async () => {
-    const hook = createMemoryGateHook();
+    const hook = createMemoryGateHook(testAuditLogPath);
     const doubledSlashPath = `${homedir()}/.rachel//memory/attacker.md`;
     const input = makeWriteInput(doubledSlashPath, "attacker text");
     const result = await hook(input, undefined, { signal: new AbortController().signal });
@@ -132,7 +133,7 @@ test("RACHEL_UNTRUSTED_CONTENT set + Write via doubled-slash path (~/.rachel//me
 
 test("RACHEL_UNTRUSTED_CONTENT set + Write via case-variant path (~/.Rachel/Memory/x.md) -> deny", async () => {
   await withUntrustedFlag(async () => {
-    const hook = createMemoryGateHook();
+    const hook = createMemoryGateHook(testAuditLogPath);
     const caseVariantPath = `${homedir()}/.Rachel/Memory/attacker.md`;
     const input = makeWriteInput(caseVariantPath, "attacker text");
     const result = await hook(input, undefined, { signal: new AbortController().signal });
@@ -142,7 +143,7 @@ test("RACHEL_UNTRUSTED_CONTENT set + Write via case-variant path (~/.Rachel/Memo
 
 test("RACHEL_UNTRUSTED_CONTENT set + Write via canonical path (control) -> deny", async () => {
   await withUntrustedFlag(async () => {
-    const hook = createMemoryGateHook();
+    const hook = createMemoryGateHook(testAuditLogPath);
     const canonicalPath = joinPath(homedir(), ".rachel", "memory", "attacker.md");
     const input = makeWriteInput(canonicalPath, "attacker text");
     const result = await hook(input, undefined, { signal: new AbortController().signal });
@@ -152,7 +153,7 @@ test("RACHEL_UNTRUSTED_CONTENT set + Write via canonical path (control) -> deny"
 
 test("RACHEL_UNTRUSTED_CONTENT set + Write via a genuinely different sibling dir (~/.rachel/memory-notes/x.md) -> pass-through", async () => {
   await withUntrustedFlag(async () => {
-    const hook = createMemoryGateHook();
+    const hook = createMemoryGateHook(testAuditLogPath);
     // A prefix match without a separator boundary would wrongly treat this
     // sibling directory as inside the memory dir. Must NOT deny.
     const siblingPath = joinPath(homedir(), ".rachel", "memory-notes", "unrelated.md");
@@ -164,7 +165,7 @@ test("RACHEL_UNTRUSTED_CONTENT set + Write via a genuinely different sibling dir
 
 test("RACHEL_UNTRUSTED_CONTENT set + Write via a symlink pointing at the memory dir -> deny", async () => {
   await withUntrustedFlag(async () => {
-    const hook = createMemoryGateHook();
+    const hook = createMemoryGateHook(testAuditLogPath);
     // Symlink lives in an isolated mkdtempSync scratch dir, never inside the
     // repo or the real ~/.rachel/ — cleaned up in finally.
     const scratchDir = mkdtempSync(joinPath(tmpdir(), "rachel-test-symlink-"));
@@ -190,7 +191,7 @@ test("RACHEL_UNTRUSTED_CONTENT set + Write via a symlink pointing at the memory 
 
 test("RACHEL_UNTRUSTED_CONTENT set + Write via symlink into memory dir, behind an UNREADABLE ancestor -> deny (fail-closed on EACCES)", async () => {
   await withUntrustedFlag(async () => {
-    const hook = createMemoryGateHook();
+    const hook = createMemoryGateHook(testAuditLogPath);
     // Discriminating fixture (security review, 2026-07-24): an unreadable
     // ancestor alone proves nothing — a path outside the memory dir with an
     // unresolvable ancestor is correctly ALLOWED regardless (see the control
@@ -221,7 +222,7 @@ test("RACHEL_UNTRUSTED_CONTENT set + Write via symlink into memory dir, behind a
 
 test("RACHEL_UNTRUSTED_CONTENT set + Write via a symlink CYCLE (ELOOP) -> deny (fail-closed, same error class as EACCES)", async () => {
   await withUntrustedFlag(async () => {
-    const hook = createMemoryGateHook();
+    const hook = createMemoryGateHook(testAuditLogPath);
     // Same underlying fix as the EACCES test above (resolveReal's
     // ENOENT-vs-other-errno distinction), a different errno hitting the
     // same code path: a symlink cycle makes realpathSync throw ELOOP, not
@@ -256,7 +257,7 @@ test("RACHEL_UNTRUSTED_CONTENT UNSET + Write via an UNREADABLE ancestor pointing
   // quirk. isInsideMemoryDirPermissive() is the trusted-path variant: it
   // catches a resolution failure and falls back to the pre-symlink-fix
   // lexical comparison rather than newly blocking.
-  const hook = createMemoryGateHook();
+  const hook = createMemoryGateHook(testAuditLogPath);
   const scratchDir = mkdtempSync(joinPath(tmpdir(), "rachel-test-eacces-control-"));
   const blockedDir = joinPath(scratchDir, "blocked");
   mkdirSync(blockedDir);
@@ -275,7 +276,7 @@ test("RACHEL_UNTRUSTED_CONTENT UNSET + Write via an UNREADABLE ancestor pointing
 
 test("RACHEL_UNTRUSTED_CONTENT set + Edit into memory dir -> deny", async () => {
   await withUntrustedFlag(async () => {
-    const hook = createMemoryGateHook();
+    const hook = createMemoryGateHook(testAuditLogPath);
     const input = {
       hook_event_name: "PreToolUse",
       session_id: "test-session",
@@ -296,7 +297,7 @@ test("RACHEL_UNTRUSTED_CONTENT set + Edit into memory dir -> deny", async () => 
 
 test("RACHEL_UNTRUSTED_CONTENT set + Bash command string-matching the memory path -> deny", async () => {
   await withUntrustedFlag(async () => {
-    const hook = createMemoryGateHook();
+    const hook = createMemoryGateHook(testAuditLogPath);
     const input = {
       hook_event_name: "PreToolUse",
       session_id: "test-session",
@@ -313,7 +314,7 @@ test("RACHEL_UNTRUSTED_CONTENT set + Bash command string-matching the memory pat
 
 test("RACHEL_UNTRUSTED_CONTENT set + Bash command NOT touching memory path -> pass-through", async () => {
   await withUntrustedFlag(async () => {
-    const hook = createMemoryGateHook();
+    const hook = createMemoryGateHook(testAuditLogPath);
     const input = {
       hook_event_name: "PreToolUse",
       session_id: "test-session",
@@ -329,7 +330,7 @@ test("RACHEL_UNTRUSTED_CONTENT set + Bash command NOT touching memory path -> pa
 
 test("non-PreToolUse hook event -> pass-through with empty object even when untrusted", async () => {
   await withUntrustedFlag(async () => {
-    const hook = createMemoryGateHook();
+    const hook = createMemoryGateHook(testAuditLogPath);
     const input = {
       hook_event_name: "PostToolUse",
       session_id: "test-session",
@@ -344,7 +345,7 @@ test("non-PreToolUse hook event -> pass-through with empty object even when untr
 });
 
 test("hook throws exception -> deny with 'Internal hook error' reason (fail-closed)", async () => {
-  const hook = createMemoryGateHook();
+  const hook = createMemoryGateHook(testAuditLogPath);
   const input = new Proxy({} as PreToolUseHookInput, {
     get: () => {
       throw new Error("input threw");
@@ -355,10 +356,73 @@ test("hook throws exception -> deny with 'Internal hook error' reason (fail-clos
   assert.match(reasonOf(result) ?? "", /Internal hook error/);
 });
 
+// --- Audit logging (security review finding, 2026-07-24): every deny path
+// must leave a durable record, not just return a decision to the SDK. ---
+
+test("RACHEL_UNTRUSTED_CONTENT set + Write into memory dir -> deny is audit-logged", async () => {
+  const auditPath = joinPath(mkdtempSync(joinPath(tmpdir(), "memorygate-audit-")), "audit.jsonl");
+  await withUntrustedFlag(async () => {
+    const hook = createMemoryGateHook(auditPath);
+    const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", "---\nname: some-fact\n---\n");
+    await hook(input, undefined, { signal: new AbortController().signal });
+  });
+  const rows = readFileSync(auditPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].event, "decision");
+  assert.equal(rows[0].decision, "deny");
+  assert.equal(rows[0].surface, "untrusted-lockout");
+  assert.equal(rows[0].toolName, "Write");
+});
+
+test("Write of a memory fact file with bad frontmatter -> deny is audit-logged", async () => {
+  const auditPath = joinPath(mkdtempSync(joinPath(tmpdir(), "memorygate-audit-")), "audit.jsonl");
+  const hook = createMemoryGateHook(auditPath);
+  const badContent = "---\nname: some-fact\ndescription: a one-line fact\n---\n\nBody text.\n";
+  const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", badContent);
+  await hook(input, undefined, { signal: new AbortController().signal });
+  const rows = readFileSync(auditPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].decision, "deny");
+  assert.equal(rows[0].surface, "frontmatter-schema");
+});
+
+test("hook throws exception -> the actual error is audit-logged, not just a generic deny", async () => {
+  const auditPath = joinPath(mkdtempSync(joinPath(tmpdir(), "memorygate-audit-")), "audit.jsonl");
+  const hook = createMemoryGateHook(auditPath);
+  const input = new Proxy({} as PreToolUseHookInput, {
+    get: (_target, prop) => {
+      if (prop === "hook_event_name") {
+        return "PreToolUse";
+      }
+      if (prop === "tool_name") {
+        return "Write";
+      }
+      throw new Error("boom: simulated internal failure");
+    },
+  });
+  const result = await hook(input, undefined, { signal: new AbortController().signal });
+  assert.equal(permissionDecisionOf(result), "deny");
+  const rows = readFileSync(auditPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].surface, "internal-error");
+  assert.equal(rows[0].decision, "deny");
+  assert.match(rows[0].errorMessage, /boom: simulated internal failure/);
+});
+
+test("a call that produces no deny writes no audit row (pass-through is not logged as an event)", async () => {
+  const auditPath = joinPath(mkdtempSync(joinPath(tmpdir(), "memorygate-audit-")), "audit.jsonl");
+  const hook = createMemoryGateHook(auditPath);
+  const validContent = "---\nname: some-fact\ndescription: a one-line fact\ntype: reference\n---\n\nBody text.\n";
+  const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", validContent);
+  const result = await hook(input, undefined, { signal: new AbortController().signal });
+  assert.deepEqual(result, {});
+  assert.throws(() => readFileSync(auditPath));
+});
+
 // --- (b) Frontmatter schema validation on memory writes (all contexts) ---
 
 test("Write of a memory fact file with valid frontmatter -> pass-through", async () => {
-  const hook = createMemoryGateHook();
+  const hook = createMemoryGateHook(testAuditLogPath);
   const validContent = "---\nname: some-fact\ndescription: a one-line fact\ntype: preference\n---\n\nBody text.\n";
   const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", validContent);
   const result = await hook(input, undefined, { signal: new AbortController().signal });
@@ -366,7 +430,7 @@ test("Write of a memory fact file with valid frontmatter -> pass-through", async
 });
 
 test("Write of a memory fact file MISSING only the optional date field -> pass-through (warning-level finding must not block)", async () => {
-  const hook = createMemoryGateHook();
+  const hook = createMemoryGateHook(testAuditLogPath);
   // name/description/type all present and valid; date is absent, which
   // validateFrontmatter reports as a warning-level missing-date finding.
   // Gary's live store has pre-existing files without a date field, so this
@@ -378,7 +442,7 @@ test("Write of a memory fact file MISSING only the optional date field -> pass-t
 });
 
 test("Write of a memory fact file MISSING a required frontmatter field -> deny naming the missing field", async () => {
-  const hook = createMemoryGateHook();
+  const hook = createMemoryGateHook(testAuditLogPath);
   // Missing "type" entirely.
   const badContent = "---\nname: some-fact\ndescription: a one-line fact\n---\n\nBody text.\n";
   const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", badContent);
@@ -388,7 +452,7 @@ test("Write of a memory fact file MISSING a required frontmatter field -> deny n
 });
 
 test("Write of a memory fact file with an INVALID type value -> deny naming the bad value", async () => {
-  const hook = createMemoryGateHook();
+  const hook = createMemoryGateHook(testAuditLogPath);
   const badContent = "---\nname: some-fact\ndescription: a one-line fact\ntype: user\n---\n\nBody text.\n";
   const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", badContent);
   const result = await hook(input, undefined, { signal: new AbortController().signal });
@@ -397,7 +461,7 @@ test("Write of a memory fact file with an INVALID type value -> deny naming the 
 });
 
 test("Write to MEMORY.md (the index, not a fact file) -> schema check does not apply", async () => {
-  const hook = createMemoryGateHook();
+  const hook = createMemoryGateHook(testAuditLogPath);
   const indexContent = "- [Some fact](some-fact.md) — a hook\n";
   const input = makeWriteInput("/Users/harrison/.rachel/memory/MEMORY.md", indexContent);
   const result = await hook(input, undefined, { signal: new AbortController().signal });
@@ -405,14 +469,14 @@ test("Write to MEMORY.md (the index, not a fact file) -> schema check does not a
 });
 
 test("Write of a non-.md file inside the memory dir -> schema check does not apply", async () => {
-  const hook = createMemoryGateHook();
+  const hook = createMemoryGateHook(testAuditLogPath);
   const input = makeWriteInput("/Users/harrison/.rachel/memory/notes.txt", "arbitrary content");
   const result = await hook(input, undefined, { signal: new AbortController().signal });
   assert.deepEqual(result, {});
 });
 
 test("Write of a .md file OUTSIDE the memory dir with bad frontmatter -> schema check does not apply", async () => {
-  const hook = createMemoryGateHook();
+  const hook = createMemoryGateHook(testAuditLogPath);
   const input = makeWriteInput("/Users/harrison/Github/assistant-agent/tasks/2026-07-23-something.md", "no frontmatter at all");
   const result = await hook(input, undefined, { signal: new AbortController().signal });
   assert.deepEqual(result, {});
