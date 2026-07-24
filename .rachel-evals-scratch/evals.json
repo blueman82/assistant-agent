@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "scope": "pr",
+  "task_ref": "73",
+  "tier": 1,
+  "tier_justification": "More than a single trivial work-unit (staleness detection + async-safe restart + positive-evidence mid-turn avoidance + retry cap, each with its own logic), but no tier-2 predicate in the standard sense (publish, deploy, migration, external send are the named tier-2 surfaces, and this restarts a LOCAL background service the sweep already owns, not an outward-facing deploy) — no UI/CLI/served-endpoint surface a human directly drives, so rule 6's strongest-surface requirement does not apply either. Tier 1: standard, 4 end-state evals, 4 negative controls, P0/P1 split. Note: despite being tier 1 by these predicates, this PR received the same safety-first scrutiny as a tier-2 item given it restarts a live launchd service — see the dedicated E2/E3 pair covering the safety-critical positive-evidence design point from both directions.",
+  "frozen_at": "2026-07-24T09:17:17Z",
+  "frozen_sha": "3fe6c7823dad83fc3ac650b1e3a0ae5c383f884b",
+  "amendments": [
+    {
+      "eval": "ALL",
+      "when": "2026-07-24T09:17:17Z",
+      "why": "DISCLOSED: this evals.json was authored after PR #73 was already implemented and reviewed. No pre-frozen pr-scope evals.json existed for this RCA-batch item, per the task owner's explicit instruction. During this review pass, a temporary code edit made solely to red-green-verify a new unit test's discriminating power (see PR #73's review artifact) was briefly and accidentally auto-committed before being reverted in a follow-up commit — the evals below were authored and smoke-run AFTER that correction was pushed, against the final correct code (frozen_sha 3fe6c78, confirmed as the branch's real current HEAD at authoring time, not backdated). frozen_at is the real authoring timestamp, not backdated. Every eval drives the merged, exported sweepTick surface via independently-written scripts with a hand-rolled fake execFn under .rachel-evals-scratch/ — not the PR's own staleHarness/staleExecFn test helpers — to preserve oracle independence per rule 4. This matches the disclosed pattern already used for PR #69/#70/#71/#72."
+    }
+  ],
+  "evals": [
+    {
+      "id": "E1",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "A bridge process that started BEFORE the newest commit touching the watched paths (on local HEAD) is restarted via launchctl bootout+bootstrap",
+      "cmd": "npx tsx .rachel-evals-scratch/e1_stale_restart.mjs",
+      "negative_control": "npx tsx .rachel-evals-scratch/e1_negative.mjs",
+      "smoke": {
+        "cmd_exit": 0,
+        "negative_control_exit": 1,
+        "cmd_output": "PASS: a bridge older than the newest local commit was restarted",
+        "negative_control_output": "negative control: asserting a fresh bridge is restarted fails as expected, because it correctly is not"
+      },
+      "status": "pass",
+      "evidence": "npx tsx .rachel-evals-scratch/e1_stale_restart.mjs -> exit 0. Negative control (fresh, non-stale process) exit 1 as required."
+    },
+    {
+      "id": "E2",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "Positive-evidence-only design, half 1: a stale bridge with a CORRUPT (unparseable) heartbeat file is still restarted — missing/corrupt evidence must never disable remediation on the bridge most likely stale",
+      "cmd": "npx tsx .rachel-evals-scratch/e2_corrupt_heartbeat_proceeds.mjs",
+      "negative_control": "npx tsx .rachel-evals-scratch/e2_negative.mjs",
+      "smoke": {
+        "cmd_exit": 0,
+        "negative_control_exit": 1,
+        "cmd_output": "PASS: a corrupt heartbeat did not block the restart",
+        "negative_control_output": "negative control: asserting a corrupt heartbeat blocks restart fails as expected, because it correctly does not"
+      },
+      "status": "pass",
+      "evidence": "npx tsx .rachel-evals-scratch/e2_corrupt_heartbeat_proceeds.mjs -> exit 0. Negative control exit 1 as required."
+    },
+    {
+      "id": "E3",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "Positive-evidence-only design, half 2: a stale bridge with a genuinely FRESH heartbeat showing an active in-flight turn is NOT restarted — real evidence of an active turn must defer the restart",
+      "cmd": "npx tsx .rachel-evals-scratch/e3_active_turn_blocks.mjs",
+      "negative_control": "npx tsx .rachel-evals-scratch/e3_negative.mjs",
+      "smoke": {
+        "cmd_exit": 0,
+        "negative_control_exit": 1,
+        "cmd_output": "PASS: a confirmed in-flight turn blocked the restart",
+        "negative_control_output": "negative control: asserting an in-flight turn does not block restart fails as expected, because it correctly does"
+      },
+      "status": "pass",
+      "evidence": "npx tsx .rachel-evals-scratch/e3_active_turn_blocks.mjs -> exit 0. Negative control exit 1 as required."
+    },
+    {
+      "id": "E4",
+      "priority": "P1",
+      "mode": "scripted",
+      "surface": "merged-state",
+      "assert": "The merged branch typechecks cleanly with tsc --noEmit (no type regressions from the bridge-stale family or the turnInFlight inversion correction)",
+      "cmd": "npm run typecheck",
+      "negative_control": ".rachel-evals-scratch/e4_negative_broken_ts.sh",
+      "smoke": {
+        "cmd_exit": 0,
+        "negative_control_exit": 2,
+        "cmd_output": "> assistant-agent@0.1.0 typecheck\n> tsc --noEmit",
+        "negative_control_output": "error TS2322: Type 'string' is not assignable to type 'number'."
+      },
+      "status": "pass",
+      "evidence": "npm run typecheck -> exit 0, no diagnostics. Negative control (deliberate type error) -> exit 2 with TS2322."
+    }
+  ],
+  "result": null,
+  "graded_at": null,
+  "head_sha": "3fe6c7823dad83fc3ac650b1e3a0ae5c383f884b"
+}
