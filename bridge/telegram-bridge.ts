@@ -267,6 +267,7 @@ function readLoopStopCounts(progressPath: string, fs: FsFunctions): Record<strin
 // than replaying it forever); malformed JSON is quarantined as .bad rather
 // than retried on every poll.
 const WAKE_ITERATION_CAP = 5;   // flood guard — scanned once per getUpdates iteration
+const VALID_SEVERITIES = new Set<string>(["urgent", "normal", "digest"]);  // mirrors push.ts's Severity — wake severity is producer-supplied and untrusted
 
 interface WakeFile {
   id: string;
