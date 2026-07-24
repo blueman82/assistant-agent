@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, existsSync as realExistsSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync, existsSync as realExistsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
