@@ -25,7 +25,7 @@
       "smoke": {
         "cmd_exit": 0,
         "negative_control_exit": 1,
-        "cmd_output": "[sweep] calendar-escalation: no cache — skipped [sweep] tmp-sweep removed 1 stale file from /var/folders/rv/gfgdzw2x1692pf9jfkk85qq00000gn/T/pr71-e1-R8V8w4/.rachel/tmp PASS: stale file removed, family reported ok",
+        "cmd_output": "[sweep] calendar-escalation: no cache — skipped [sweep] tmp-sweep removed 1 stale file from /var/folders/rv/gfgdzw2x1692pf9jfkk85qq00000gn/T/pr71-e1-ol6jaC/.rachel/tmp PASS: stale file removed, family reported ok",
         "negative_control_output": "[sweep] calendar-escalation: no cache — skipped fresh file survived as expected — this negative control intentionally fails to prove E1 discriminates"
       },
       "status": "pass",
@@ -60,7 +60,7 @@
         "cmd_exit": 0,
         "negative_control_exit": 1,
         "cmd_output": "[sweep] calendar-escalation: no cache — skipped PASS: boundary-aged file survived",
-        "negative_control_output": "[sweep] calendar-escalation: no cache — skipped [sweep] tmp-sweep removed 1 stale file from /var/folders/rv/gfgdzw2x1692pf9jfkk85qq00000gn/T/pr71-e3neg-xzsR4v/.rachel/tmp file just past the boundary was correctly removed — this negative control intentionally fails to prove E3 discriminates"
+        "negative_control_output": "[sweep] calendar-escalation: no cache — skipped [sweep] tmp-sweep removed 1 stale file from /var/folders/rv/gfgdzw2x1692pf9jfkk85qq00000gn/T/pr71-e3neg-XwjXLC/.rachel/tmp file just past the boundary was correctly removed — this negative control intentionally fails to prove E3 discriminates"
       },
       "status": "pass",
       "evidence": "npx tsx .rachel-evals-scratch/e3_boundary.mjs -> exit 0. Negative control (asserting a file just past the boundary survives) exits 1 as required."
@@ -76,7 +76,7 @@
       "smoke": {
         "cmd_exit": 0,
         "negative_control_exit": 1,
-        "cmd_output": "710:const TMP_MAX_AGE_MS = 60 * 60_000;\n729:    if (st === undefined || !st.isFile()) {\n887:    \"tmp-sweep\": await runFamily(\"tmp-sweep\", d, errors, async () => {",
+        "cmd_output": "710:const TMP_MAX_AGE_MS = 60 * 60_000; 729:    if (st === undefined || !st.isFile()) { 887:    \"tmp-sweep\": await runFamily(\"tmp-sweep\", d, errors, async () => {",
         "negative_control_output": ""
       },
       "status": "pass",
