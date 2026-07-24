@@ -722,6 +722,16 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     try {
       while (fifo.length > 0) {
         const { text, voice } = fifo.shift()!;
+        // Abort inoculation: consumed here so it applies to exactly one turn —
+        // the one immediately after the abort. Left sticky it would assert an
+        // abort that didn't happen, which is a ghost of its own.
+        const input = pendingAbortNotice ? ABORT_ARTIFACT_PREFIX + text : text;
+        pendingAbortNotice = false;
+        // Turn start, with the backlog still queued behind this one. Before
+        // this line only completion/abort were logged, so establishing when a
+        // turn began meant cross-referencing SDK session JSONL (RCA
+        // 2026-07-23, item 8).
+        log(`[telegram-bridge] turn started (queue depth ${fifo.length})`);
         const abortController = new AbortController();
         currentAbort = abortController;
         turnInFlightSince = nowFn();
