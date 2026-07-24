@@ -88,6 +88,43 @@ interface TelegramUpdate {
   callback_query?: TelegramCallbackQuery;
 }
 
+// Streaming ticker (Part A of the wake-channel spec): a turn that outruns
+// this grace window gets a silent placeholder message that edits in place
+// with elapsed time + the latest live event, so Gary sees the bridge is
+// alive instead of Telegram-side silence on a long-running turn. A turn
+// that finishes inside the grace window shows no ticker at all.
+const TICKER_GRACE_MS = 3000;
+const TICKER_JITTER_MIN_MS = 4000;
+const TICKER_JITTER_MAX_MS = 8000;
+// Belt-and-braces cap: even a legitimately long turn (the 10-minute
+// timeout) must not edit forever — 120 edits bounds Telegram API usage
+// regardless of jitter/backoff shape.
+const TICKER_MAX_EDITS = 120;
+// After 3 consecutive edit failures (any reason), stop trying — a ticker
+// that's clearly broken must not keep hammering the API for the rest of a
+// long turn. The turn itself is never affected either way.
+const TICKER_FREEZE_AFTER_FAILURES = 3;
+const TICKER_EVENT_MAX_CHARS = 100;
+const TICKER_LINE_MAX_CHARS = 200;
+
+// "3s" under a minute, "1m05s" at or past a minute.
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m${seconds}s` : `${seconds}s`;
+}
+
+function truncate(text: string, maxChars: number): string {
+  return text.length > maxChars ? `${text.slice(0, maxChars - 1)}…` : text;
+}
+
+function renderTickerLine(elapsedMs: number, latestEvent: string | null): string {
+  const elapsed = formatElapsed(elapsedMs);
+  const event = latestEvent ? truncate(latestEvent, TICKER_EVENT_MAX_CHARS) : "working";
+  return truncate(`working ${elapsed} — ${event}`, TICKER_LINE_MAX_CHARS);
+}
+
 const DEFAULT_TYPING_INTERVAL_MS = 5000;
 // A turn that outruns this is presumed wedged (a hung upstream API call leaves
 // runTurn awaiting forever, with no error to catch). drainFifo is single-flight,
