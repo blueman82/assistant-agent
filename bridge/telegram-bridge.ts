@@ -887,9 +887,12 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
 
         // Terminal ticker edit — fully exception-isolated, must never block,
         // delay, or fail the turn or the final reply. Fires only if a ticker
-        // was actually started (tickerMessageId set); the final reply below
-        // is sent immediately after, with no backoff sleep in between.
-        if (tickerMessageId !== null) {
+        // was actually started (tickerMessageId set) AND the ticker hasn't
+        // frozen (a frozen ticker is a broken one — one more attempt would
+        // just be a 4th failure, so freeze means freeze, no exception). The
+        // final reply below is sent immediately after, with no backoff sleep
+        // in between.
+        if (tickerMessageId !== null && !tickerFrozen) {
           const terminalText = timedOut
             ? `timed out — ${formatElapsed(Date.now() - turnStartedMs)}`
             : turnErrored
