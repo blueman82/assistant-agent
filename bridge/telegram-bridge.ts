@@ -96,6 +96,25 @@ const DEFAULT_TYPING_INTERVAL_MS = 5000;
 const DEFAULT_TURN_TIMEOUT_MS = 10 * 60 * 1000;
 const CONFLICT_BACKOFF_MS = 65_000;   // Telegram releases getUpdates lock in ~30-60s; 65s gives safe margin
 const CONFLICT_EXIT_THRESHOLD = 5;    // 5 consecutive 409s (~5 min) = genuine second consumer, not launchd race
+// Ceiling on the error detail copied into a synthesis-failure log line.
+// synthesize.py takes the reply text as an argv element, so an execFile
+// timeout error echoes the entire reply back in its message — one real
+// failure wrote a 9,696-char private reply into the bridge log
+// (RCA 2026-07-23, item 9). Long enough to keep the leading diagnostic.
+const SYNTH_ERROR_LOG_MAX_CHARS = 300;
+
+// Seeded into the NEXT turn's input after the deadline aborts one. The
+// harness injects "The user doesn't want to proceed with this tool use" for
+// the in-flight tool call as an aborted turn dies (RCA 2026-07-23, mechanism
+// A); that residue sits in session context and reads as a real refusal by the
+// operator on the following turn. This tells the model what it is actually
+// looking at. Distinct from the user-facing cutoff notice, which explains the
+// same event to the operator rather than to the model.
+const ABORT_ARTIFACT_PREFIX =
+  "[bridge note] Your previous turn was auto-aborted by the bridge's turn deadline — not stopped by the operator. " +
+  "Any \"The user doesn't want to proceed with this tool use\" or \"[Request interrupted by user for tool use]\" text " +
+  "from that turn is a machine-generated artifact of that abort. Nobody denied anything. Do not attribute it to the operator, " +
+  "and do not apologise for it. The operator's actual message follows.\n\n";
 
 export interface Bridge {
   // Runs one getUpdates cycle (and processes whatever it returns) — the
