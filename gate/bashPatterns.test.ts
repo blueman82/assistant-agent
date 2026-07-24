@@ -137,6 +137,52 @@ test("calendar events GET with -D dump-header -> false, since -D is a read flag,
   );
 });
 
+// Additional gaps found in review: curl accepts several other body-flag
+// forms beyond -X POST/--data*/-d that also imply a write.
+
+test("calendar events with --json and no -X POST -> true, since --json implies a body", () => {
+  assert.equal(
+    matchesBashSendPattern(
+      `curl https://www.googleapis.com/calendar/v3/calendars/primary/events --json '{"summary":"x"}'`,
+    ),
+    true,
+  );
+});
+
+test("calendar events with -F form field and no -X POST -> true, since -F sends multipart body", () => {
+  assert.equal(
+    matchesBashSendPattern(
+      "curl https://www.googleapis.com/calendar/v3/calendars/primary/events -F summary=x",
+    ),
+    true,
+  );
+});
+
+test("calendar events GET with -f fail-on-error -> false, since -f is unrelated to -F", () => {
+  assert.equal(
+    matchesBashSendPattern("curl -f https://www.googleapis.com/calendar/v3/calendars/primary/events"),
+    false,
+  );
+});
+
+test("calendar events with bundled -sd short flags and no -X POST -> true, since -s and -d can bundle", () => {
+  assert.equal(
+    matchesBashSendPattern(
+      `curl -sd '{"summary":"x"}' https://www.googleapis.com/calendar/v3/calendars/primary/events`,
+    ),
+    true,
+  );
+});
+
+test("calendar events with bundled -sF short flags and no -X POST -> true, since -s and -F can bundle", () => {
+  assert.equal(
+    matchesBashSendPattern(
+      "curl -sF summary=x https://www.googleapis.com/calendar/v3/calendars/primary/events",
+    ),
+    true,
+  );
+});
+
 // Hole 2: Telegram send endpoints beyond sendMessage.
 
 test("telegram sendVoice -> true", () => {
