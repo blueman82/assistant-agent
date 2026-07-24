@@ -4781,16 +4781,16 @@ test("wake consumer: a top-level null wake file is quarantined .bad, not replaye
     resetSession: () => {},
     pollIntervalMs: 5,
     typingIntervalMs: 100000,
+    wakeDir,
   });
 
   await bridge.drainOnce();
-  await new Promise((resolve) => setTimeout(resolve, 3700));
+  await sleepMs(300);
   await bridge.stop();
 
-  const edits = calls.filter((c) => c.url.includes("/editMessageText"));
-  const editTexts = edits.map((c) => String((c.body as Record<string, unknown>)["text"] ?? ""));
-  assert.ok(editTexts.some((t) => t.includes("second-event")), `expected an edit carrying the latest event, got: ${JSON.stringify(editTexts)}`);
-  assert.ok(!editTexts.some((t) => t.includes("first-event")), `no edit should carry the stale first event once a newer one has arrived, got: ${JSON.stringify(editTexts)}`);
+  assert.deepEqual(realReaddirSync(wakeDir), ["nullwake.json.bad"], "a null wake file must be quarantined, not left as .json to replay");
+  assert.deepEqual(turnInputs, []);
+  assert.deepEqual(sentTexts(calls), [], "a quarantined wake produces no delivery");
 });
 
 test("ticker: skips an edit when the rendered text is unchanged since the last sent edit", async () => {
