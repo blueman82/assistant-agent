@@ -8,7 +8,7 @@
 //     proves nothing), then WITH the lock to prove both survive.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquireMemoryLock, releaseMemoryLock, withMemoryLock, LockContentionError } from "./memoryLock.ts";
