@@ -2586,7 +2586,11 @@ test("a turn that IGNORES its abort signal still does not wedge the queue", asyn
   }
   await bridge.stop();
 
-  assert.deepEqual(seen, ["hung", "after"], "the abandoned turn must not block the next message");
+  // The second input additionally carries the abort-artifact prefix (RCA item
+  // 6), so match on the operator's own message rather than exact equality.
+  assert.equal(seen.length, 2, "the abandoned turn must not block the next message");
+  assert.equal(seen[0], "hung");
+  assert.ok(seen[1]!.endsWith("after"), `expected the queued message to run, got: ${JSON.stringify(seen[1])}`);
   const texts = calls
     .filter((c) => c.url.includes("/sendMessage"))
     .map((c) => String((c.body as Record<string, unknown>)?.["text"] ?? ""));
