@@ -602,6 +602,11 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     if (text === "/stop") {
       if (currentAbort) {
         currentAbort.abort();
+        // /stop aborts the same in-flight tool call the deadline watchdog
+        // would, producing the identical SDK rejection-residue string —
+        // inoculate the next turn against it exactly as the timeout path
+        // does.
+        pendingAbortNotice = true;
         await reply("Stopped.");
       } else {
         await reply("No turn in flight.");
