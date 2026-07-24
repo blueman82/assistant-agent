@@ -602,6 +602,53 @@ test("/stop aborts an in-flight turn via the AbortController passed to runTurn",
   void calls;
 });
 
+test("/stop inoculates the next turn against ghost-rejection residue exactly like a deadline abort", async () => {
+  // /stop aborts the same in-flight tool call a deadline timeout would,
+  // producing the identical SDK rejection-residue string ("the user doesn't
+  // want to proceed with this tool use") — so the next turn's input must
+  // carry the same abort-artifact prefix the deadline path applies.
+  const { transport } = makeStubTransport([
+    messageUpdate(1, "long running task"),
+    messageUpdate(2, "/stop"),
+    messageUpdate(3, "follow up"),
+    { ok: true, result: [] },
+  ]);
+
+  const seen: string[] = [];
+  const runTurnStub: BridgeRunTurn = (input, emit, signal) => {
+    seen.push(input);
+    if (input === "long running task") {
+      return new Promise<void>((resolve) => {
+        signal.addEventListener("abort", () => resolve());
+      });
+    }
+    emit("ok", "text");
+    return Promise.resolve();
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await bridge.drainOnce();
+  for (let i = 0; i < 100 && seen.length < 2; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  await bridge.stop();
+
+  assert.equal(seen.length, 2);
+  assert.equal(seen[0], "long running task");
+  assert.notEqual(seen[1], "follow up", "the follow-up input should carry the abort-artifact prefix, not arrive unprefixed");
+  assert.ok(seen[1]!.endsWith("follow up"), `expected the queued message to still run, got: ${JSON.stringify(seen[1])}`);
+});
+
 test("a callback_query is routed to handleCallbackQuery immediately, not queued behind pending chat turns", async () => {
   const cbUpdate = {
     ok: true,
