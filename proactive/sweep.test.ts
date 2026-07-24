@@ -584,6 +584,7 @@ test("sweepTick reports per-family results and a healthy tick is all ok", async 
   assert.deepEqual(results, {
     flush: "ok",
     "bridge-liveness": "ok",
+    "bridge-stale": "ok",
     "pr-red": "ok",
     "calendar-escalation": "ok",
     calendar: "ok",
