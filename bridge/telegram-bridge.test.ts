@@ -2840,6 +2840,52 @@ test("RCA item 6: a normally completed turn never prefixes the next one", async 
   assert.deepEqual(seen, ["first", "second"]);
 });
 
+test("RCA item 6: /reset clears a pending abort notice — a fresh session has no residue to explain", async () => {
+  // The flag lives in createBridge's closure, so it outlives the SDK session
+  // that /reset clears. Left set, the next turn would assert an abort into a
+  // context holding none of its residue — the same false attribution item 6
+  // exists to prevent, just pointing the other way.
+  const { transport } = makeStubTransport([
+    messageUpdate(1, "hung"),
+    messageUpdate(2, "/reset"),
+    messageUpdate(3, "fresh start"),
+    { ok: true, result: [] },
+  ]);
+  const seen: string[] = [];
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (input, emit, signal) => {
+      seen.push(input);
+      if (input.includes("hung")) {
+        await new Promise<void>((resolve) => {
+          signal?.addEventListener("abort", () => resolve());
+        });
+        return;
+      }
+      emit("ok", "text");
+    },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    turnTimeoutMs: 30,
+  });
+
+  await bridge.drainOnce();
+  await bridge.drainOnce();
+  await bridge.drainOnce();
+  for (let i = 0; i < 100 && seen.length < 2; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  await bridge.stop();
+
+  // /reset is handled bridge-side and never reaches runTurn, so the turns
+  // seen are the aborted one and the post-reset one.
+  assert.equal(seen.length, 2, `expected two turns, got: ${JSON.stringify(seen)}`);
+  assert.equal(seen[0], "hung");
+  assert.equal(seen[1], "fresh start", "a post-/reset turn must carry no abort-artifact prefix");
+});
+
 test("RCA item 8: a turn logs its start plus the FIFO depth at that moment", async () => {
   // Only completion/abort were logged before this, which is exactly why the
   // RCA had to cross-reference SDK session JSONL to establish when a turn
