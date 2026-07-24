@@ -35,6 +35,8 @@ export interface SweepDeps {
   readFileFn: (path: string) => string | undefined;
   writeFileFn: (path: string, content: string) => void;
   lintFn: (memoryDir: string) => Finding[];
+  // Injected so the bridge-stale poll loop never really waits in tests.
+  sleepFn: (ms: number) => Promise<void>;
   // Push-deps passthrough: forwarded to pushFn/flushFn/getStateFn so an
   // injected baseDir/clock/sendFn reaches the real chokepoint unchanged.
   sendFn?: PushDeps["sendFn"];
