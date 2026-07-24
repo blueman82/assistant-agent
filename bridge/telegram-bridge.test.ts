@@ -4390,8 +4390,12 @@ test("ticker: jitter cadence stays within the configured [min, max) bounds acros
 
   const jitterMin = 40;
   const jitterMax = 80;
+  // Long enough (60 * 10ms = 600ms) to comfortably outlast the 400ms sample
+  // window below, so every timestamp captured in that window is a
+  // mid-turn scheduled render — never the terminal edit, which fires only
+  // once the turn ends and isn't jitter-scheduled at all.
   const runTurnStub: BridgeRunTurn = async (_input, emit) => {
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 60; i++) {
       emit(`  [Bash] event-${i}`, "tool");
       await new Promise((r) => setTimeout(r, 10));
     }
@@ -4408,16 +4412,19 @@ test("ticker: jitter cadence stays within the configured [min, max) bounds acros
     tickerGraceMs: 10,
     tickerJitterMinMs: jitterMin,
     tickerJitterMaxMs: jitterMax,
-    tickerMaxEdits: 6,
+    tickerMaxEdits: 100,
   });
 
   await bridge.drainOnce();
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  await new Promise((resolve) => setTimeout(resolve, 400));
   await bridge.stop();
 
-  assert.ok(editAttemptTimestamps.length >= 3, `expected several ticker edits to sample the jitter distribution, got ${editAttemptTimestamps.length}`);
-  for (let i = 1; i < editAttemptTimestamps.length; i++) {
-    const gap = editAttemptTimestamps[i]! - editAttemptTimestamps[i - 1]!;
+  // Drop the very first edit (fires immediately at grace expiry by design,
+  // not jitter-scheduled) — only edits 2+ are governed by jitteredCadence().
+  const scheduledTimestamps = editAttemptTimestamps.slice(1);
+  assert.ok(scheduledTimestamps.length >= 3, `expected several jitter-scheduled edits, got ${scheduledTimestamps.length}`);
+  for (let i = 1; i < scheduledTimestamps.length; i++) {
+    const gap = scheduledTimestamps[i]! - scheduledTimestamps[i - 1]!;
     // Generous slack (20ms) for test-runner scheduling noise around the
     // configured [40, 80) bounds.
     assert.ok(gap >= jitterMin - 20, `expected inter-edit gap >= ~${jitterMin}ms, got ${gap}ms`);
