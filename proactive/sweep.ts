@@ -765,9 +765,8 @@ async function restartBridge(d: SweepDeps): Promise<string | undefined> {
     return `bootout exited ${bootout.exitCode}: ${bootout.stderr.trim()}`;
   }
   if (bootout.exitCode === 0) {
-    const deadline = d.now().getTime() + TEARDOWN_POLL_BUDGET_MS;
     let gone = false;
-    while (d.now().getTime() < deadline) {
+    for (let poll = 0; poll < TEARDOWN_POLL_MAX; poll += 1) {
       const probe = await d.execFn("launchctl", ["print", target]);
       if (probe.exitCode !== 0) {
         gone = true;
@@ -779,7 +778,7 @@ async function restartBridge(d: SweepDeps): Promise<string | undefined> {
     // half-loaded service, so a job that never goes away is left alone
     // entirely rather than bootstrapped over.
     if (!gone) {
-      return `service still draining after ${TEARDOWN_POLL_BUDGET_MS / 1000}s teardown wait`;
+      return `service still draining after ${(TEARDOWN_POLL_MAX * TEARDOWN_POLL_INTERVAL_MS) / 1000}s teardown wait`;
     }
   }
   const plist = join(d.homeDir, "Library", "LaunchAgents", `${label}.plist`);
