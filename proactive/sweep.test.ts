@@ -67,6 +67,11 @@ function makeHarness(config: object = { calendar_oneshot_hours: [], pr_watch_rep
       files.set(path, content);
     },
     lintFn: () => [],
+    // Real fs for the tmp-sweep family: the injected homeDir is a mkdtemp
+    // directory, so real deletes here can never reach the operator's home.
+    readDirFn: defaultReadDirFn,
+    lstatFn: defaultLstatFn,
+    unlinkFn: defaultUnlinkFn,
     baseDir,
     homeDir,
     repoDir: "/repo",
