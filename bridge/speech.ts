@@ -107,7 +107,12 @@ export function defaultExecFileFn(
 // and fall back to a text reply asking Gary to retry or type it (never
 // silently drop a voice message).
 export async function transcribe(audioPath: string, execFileFn: ExecFileFn = defaultExecFileFn): Promise<string> {
-  const { stdout, stderr, exitCode } = await execFileFn(VENV_PYTHON, [TRANSCRIBE_SCRIPT, audioPath], TRANSCRIBE_TIMEOUT_MS);
+  const { stdout, stderr, exitCode } = await execFileFn(
+    VENV_PYTHON,
+    [TRANSCRIBE_SCRIPT, audioPath],
+    TRANSCRIBE_TIMEOUT_MS,
+    hfOfflineEnv(),
+  );
   if (exitCode !== 0) {
     throw new Error(`transcribe failed (exit ${exitCode}): ${stderr.trim() || "no stderr output"}`);
   }
