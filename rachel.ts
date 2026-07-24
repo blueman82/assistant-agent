@@ -8,6 +8,7 @@ import * as readline from "node:readline/promises";
 import { homedir } from "node:os";
 import { createSendGateHook } from "./gate/sendGate.ts";
 import { createAskUserQuestionHook } from "./gate/askUserQuestionHook.ts";
+import { createMemoryGateHook } from "./gate/memoryGate.ts";
 import { createTerminalApprovalSurface } from "./gate/surfaces/terminal.ts";
 import { createTelegramApprovalSurface, loadTelegramConfig } from "./gate/surfaces/telegram.ts";
 import { createQueueApprovalSurface } from "./gate/surfaces/queue.ts";
@@ -136,6 +137,7 @@ const sendGateHook = gateTimeoutMs !== undefined
   : createSendGateHook(approvalSurfaces, auditLogPath);
 
 const askUserQuestionHook = createAskUserQuestionHook();
+const memoryGateHook = createMemoryGateHook();
 
 // ---------------------------------------------------------------------------
 // Session state — module-scoped so it persists across turns within a
@@ -229,7 +231,7 @@ export async function runTurn(
           // so this is set defensively to match every tool call. The gate
           // itself filters by tool_name/command internally.
           matcher: ".*",
-          hooks: [sendGateHook, askUserQuestionHook],
+          hooks: [sendGateHook, askUserQuestionHook, memoryGateHook],
         },
       ],
     },

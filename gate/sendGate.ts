@@ -38,10 +38,16 @@ export const GATED_TOOL_NAMES: readonly string[] = [
 ];
 
 // Internal deny timeout — strictly shorter than any matcher-level `timeout`
-// we'd configure, and load-bearing regardless of matcher timeout: the spike
-// (.claude/spike-notes-hook-semantics.md) proved the SDK does not cut hooks
-// off itself on either throw or matcher-timeout-exceeded, so this race is the
-// only actual enforcement of fail-closed-on-timeout.
+// we'd configure, and load-bearing regardless of matcher timeout: a spike
+// proved the SDK does not cut hooks off itself on either throw or
+// matcher-timeout-exceeded, so this race is the only actual enforcement of
+// fail-closed-on-timeout. Separately, an executable spike (2026-07-23)
+// confirmed the SDK invokes every PreToolUse callback in a matcher's hooks
+// array regardless of position — no short-circuit on an earlier deny — and a
+// deny from ANY callback, at any position, wins. That's what makes stacking
+// independent hooks (sendGateHook, askUserQuestionHook, memoryGateHook) in
+// one array a safe pattern rather than requiring one hook to own every
+// check.
 const INTERNAL_DENY_TIMEOUT_MS = 60_000;
 
 export function denyOutput(reason: string): SyncHookJSONOutput {
