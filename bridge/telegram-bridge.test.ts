@@ -4273,9 +4273,9 @@ test("ticker: exponential backoff freezes after 3 consecutive edit failures and 
 
   const runTurnStub: BridgeRunTurn = async (_input, emit) => {
     emit("  [Bash] event-a", "tool");
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 3300));
     emit("  [Bash] event-b", "tool");
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 3300));
     emit("done text", "text");
   };
 
@@ -4296,7 +4296,7 @@ test("ticker: exponential backoff freezes after 3 consecutive edit failures and 
   });
 
   await bridge.drainOnce();
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  await new Promise((resolve) => setTimeout(resolve, 6800));
   await bridge.stop();
 
   assert.ok(dispatchedTurnCompleted, "a failing ticker must never prevent the turn itself from completing");
