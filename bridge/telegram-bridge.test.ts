@@ -2707,6 +2707,299 @@ test("a turn that throws does not log 'turn completed in <ms>ms'", async () => {
   );
 });
 
+// ---------------------------------------------------------------------------
+// RCA 2026-07-23 ghost-rejection hardening — items 6, 8, 9.
+// ---------------------------------------------------------------------------
+
+test("RCA item 6: after a deadline abort the NEXT turn's input is prefixed with an artifact note", async () => {
+  // Mechanism A in the RCA: when the 10-minute deadline aborts a turn, the
+  // harness injects "The user doesn't want to proceed with this tool use"
+  // for the in-flight tool call. On the following turn that residue is in
+  // session context and reads as a real refusal by the operator. Seeding the
+  // next turn's INPUT (not just the user-facing buffer, which the timedOut
+  // branch already handles) is what stops that misreading.
+  const { transport } = makeStubTransport([
+    messageUpdate(1, "hung"),
+    messageUpdate(2, "what happened?"),
+    { ok: true, result: [] },
+  ]);
+  const seen: string[] = [];
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (input, emit, signal) => {
+      seen.push(input);
+      if (input.includes("hung")) {
+        await new Promise<void>((resolve) => {
+          signal?.addEventListener("abort", () => resolve());
+        });
+        return;
+      }
+      emit("ok", "text");
+    },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    turnTimeoutMs: 30,
+  });
+
+  await bridge.drainOnce();
+  await bridge.drainOnce();
+  for (let i = 0; i < 100 && seen.length < 2; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  await bridge.stop();
+
+  assert.equal(seen.length, 2, `expected both turns to run, got: ${JSON.stringify(seen)}`);
+  // The aborted turn itself is NOT prefixed — nothing preceded it.
+  assert.equal(seen[0], "hung");
+  // The next turn is, and the operator's own words survive intact after it.
+  assert.ok(
+    seen[1]!.includes("auto-aborted"),
+    `expected the next turn's input to carry an abort-artifact note, got: ${JSON.stringify(seen[1])}`,
+  );
+  assert.ok(
+    seen[1]!.endsWith("what happened?"),
+    `expected the operator's message to be preserved verbatim at the end, got: ${JSON.stringify(seen[1])}`,
+  );
+});
+
+test("RCA item 6: the abort-artifact prefix is one-shot — it does not leak into a third turn", async () => {
+  // The note describes the immediately preceding turn. Left sticky it would
+  // assert an abort that did not happen, which is its own ghost.
+  const { transport } = makeStubTransport([
+    messageUpdate(1, "hung"),
+    messageUpdate(2, "second"),
+    messageUpdate(3, "third"),
+    { ok: true, result: [] },
+  ]);
+  const seen: string[] = [];
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (input, emit, signal) => {
+      seen.push(input);
+      if (input.includes("hung")) {
+        await new Promise<void>((resolve) => {
+          signal?.addEventListener("abort", () => resolve());
+        });
+        return;
+      }
+      emit("ok", "text");
+    },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    turnTimeoutMs: 30,
+  });
+
+  await bridge.drainOnce();
+  await bridge.drainOnce();
+  await bridge.drainOnce();
+  for (let i = 0; i < 100 && seen.length < 3; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  await bridge.stop();
+
+  assert.equal(seen.length, 3, `expected three turns, got: ${JSON.stringify(seen)}`);
+  assert.ok(seen[1]!.includes("auto-aborted"));
+  assert.equal(seen[2], "third", "the third turn must be unprefixed — no abort preceded it");
+});
+
+test("RCA item 6: a normally completed turn never prefixes the next one", async () => {
+  const { transport } = makeStubTransport([
+    messageUpdate(1, "first"),
+    messageUpdate(2, "second"),
+    { ok: true, result: [] },
+  ]);
+  const seen: string[] = [];
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (input, emit) => { seen.push(input); emit("ok", "text"); },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await bridge.drainOnce();
+  for (let i = 0; i < 100 && seen.length < 2; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  await bridge.stop();
+
+  assert.deepEqual(seen, ["first", "second"]);
+});
+
+test("RCA item 8: a turn logs its start plus the FIFO depth at that moment", async () => {
+  // Only completion/abort were logged before this, which is exactly why the
+  // RCA had to cross-reference SDK session JSONL to establish when a turn
+  // began. A start line with queue depth makes the bridge log self-sufficient.
+  const { transport } = makeStubTransport([
+    messageUpdate(1, "hello"),
+    { ok: true, result: [] },
+  ]);
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (_input, emit) => { emit("hi", "text"); },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  const logSpy: string[] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => { logSpy.push(args.map(String).join(" ")); };
+  try {
+    await bridge.drainOnce();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await bridge.stop();
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.ok(
+    logSpy.some((line) => /\[telegram-bridge\] turn started \(queue depth 0\)/.test(line)),
+    `expected a "turn started (queue depth N)" log line, got: ${JSON.stringify(logSpy)}`,
+  );
+});
+
+test("RCA item 8: the turn-start line reports the real backlog when messages are queued", async () => {
+  // Depth is what makes the line diagnostic: a turn starting behind a backlog
+  // is the signature of the single-flight drain falling behind.
+  const { transport } = makeStubTransport([
+    { ok: true, result: [
+      { update_id: 1, message: { message_id: 1, chat: { id: 12345 }, text: "one" } },
+      { update_id: 2, message: { message_id: 2, chat: { id: 12345 }, text: "two" } },
+      { update_id: 3, message: { message_id: 3, chat: { id: 12345 }, text: "three" } },
+    ] },
+    { ok: true, result: [] },
+  ]);
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (_input, emit) => { emit("ok", "text"); },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  const logSpy: string[] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => { logSpy.push(args.map(String).join(" ")); };
+  try {
+    await bridge.drainOnce();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await bridge.stop();
+  } finally {
+    console.log = originalLog;
+  }
+
+  const startLines = logSpy.filter((line) => line.includes("turn started"));
+  assert.equal(startLines.length, 3, `expected one start line per turn, got: ${JSON.stringify(logSpy)}`);
+  // Depths are the remaining backlog at each turn's start: 2, then 1, then 0.
+  assert.ok(startLines[0]!.includes("queue depth 2"), `got: ${startLines[0]}`);
+  assert.ok(startLines[1]!.includes("queue depth 1"), `got: ${startLines[1]}`);
+  assert.ok(startLines[2]!.includes("queue depth 0"), `got: ${startLines[2]}`);
+});
+
+test("RCA item 9: a synthesis failure truncates the error detail in the log", async () => {
+  // One real failure wrote a 9,696-char private reply into the bridge log:
+  // synthesize.py is invoked with the reply text as argv, so an execFile
+  // timeout error echoes the whole reply back in its message. The log must
+  // stay diagnostic without becoming a transcript of Gary's private replies.
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) return { ok: true, json: async () => voiceReplyUpdate("v-trunc") } as Response;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+  const secret = "SECRET".repeat(2000);   // 12,000 chars, as if the reply leaked into the error
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (_input, emit) => emit("reply text", "text"),
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    downloadFileFn: async () => {},
+    transcribeFn: async () => "say something",
+    synthesizeFn: async () => { throw new Error(`synthesize failed (exit 1): ${secret}`); },
+    convertToOggFn: async () => {},
+    sendVoiceFn: async () => {},
+  });
+
+  const errSpy: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => { errSpy.push(args.map(String).join(" ")); };
+  try {
+    await bridge.drainOnce();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await bridge.stop();
+  } finally {
+    console.error = originalError;
+  }
+
+  const failureLine = errSpy.find((line) => line.includes("voice reply synthesis failed"));
+  assert.ok(failureLine, `expected a synthesis-failure log line, got: ${JSON.stringify(errSpy)}`);
+  assert.ok(
+    failureLine!.length < 1000,
+    `expected the failure line to be capped well under the 12k error detail, got ${failureLine!.length} chars`,
+  );
+  // The head of the detail survives — the cap must not destroy diagnosability.
+  assert.ok(
+    failureLine!.includes("synthesize failed (exit 1)"),
+    `expected the leading diagnostic to survive truncation, got: ${failureLine}`,
+  );
+  // ...and the truncation is announced rather than silent.
+  assert.ok(
+    failureLine!.includes("truncated"),
+    `expected the line to mark itself truncated, got: ${failureLine}`,
+  );
+});
+
+test("RCA item 9: a short synthesis error is logged intact, with no truncation marker", async () => {
+  // The cap must be a ceiling, not a reformat — ordinary failures keep their
+  // full message.
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/getUpdates")) return { ok: true, json: async () => voiceReplyUpdate("v-short") } as Response;
+    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+  };
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (_input, emit) => emit("reply text", "text"),
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    downloadFileFn: async () => {},
+    transcribeFn: async () => "say something",
+    synthesizeFn: async () => { throw new Error("ffmpeg not found"); },
+    convertToOggFn: async () => {},
+    sendVoiceFn: async () => {},
+  });
+
+  const errSpy: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => { errSpy.push(args.map(String).join(" ")); };
+  try {
+    await bridge.drainOnce();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await bridge.stop();
+  } finally {
+    console.error = originalError;
+  }
+
+  const failureLine = errSpy.find((line) => line.includes("voice reply synthesis failed"));
+  assert.ok(failureLine, `expected a synthesis-failure log line, got: ${JSON.stringify(errSpy)}`);
+  assert.ok(failureLine!.includes("ffmpeg not found"), `got: ${failureLine}`);
+  assert.ok(!failureLine!.includes("truncated"), `short errors must not be marked truncated, got: ${failureLine}`);
+});
+
 test("a voice-origin turn answers in voice regardless of reply length — no character cap", async () => {
   const longReply = "x".repeat(5000);
   const transport: typeof fetch = async (input) => {
