@@ -790,6 +790,8 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
           // Say it plainly rather than delivering a truncated turn as if it
           // were a complete answer.
           logError(`[telegram-bridge] turn exceeded ${turnTimeoutMs}ms — aborted, draining next message.`);
+          // Inoculate the next turn against this abort's rejection residue.
+          pendingAbortNotice = true;
           buffer.push(`[Rachel] That turn ran past ${Math.round(turnTimeoutMs / 60000)} minutes and I cut it off. Ask again if you still need it, or say "background it" and I'll run it as a detached loop and ping you when it's done.`);
         } else if (turnErrored) {
           // A crashed turn is not a completed one — logging it as "completed"
