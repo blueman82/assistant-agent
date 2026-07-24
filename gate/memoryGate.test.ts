@@ -412,7 +412,8 @@ test("hook throws exception -> the actual error is audit-logged, not just a gene
 test("a call that produces no deny writes no audit row (pass-through is not logged as an event)", async () => {
   const auditPath = joinPath(mkdtempSync(joinPath(tmpdir(), "memorygate-audit-")), "audit.jsonl");
   const hook = createMemoryGateHook(auditPath);
-  const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", "---\nname: some-fact\n---\n");
+  const validContent = "---\nname: some-fact\ndescription: a one-line fact\ntype: reference\n---\n\nBody text.\n";
+  const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", validContent);
   const result = await hook(input, undefined, { signal: new AbortController().signal });
   assert.deepEqual(result, {});
   assert.throws(() => readFileSync(auditPath));
