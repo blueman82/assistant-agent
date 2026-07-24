@@ -771,6 +771,14 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
 
         // Ticker state — mutated only by the closures below, all of which
         // run on this turn's iteration of the loop.
+        // Set once the turn's own try/finally has run. clearTimeout on
+        // graceTimer/renderTimer only cancels a callback that hasn't fired
+        // yet — it cannot stop one already suspended at an await. tickerDone
+        // is what those already-fired callbacks check on the other side of
+        // that await, so a render or placeholder-send that resolves after
+        // the turn has ended bails out instead of rescheduling and editing
+        // a "done" ticker message post-hoc.
+        let tickerDone = false;
         let tickerMessageId: number | null = null;
         let latestEvent: string | null = null;
         let lastSentTickerText: string | null = null;
