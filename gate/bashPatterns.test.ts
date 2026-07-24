@@ -95,6 +95,32 @@ test("calendar events with short -d and no -X POST -> true", () => {
   );
 });
 
+// curl also accepts -d with its value attached rather than space-separated,
+// which is at least as idiomatic as the spaced form.
+
+test("calendar events with attached -d@file and no -X POST -> true", () => {
+  assert.equal(
+    matchesBashSendPattern("curl -d@body.json https://www.googleapis.com/calendar/v3/calendars/primary/events"),
+    true,
+  );
+});
+
+test("calendar events with attached -d'{...}' and no -X POST -> true", () => {
+  assert.equal(
+    matchesBashSendPattern(
+      `curl -d'{"summary":"x"}' https://www.googleapis.com/calendar/v3/calendars/primary/events`,
+    ),
+    true,
+  );
+});
+
+test("calendar events with attached -dkey=value and no -X POST -> true", () => {
+  assert.equal(
+    matchesBashSendPattern("curl -dsummary=x https://www.googleapis.com/calendar/v3/calendars/primary/events"),
+    true,
+  );
+});
+
 test("calendar events GET with unrelated flags starting in d -> false, since no body is sent", () => {
   assert.equal(
     matchesBashSendPattern(
