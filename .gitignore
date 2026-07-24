@@ -38,6 +38,7 @@ tasks/*
 #   workflow.config.yaml  carries an absolute wiki_path under /Users/harrison
 .claude/
 evals/
+.evals/
 workflow.config.yaml
 
 # The operator's own system prompt. prompts/system.md (tracked) is generic and
