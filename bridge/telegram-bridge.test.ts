@@ -4813,16 +4813,32 @@ test("ticker: skips an edit when the rendered text is unchanged since the last s
   const runTurnStub: BridgeRunTurn = async (_input, emit) => {
     emit("  [Bash] steady-event", "tool");
     await new Promise((r) => setTimeout(r, 600));
-    wakeDir,
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    typingIntervalMs: 100000,
+    tickerGraceMs: 10,
+    tickerJitterMinMs: 50,
+    tickerJitterMaxMs: 50,
   });
 
   await bridge.drainOnce();
-  await sleepMs(300);
+  await new Promise((resolve) => setTimeout(resolve, 700));
   await bridge.stop();
 
-  assert.deepEqual(realReaddirSync(wakeDir), ["nullwake.json.bad"], "a null wake file must be quarantined, not left as .json to replay");
-  assert.deepEqual(turnInputs, []);
-  assert.deepEqual(sentTexts(calls), [], "a quarantined wake produces no delivery");
+  const edits = calls.filter((c) => c.url.includes("/editMessageText"));
+  const editTexts = edits.map((c) => String((c.body as Record<string, unknown>)["text"] ?? ""));
+  // ~600ms at a 50ms render cadence is ~12 render attempts, but elapsed only
+  // advances in whole seconds, so an un-guarded ticker would send ~12
+  // edits; a guarded one sends at most a couple (grace-expiry render + the
+  // terminal edit once elapsed crosses a second boundary or the turn ends).
+  assert.ok(edits.length <= 3, `expected skip-if-unchanged to suppress most same-second renders, got ${edits.length} edits: ${JSON.stringify(editTexts)}`);
 });
 
 test("wake consumer: the wake file is renamed .done BEFORE the turn is dispatched (at-most-once)", async () => {
