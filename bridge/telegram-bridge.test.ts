@@ -2499,8 +2499,12 @@ test("a turn that outruns turnTimeoutMs is aborted, tells Gary, and does not wed
   assert.ok(texts.some((t) => t.includes("cut it off")), `expected a timeout notice, got: ${JSON.stringify(texts)}`);
   // ...with the escalation ramp offering the background-it path.
   assert.ok(texts.some((t) => t.includes("background it")), `expected the notice to offer backgrounding, got: ${JSON.stringify(texts)}`);
-  // ...and the queue kept draining instead of wedging behind it.
-  assert.deepEqual(seen, ["first", "second"]);
+  // ...and the queue kept draining instead of wedging behind it. The second
+  // turn's input additionally carries the abort-artifact prefix (RCA item 6),
+  // so match on the operator's own message rather than exact equality.
+  assert.equal(seen.length, 2);
+  assert.equal(seen[0], "first");
+  assert.ok(seen[1]!.endsWith("second"), `expected the queued message to run, got: ${JSON.stringify(seen[1])}`);
 });
 
 test("a timed-out turn does not log 'turn completed in <ms>ms'", async () => {
