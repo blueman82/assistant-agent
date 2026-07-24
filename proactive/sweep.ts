@@ -161,6 +161,7 @@ function resolveSweepDeps(overrides?: Partial<SweepDeps>): SweepDeps {
     readDirFn: overrides?.readDirFn ?? defaultReadDirFn,
     lstatFn: overrides?.lstatFn ?? defaultLstatFn,
     unlinkFn: overrides?.unlinkFn ?? defaultUnlinkFn,
+    sleepFn: overrides?.sleepFn ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms))),
     sendFn: overrides?.sendFn,
     baseDir: overrides?.baseDir ?? join(homedir(), ".rachel", "proactive"),
     homeDir: overrides?.homeDir ?? homedir(),
