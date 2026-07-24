@@ -4300,7 +4300,10 @@ test("ticker: exponential backoff freezes after 3 consecutive edit failures and 
   await bridge.stop();
 
   assert.ok(dispatchedTurnCompleted, "a failing ticker must never prevent the turn itself from completing");
-  assert.ok(editAttempts >= 1, "expected at least one edit attempt before freezing");
+  // Exactly 3 consecutive failures freeze the ticker (no terminal edit
+  // attempt either, since it shares the same frozen guard) — proving the
+  // branch was entered, not merely that nothing threw.
+  assert.equal(editAttempts, 3, `expected the ticker to stop after exactly 3 consecutive failures, got ${editAttempts} attempts`);
 });
 
 test("ticker: never fires under 120 edits — the edit cap is enforced even on an extremely long turn", async () => {
