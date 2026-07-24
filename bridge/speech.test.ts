@@ -2,26 +2,28 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { transcribe, synthesize, convertToOgg, synthesizeTimeoutMs, type ExecFileFn } from "./speech.ts";
 
+type Captured = { cmd: string; args: string[]; timeoutMs: number; env?: NodeJS.ProcessEnv };
+
 function stubExec(result: { stdout?: string; stderr?: string; exitCode?: number }): {
   fn: ExecFileFn;
-  calls: { cmd: string; args: string[]; timeoutMs: number }[];
+  calls: Captured[];
 } {
-  const calls: { cmd: string; args: string[]; timeoutMs: number }[] = [];
-  const fn: ExecFileFn = async (cmd, args, timeoutMs) => {
-    calls.push({ cmd, args, timeoutMs });
+  const calls: Captured[] = [];
+  const fn: ExecFileFn = async (cmd, args, timeoutMs, env) => {
+    calls.push({ cmd, args, timeoutMs, env });
     return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", exitCode: result.exitCode ?? 0 };
   };
   return { fn, calls };
 }
 
-test("transcribe() shells out to the venv python with transcribe.py, the audio path, and a 30s timeout", async () => {
+test("transcribe() shells out to the venv python with transcribe.py, the audio path, and a 2-minute timeout", async () => {
   const { fn, calls } = stubExec({ stdout: "hello there\n" });
   await transcribe("/tmp/voice.ogg", fn);
   assert.equal(calls.length, 1);
   assert.match(calls[0]!.cmd, /\.rachel\/venvs\/speech\/bin\/python$/);
   assert.match(calls[0]!.args[0]!, /scripts\/speech\/transcribe\.py$/);
   assert.equal(calls[0]!.args[1], "/tmp/voice.ogg");
-  assert.equal(calls[0]!.timeoutMs, 30_000);
+  assert.equal(calls[0]!.timeoutMs, 120_000);
 });
 
 test("transcribe() trims trailing whitespace/newline from stdout", async () => {
