@@ -556,6 +556,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
 
   // Tilde expansion: watchdogDir must be an absolute path — Node's fs never expands ~.
   const watchdogDir = options.watchdogDir ?? join(homedir(), ".rachel", "loops");
+  const wakeDir = options.wakeDir ?? join(homedir(), ".rachel", "wake");
   const resolvedFs = options.fsFn ?? defaultFsFn();
   const resolvedIsPidAlive = options.isPidAliveFn ?? isPidAlive;
   const resolvedConflictBackoffMs = options.conflictBackoffMs ?? CONFLICT_BACKOFF_MS;
