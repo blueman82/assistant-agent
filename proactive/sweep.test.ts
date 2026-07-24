@@ -1538,7 +1538,7 @@ test("the tmp sweep never pushes — routine hygiene must not spend the interrup
   assert.deepEqual(h.pushes.filter((p) => p.family === "tmp-sweep"), []);
 });
 
-test("a failing readdir is contained to the tmp-sweep family and never blocks the others", async () => {
+test("a failing readdir surfaces as a family failure and leaves every other family untouched", async () => {
   const h = makeHarness();
   h.deps.readDirFn = () => {
     throw new Error("EIO: readdir blew up");
@@ -1546,7 +1546,10 @@ test("a failing readdir is contained to the tmp-sweep family and never blocks th
   const results = await sweepTick(h.deps);
   assert.equal(results["tmp-sweep"], "failed");
   assert.ok(h.logs.some((line) => line.includes("tmp-sweep error")), `expected a tmp-sweep error log: ${JSON.stringify(h.logs)}`);
-  assert.equal(results["memory-lint"], "ok", "the later family still ran after tmp-sweep failed");
+  // tmp-sweep runs last, so containment here means the families that already
+  // ran are unaffected and the tick still returns their results.
+  assert.equal(results["memory-lint"], "ok");
+  assert.equal(results["bridge-liveness"], "ok");
 });
 
 test("the tmp sweep only ever touches paths under the injected homeDir's .rachel/tmp", async () => {
