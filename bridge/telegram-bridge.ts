@@ -868,8 +868,16 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         try {
           await Promise.race([
             runTurn(text, (line, kind) => {
-              if (kind === "text") buffer.push(line);
-              else if (kind === "tool") latestEvent = line.trim();
+              if (kind === "text") {
+                buffer.push(line);
+                // The ticker's event is the most recent of a tool line OR
+                // the first line of the latest completed text block — a
+                // text-only turn must still show live ticker progress, not
+                // a frozen placeholder from before the first text block.
+                latestEvent = line.split("\n")[0]!.trim();
+              } else if (kind === "tool") {
+                latestEvent = line.trim();
+              }
             }, abortController.signal),
             deadline,
           ]);
