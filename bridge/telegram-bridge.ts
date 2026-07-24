@@ -777,13 +777,13 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         let tickerEditCount = 0;
         let tickerConsecutiveFailures = 0;
         let tickerFrozen = false;
-        let tickerCadenceMs = TICKER_JITTER_MIN_MS;
+        let tickerCadenceMs = tickerJitterMinMs;
         let graceTimer: ReturnType<typeof setTimeout> | undefined;
         let renderTimer: ReturnType<typeof setTimeout> | undefined;
 
         function jitteredCadence(): number {
-          const span = TICKER_JITTER_MAX_MS - TICKER_JITTER_MIN_MS;
-          return tickerCadenceMs + Math.floor(Math.random() * span);
+          const span = tickerJitterMaxMs - tickerJitterMinMs;
+          return tickerCadenceMs + (span > 0 ? Math.floor(Math.random() * span) : 0);
         }
 
         // One ticker render: skip if the rendered text is unchanged (belt),
@@ -791,7 +791,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         // anyway (braces) — either way this must never throw into the drain
         // loop or affect the turn.
         async function renderTickerOnce(): Promise<void> {
-          if (tickerFrozen || tickerMessageId === null || tickerEditCount >= TICKER_MAX_EDITS) return;
+          if (tickerFrozen || tickerMessageId === null || tickerEditCount >= tickerMaxEdits) return;
           const rendered = renderTickerLine(Date.now() - turnStartedMs, latestEvent);
           if (rendered === lastSentTickerText) return;
           try {
@@ -799,7 +799,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
             lastSentTickerText = rendered;
             tickerEditCount++;
             tickerConsecutiveFailures = 0;
-            tickerCadenceMs = TICKER_JITTER_MIN_MS;
+            tickerCadenceMs = tickerJitterMinMs;
           } catch (err) {
             if (err instanceof TelegramRetryAfterError) {
               // Honour the hint, then double future cadence — the server
@@ -814,7 +814,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
             if (err instanceof Error && /not modified/i.test(err.message)) return;
             tickerConsecutiveFailures++;
             tickerCadenceMs = Math.min(tickerCadenceMs * 2, 60_000);
-            if (tickerConsecutiveFailures >= TICKER_FREEZE_AFTER_FAILURES) tickerFrozen = true;
+            if (tickerConsecutiveFailures >= tickerFreezeAfterFailures) tickerFrozen = true;
           }
         }
 
@@ -843,7 +843,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
               // Never affects the turn.
             }
           })();
-        }, TICKER_GRACE_MS);
+        }, tickerGraceMs);
 
         // Turn-level deadline. runTurn can await a hung upstream call forever,
         // and drainFifo is single-flight — so an unbounded turn wedges the whole
