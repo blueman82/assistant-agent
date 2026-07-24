@@ -115,12 +115,12 @@ const DEFAULT_TICKER_FREEZE_AFTER_FAILURES = 3;
 const TICKER_EVENT_MAX_CHARS = 100;
 const TICKER_LINE_MAX_CHARS = 200;
 
-// "3s" under a minute, "1m05s" at or past a minute.
+// Spec format: always minutes + zero-padded seconds, e.g. "0m03s", "4m32s".
 function formatElapsed(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
-  return minutes > 0 ? `${minutes}m${seconds}s` : `${seconds}s`;
+  return `${minutes}m${String(seconds).padStart(2, "0")}s`;
 }
 
 function truncate(text: string, maxChars: number): string {
