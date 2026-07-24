@@ -4431,3 +4431,100 @@ test("ticker: jitter cadence stays within the configured [min, max) bounds acros
     assert.ok(gap <= jitterMax + 20, `expected inter-edit gap <= ~${jitterMax}ms, got ${gap}ms`);
   }
 });
+
+test("ticker: a ticker edit that throws never propagates into the drain loop — the turn still completes and the reply still sends", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
+  const recordingTransport: typeof transport = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
+    if (url.includes("/editMessageText")) {
+      // Simulate a transport-level throw (not a well-formed Telegram error
+      // response) — the harshest failure shape, to prove renderTickerOnce's
+      // try/catch really isolates the drain loop from ANY editMessageText
+      // failure, not just ones shaped like a normal tg() Error.
+      throw new Error("network exploded");
+    }
+    return transport(input, init);
+  };
+
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("  [Bash] event-a", "tool");
+    await new Promise((r) => setTimeout(r, 400));
+    emit("Job finished.", "text");
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    typingIntervalMs: 100000,
+    tickerGraceMs: 10,
+    tickerJitterMinMs: 20,
+    tickerJitterMaxMs: 20,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  await bridge.stop();
+
+  const sends = calls.filter((c) => c.url.includes("/sendMessage"));
+  const finalReply = sends.find(
+    (c) => String((c.body as Record<string, unknown>)["text"] ?? "").includes("Job finished.") &&
+      (c.body as Record<string, unknown>)["disable_notification"] !== true,
+  );
+  assert.ok(finalReply, "expected the final reply to still be sent even though every ticker edit threw");
+});
+
+test("ticker: a voice-origin turn's ticker edits carry only elapsed time and tool events — never the spoken reply text", async () => {
+  const { transport, calls } = makeStubTransport([
+    voiceReplyUpdate("v1"),
+    { ok: true, result: [] },
+  ]);
+  const recordingTransport: typeof transport = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
+    return transport(input, init);
+  };
+
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("  [Bash] check-calendar", "tool");
+    await new Promise((r) => setTimeout(r, 400));
+    emit("Nothing on today, all clear for the afternoon.", "text");
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    typingIntervalMs: 100000,
+    downloadFileFn: async () => {},
+    transcribeFn: async () => "what's on today",
+    synthesizeFn: async () => {},
+    convertToOggFn: async () => {},
+    sendVoiceFn: async () => {},
+    tickerGraceMs: 10,
+    tickerJitterMinMs: 20,
+    tickerJitterMaxMs: 20,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  await bridge.stop();
+
+  const edits = calls.filter((c) => c.url.includes("/editMessageText"));
+  assert.ok(edits.length >= 1, "expected at least one ticker edit for a voice turn that outruns the grace window");
+  const editTexts = edits.map((c) => String((c.body as Record<string, unknown>)["text"] ?? ""));
+  assert.ok(
+    !editTexts.some((t) => t.includes("Nothing on today") || t.includes("all clear")),
+    `no ticker edit should carry the spoken reply prose, got: ${JSON.stringify(editTexts)}`,
+  );
+});
