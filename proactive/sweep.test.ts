@@ -1770,6 +1770,23 @@ test("a missing heartbeat is not treated as evidence of a turn in flight", async
   assert.ok(subs.includes("bootout"), "no heartbeat evidence means proceed, not skip");
 });
 
+test("a corrupt (unparseable) heartbeat is not treated as evidence of a turn in flight", async () => {
+  // Same positive-evidence-only reasoning as the missing-heartbeat case
+  // above, exercised for turnInFlight's JSON.parse catch specifically —
+  // a half-written or damaged heartbeat file must not permanently disable
+  // remediation on the bridge most likely to need it.
+  const h = staleHarness({ etime: "05:00:00" });
+  h.deps.readFileFn = (path) => {
+    if (path.endsWith("bridge-heartbeat.json")) {
+      return "{not valid json";
+    }
+    return h.files.get(path);
+  };
+  await sweepTick(h.deps);
+  const subs = h.execCalls.filter((c) => c.cmd === "launchctl").map((c) => c.args[0]);
+  assert.ok(subs.includes("bootout"), "corrupt heartbeat evidence means proceed, not skip");
+});
+
 test("a long-finished turn does not block the restart", async () => {
   const h = staleHarness({ etime: "05:00:00" });
   h.deps.readFileFn = (path) => {
