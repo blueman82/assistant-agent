@@ -4047,26 +4047,14 @@ test("ticker: a turn that outruns the grace window sends a silent placeholder, t
   assert.ok(finalReply, "expected the final reply to be sent as its own notifying message");
 });
 
-function tickerStubTransport() {
-  const calls: { url: string; body: Record<string, unknown> }[] = [];
-  const transport: typeof fetch = async (input, init) => {
-    const url = String(input);
-    const body = init?.body ? (JSON.parse(init.body as string) as Record<string, unknown>) : {};
-    calls.push({ url, body });
-    if (url.includes("/getUpdates")) return { ok: true, json: async () => ({ ok: true, result: [] }) } as Response;
-    if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
-    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
-  };
-  return { transport, calls };
-}
-
 test("ticker: terminal edit on a turn that errors reads 'failed', not 'done'", async () => {
-  const { transport } = tickerStubTransport();
-  const calls: { url: string; body: Record<string, unknown> }[] = [];
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
   const recordingTransport: typeof transport = async (input, init) => {
     const url = String(input);
-    const body = init?.body ? (JSON.parse(init.body as string) as Record<string, unknown>) : {};
-    calls.push({ url, body });
+    if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
     return transport(input, init);
   };
 
@@ -4091,19 +4079,19 @@ test("ticker: terminal edit on a turn that errors reads 'failed', not 'done'", a
   await bridge.stop();
 
   const edits = calls.filter((c) => c.url.includes("/editMessageText"));
-  const lastEditText = String(edits.at(-1)?.body["text"] ?? "");
+  const lastEditText = String((edits.at(-1)?.body as Record<string, unknown> | undefined)?.["text"] ?? "");
   assert.match(lastEditText, /^failed —/, `expected terminal edit to read "failed — ...", got: ${lastEditText}`);
 });
 
 test("ticker: terminal edit on a turn that times out reads 'timed out', not 'done'", async () => {
-  const calls: { url: string; body: Record<string, unknown> }[] = [];
-  const transport: typeof fetch = async (input, init) => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
+  const recordingTransport: typeof transport = async (input, init) => {
     const url = String(input);
-    const body = init?.body ? (JSON.parse(init.body as string) as Record<string, unknown>) : {};
-    calls.push({ url, body });
-    if (url.includes("/getUpdates")) return { ok: true, json: async () => ({ ok: true, result: [] }) } as Response;
     if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
-    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+    return transport(input, init);
   };
 
   const runTurnStub: BridgeRunTurn = async (_input, emit) => {
@@ -4113,7 +4101,7 @@ test("ticker: terminal edit on a turn that times out reads 'timed out', not 'don
 
   const bridge = createBridge({
     ...basePushOpts(),
-    config: { token: "t", chatId: "12345", transport },
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
     resetSession: () => {},
@@ -4127,19 +4115,19 @@ test("ticker: terminal edit on a turn that times out reads 'timed out', not 'don
   await bridge.stop();
 
   const edits = calls.filter((c) => c.url.includes("/editMessageText"));
-  const lastEditText = String(edits.at(-1)?.body["text"] ?? "");
+  const lastEditText = String((edits.at(-1)?.body as Record<string, unknown> | undefined)?.["text"] ?? "");
   assert.match(lastEditText, /^timed out —/, `expected terminal edit to read "timed out — ...", got: ${lastEditText}`);
 });
 
 test("ticker: coalesces to the latest event only — an edit never carries a stale earlier event once a newer one arrives", async () => {
-  const calls: { url: string; body: Record<string, unknown> }[] = [];
-  const transport: typeof fetch = async (input, init) => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
+  const recordingTransport: typeof transport = async (input, init) => {
     const url = String(input);
-    const body = init?.body ? (JSON.parse(init.body as string) as Record<string, unknown>) : {};
-    calls.push({ url, body });
-    if (url.includes("/getUpdates")) return { ok: true, json: async () => ({ ok: true, result: [] }) } as Response;
     if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
-    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+    return transport(input, init);
   };
 
   const runTurnStub: BridgeRunTurn = async (_input, emit) => {
