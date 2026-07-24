@@ -4493,6 +4493,60 @@ test("ticker: a ticker edit that throws never propagates into the drain loop —
   assert.ok(finalReply, "expected the final reply to still be sent even though every ticker edit threw");
 });
 
+test("ticker: a text-only turn (no tool calls) still shows live progress — the first line of the latest completed text block feeds the ticker", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
+  const recordingTransport: typeof transport = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
+    return transport(input, init);
+  };
+
+  // No "tool" emits at all — only completed text blocks, mirroring a turn
+  // that narrates in prose rather than calling tools. The ticker must still
+  // show live progress from the first (non-final) text block, not sit
+  // frozen on the neutral placeholder for the whole turn.
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("Step one: reading the config.\nMore detail on the next line.", "text");
+    await new Promise((r) => setTimeout(r, 3200));
+    emit("Job finished.", "text");
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    typingIntervalMs: 100000,
+  });
+
+  await bridge.drainOnce();
+  // Sample strictly before the turn ends (3500ms wait vs. a 3200ms-delayed
+  // final emit) so any edit observed here is mid-turn, not the terminal one.
+  await new Promise((resolve) => setTimeout(resolve, 3500));
+
+  const editsSoFar = calls.filter((c) => c.url.includes("/editMessageText"));
+  const editTexts = editsSoFar.map((c) => String((c.body as Record<string, unknown>)["text"] ?? ""));
+  assert.ok(editsSoFar.length >= 1, `expected at least one editMessageText for a text-only turn past the grace window, got ${editsSoFar.length}`);
+  assert.ok(
+    editTexts.some((t) => t.includes("Step one: reading the config.")),
+    `expected an edit carrying the first line of the latest completed text block, got: ${JSON.stringify(editTexts)}`,
+  );
+  // Only the FIRST line of the text block, never the second — a multi-line
+  // text block must not spill its later lines into the single-line ticker.
+  assert.ok(
+    !editTexts.some((t) => t.includes("More detail on the next line.")),
+    `no edit should carry text beyond the first line of the block, got: ${JSON.stringify(editTexts)}`,
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await bridge.stop();
+});
+
 test("ticker: a voice-origin turn's ticker edits carry only elapsed time and tool events — never the spoken reply text", async () => {
   const { transport, calls } = makeStubTransport([
     voiceReplyUpdate("v1"),
