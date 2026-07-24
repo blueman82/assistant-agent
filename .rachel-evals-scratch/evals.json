@@ -11,6 +11,11 @@
       "eval": "ALL",
       "when": "2026-07-24T08:22:08Z",
       "why": "DISCLOSED: this evals.json was authored after PR #71 was already implemented and merged-state-reviewed (no pre-frozen pr-scope evals.json existed for this RCA-batch fix, per the task owner's explicit instruction). frozen_sha is stamped as the branch's real current HEAD at authoring time, not backdated; frozen_at is the real authoring timestamp, not backdated. Every eval was written and smoke-run fresh against the merged sweepTick surface using independently-written driver scripts (not the PR's own sweep.test.ts fixtures or makeHarness), to preserve oracle independence per rule 4. This matches the disclosed pattern already used for PR #69 (merged) and PR #70 (gated)."
+    },
+    {
+      "eval": "E1,E2,E3,E4",
+      "when": "2026-07-24T09:45:00Z",
+      "why": "GATE FAILURE FIX: merge.sh's smoke_verify re-executes every scripted eval's cmd in a bare `git worktree add --detach` checkout of the trusted head — no `npm install`, so no node_modules. Two independent problems surfaced there: (1) E4's original cmd was `npm run typecheck`, which shells out to bare `tsc` (a devDependency binary) and exited 127 (command not found) at the gate, even though it passed locally in a worktree that already had node_modules installed. Fixed by rewriting E4 as a pure grep against the committed source (proactive/sweep.ts) for the three safety-critical tokens the tmp-sweep family depends on (the age-cutoff constant, the isFile guard, the family's wiring into sweepTick) — no build tool, so it is gate-executable in a bare checkout. Verified npx tsc --noEmit is ALSO broken in a bare checkout (resolves to an unrelated npm package literally named tsc, not the TypeScript compiler), so that was not a viable substitute. (2) E1/E2/E3's driver scripts (.rachel-evals-scratch/e{1,2,3}_*.mjs) were untracked in git, so the gate's bare checkout of the trusted SHA didn't contain them either — `npx tsx <script>` would have failed the same way E4 did (file not found) on the very next gate run. Committed all six driver scripts so they exist at the head the artifact binds to. Re-ran smoke-run (not hand-written) after both fixes; all four evals now show cmd_exit 0 and a content-based non-zero negative_control_exit in a real gate-equivalent bare checkout."
     }
   ],
   "evals": [
