@@ -1730,5 +1730,6 @@ test("grep guard: no test in this file can bootout the real bridge — every lau
   // factories assign one, and staleHarness additionally stubs sleepFn, so no
   // poll loop can ever really wait.
   assert.match(source, /function makeHarness[\s\S]*?execFn: async/, "makeHarness stubs execFn");
-  assert.match(source, /function staleHarness[\s\S]*?sleepFn: async \(\) => \{\}/, "staleHarness stubs sleepFn");
+  assert.match(source, /function staleHarness[\s\S]*?h\.deps\.execFn = staleExecFn/, "staleHarness stubs execFn");
+  assert.match(source, /function staleHarness[\s\S]*?h\.deps\.sleepFn = async/, "staleHarness stubs sleepFn so no poll loop really waits");
 });
