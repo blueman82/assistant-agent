@@ -13,7 +13,8 @@ import { join as joinPath } from "node:path";
 
 const testQueueDir = mkdtempSync(joinPath(tmpdir(), "rachel-test-queue-"));
 process.env["RACHEL_QUEUE_DIR"] = testQueueDir;
-process.env["RACHEL_AUDIT_LOG_PATH"] = joinPath(testQueueDir, "audit.jsonl");
+const testAuditLogPath = joinPath(testQueueDir, "audit.jsonl");
+process.env["RACHEL_AUDIT_LOG_PATH"] = testAuditLogPath;
 process.env["RACHEL_MEMORY_PATH"] = joinPath(testQueueDir, "memory", "MEMORY.md");
 
 globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
