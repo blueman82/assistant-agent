@@ -71,6 +71,14 @@ export interface CreateBridgeOptions {
   nowFn?: () => Date;          // clock seam — heartbeat timestamps + push() quiet-hours/dedup decisions
   heartbeatPath?: string;      // defaults to ~/.rachel/bridge-heartbeat.json (expanded, not ~)
   pushBaseDir?: string;        // push() state-store dir — defaults to ~/.rachel/proactive (expanded, not ~)
+  // Streaming ticker timing — all default to the spec's real values
+  // (TICKER_GRACE_MS etc. below); injectable so tests can observe jitter,
+  // backoff, freeze, and the edit cap without waiting out real minutes.
+  tickerGraceMs?: number;
+  tickerJitterMinMs?: number;
+  tickerJitterMaxMs?: number;
+  tickerMaxEdits?: number;
+  tickerFreezeAfterFailures?: number;
 }
 
 interface TelegramUpdate {
