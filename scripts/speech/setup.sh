@@ -21,7 +21,16 @@
 #      which Kokoro's English G2P needs at runtime; bare `misaki` installs
 #      without them and fails with "ModuleNotFoundError: num2words" the
 #      first time synthesize.py actually runs.
-#   5. Print PASS/FAIL and exit nonzero on any step failure — a partial venv
+#   5. Pre-fetch and verify both HuggingFace models into the local cache:
+#      mlx-community/whisper-small.en-mlx (scripts/speech/transcribe.py) and
+#      mlx-community/Kokoro-82M-bf16 (scripts/speech/synthesize.py). This is
+#      the safety net for bridge/speech.ts's HF_HUB_OFFLINE=1: with offline
+#      mode on, a cold cache stops being a slow download and becomes a hard
+#      failure at voice time, so setup must guarantee the cache is warm. The
+#      verify pass re-resolves each model with HF_HUB_OFFLINE=1 — exactly the
+#      condition the bridge runs under — so a partial download fails here
+#      rather than on Gary's next voice note.
+#   6. Print PASS/FAIL and exit nonzero on any step failure — a partial venv
 #      must never look like a working one.
 set -u
 
@@ -58,6 +67,37 @@ echo "PASS  venv present: $VENV_DIR"
 "$VENV_DIR/bin/pip" install --upgrade pip >/dev/null 2>&1 || die "pip upgrade failed in $VENV_DIR"
 "$VENV_DIR/bin/pip" install mlx-whisper mlx-audio "misaki[en]" || die "pip install mlx-whisper mlx-audio misaki[en] failed"
 echo "PASS  packages installed: mlx-whisper mlx-audio misaki[en]"
+
+# Model IDs must match the repo refs the wrapper scripts request exactly —
+# scripts/speech/transcribe.py's path_or_hf_repo and scripts/speech/
+# synthesize.py's model= argument. A typo here makes the whole pre-fetch inert
+# because the bridge would ask offline mode for a repo nobody downloaded.
+WHISPER_MODEL="mlx-community/whisper-small.en-mlx"
+KOKORO_MODEL="mlx-community/Kokoro-82M-bf16"
+
+echo "Pre-fetching models (first run downloads several hundred MB, later runs are no-ops)..."
+"$VENV_DIR/bin/python" - "$WHISPER_MODEL" "$KOKORO_MODEL" <<'PY' || die "model pre-fetch failed — check network and HuggingFace availability"
+import sys
+from huggingface_hub import snapshot_download
+
+for repo_id in sys.argv[1:]:
+    path = snapshot_download(repo_id=repo_id)
+    print(f"  fetched {repo_id} -> {path}")
+PY
+echo "PASS  models fetched: $WHISPER_MODEL $KOKORO_MODEL"
+
+# Verify under the exact condition the bridge runs in: HF_HUB_OFFLINE=1 makes
+# snapshot_download resolve from the local cache only, raising if anything is
+# missing. A download that half-completed above fails here, not at voice time.
+HF_HUB_OFFLINE=1 "$VENV_DIR/bin/python" - "$WHISPER_MODEL" "$KOKORO_MODEL" <<'PY' || die "offline model verification failed — cache is incomplete; re-run setup with network access"
+import sys
+from huggingface_hub import snapshot_download
+
+for repo_id in sys.argv[1:]:
+    snapshot_download(repo_id=repo_id)
+    print(f"  verified offline: {repo_id}")
+PY
+echo "PASS  models resolve with HF_HUB_OFFLINE=1 (cache is warm)"
 
 echo ""
 echo "PASS: speech venv ready at $VENV_DIR"
