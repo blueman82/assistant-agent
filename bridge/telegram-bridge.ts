@@ -7,7 +7,7 @@
 // the Telegram approval surface's handleCallbackQuery — never queued behind
 // pending chat turns, since a gate decision may be blocking a turn.
 
-import { tg, sendChunked, sendTyping, setMyCommands, downloadFile, stripMarkdown, sendVoice, editMessageText, TelegramRetryAfterError, type ApiConfig } from "./api.ts";
+import { tg, sendChunked, sendTyping, setMyCommands, downloadFile, stripMarkdown, sendVoice, editMessageText, sendSilentMessage, TelegramRetryAfterError, type ApiConfig } from "./api.ts";
 import { transcribe, synthesize, convertToOgg } from "./speech.ts";
 import { push, type PushDeps, type Severity } from "../proactive/push.ts";
 import { homedir } from "node:os";
