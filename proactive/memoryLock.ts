@@ -171,11 +171,20 @@ export function acquireMemoryLock(path: string, opts: AcquireLockOptions): LockH
   // Break the stale lock and retry exactly once. A racing acquirer could
   // recreate it between our unlink and our retry create — that retry then
   // legitimately fails with EEXIST/contention, which is correct: the other
-  // caller won the race fairly.
+  // caller won the race fairly. Only ENOENT is silently ignored here (another
+  // breaker already removed it — fine); anything else (EACCES, EPERM, ...) is
+  // a real failure that must not be swallowed. A swallowed EACCES leaves the
+  // lockfile on disk, so the retry create below would see EEXIST again and
+  // report ordinary contention — masking a permissions problem as a
+  // misleading "lock timed out" instead of surfacing the real cause. Same
+  // ENOENT-vs-other idiom as isStale's readLockFile and withMemoryLock's
+  // LockContentionError check.
   try {
     rmSync(path, { force: true });
-  } catch {
-    /* another breaker may have already removed it — fine */
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw err;
+    }
   }
   if (tryCreate()) {
     return { acquiredAt };
