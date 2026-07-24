@@ -25,9 +25,15 @@ const CALENDAR_EVENTS_PATTERN = /googleapis\.com\/calendar\/v3\/calendars\/[^/]+
 // it must start a word with a single leading hyphen, and everything after it is
 // curl's value, whether attached (-d@file, -d'{...}', -dkey=value) or
 // space-separated. Requiring a single hyphen keeps --dump-header and every
-// other long flag from tripping it. This one alternative is case-sensitive:
-// curl's `-D` is dump-header, a read flag, and must not be mistaken for a body.
-const POST_METHOD_PATTERN = /-X\s*POST|--request\s+POST|--data\b|(^|\s)-d/;
+// other long flag from tripping it. It is kept as its own case-sensitive regex
+// because curl's `-D` is dump-header — a read flag — and must not be mistaken
+// for a body, while the markers above stay case-insensitive.
+const POST_METHOD_PATTERN = /-X\s*POST|--request\s+POST|--data\b/i;
+const SHORT_DATA_FLAG_PATTERN = /(^|\s)-d/;
+
+function sendsRequestBody(command: string): boolean {
+  return POST_METHOD_PATTERN.test(command) || SHORT_DATA_FLAG_PATTERN.test(command);
+}
 
 export function matchesBashSendPattern(command: string): boolean {
   if (SEND_PATTERNS.some((pattern) => pattern.test(command))) {
