@@ -39,5 +39,5 @@ export function matchesBashSendPattern(command: string): boolean {
   if (SEND_PATTERNS.some((pattern) => pattern.test(command))) {
     return true;
   }
-  return CALENDAR_EVENTS_PATTERN.test(command) && POST_METHOD_PATTERN.test(command);
+  return CALENDAR_EVENTS_PATTERN.test(command) && sendsRequestBody(command);
 }
