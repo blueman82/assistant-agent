@@ -39,16 +39,11 @@
       "assert": "Read-only calls on the same route surfaces the write patterns target (Slack chat.getPermalink, Telegram getUpdates, Gmail drafts list, calendar GET with -D/--dump-header) are NOT classified as sends — the gate must not over-block routine reads into approval friction.",
       "cmd": "cd /Users/harrison/Github/assistant-agent/.claude/worktrees/agent-abf9d1a2d1915ff50 && npx tsx -e \"import { matchesBashSendPattern } from '/Users/harrison/Github/assistant-agent/.claude/worktrees/agent-abf9d1a2d1915ff50/gate/bashPatterns.ts'; const cmds=['curl https://slack.com/api/chat.getPermalink?channel=C1&message_ts=1','curl https://api.telegram.org/bot123:ABC/getUpdates','curl https://www.googleapis.com/gmail/v1/users/me/drafts','curl -D headers.txt https://www.googleapis.com/calendar/v3/calendars/primary/events','curl --dump-header /dev/null https://www.googleapis.com/calendar/v3/calendars/primary/events']; const results=cmds.map(c=>matchesBashSendPattern(c)); if(results.every(r=>r===false)){console.log('ALL_FALSE');process.exit(0);}else{console.log('FAIL',JSON.stringify(results));process.exit(1);}\"",
       "negative_control": "cd /Users/harrison/Github/assistant-agent/.claude/worktrees/agent-abf9d1a2d1915ff50 && npx tsx -e \"import { matchesBashSendPattern } from '/Users/harrison/Github/assistant-agent/.claude/worktrees/agent-abf9d1a2d1915ff50/gate/bashPatterns.ts'; const r = matchesBashSendPattern('curl -X POST https://slack.com/api/chat.postMessage -d \\\\'{}\\\\''); if(r===true){process.exit(1);}else{process.exit(0);}\"",
-      "fixtures": {
-        "good": "n/a",
-        "bad": "n/a",
-        "formula": "n/a — negative_control below is a direct assertion inversion, not a piped formula; fixtures omitted deliberately"
-      },
       "smoke": {
         "cmd_exit": 0,
         "negative_control_exit": 1,
         "cmd_output": "ALL_FALSE",
-        "negative_control_output": "(exits 1 because chat.postMessage IS correctly classified true, inverting the assertion to prove the control fails for a real reason)"
+        "negative_control_output": ""
       },
       "status": "pass",
       "evidence": "cmd exited 0 printing ALL_FALSE (verified via npx tsx run 2026-07-24) — all 5 negative-surface reads correctly unclassified as sends. negative_control deliberately asserts the wrong thing (that a known send is NOT a send) and fails, proving the check isn't vacuously true."
@@ -64,8 +59,8 @@
       "smoke": {
         "cmd_exit": 0,
         "negative_control_exit": 1,
-        "cmd_output": "TYPECHECK_OK",
-        "negative_control_output": "CONTROL_FAILS_AS_EXPECTED"
+        "cmd_output": " > assistant-agent@0.1.0 typecheck > tsc --noEmit  TYPECHECK_OK",
+        "negative_control_output": "error TS6053: File '/dev/null/nonexistent-file-for-negative-control.ts' not found.   The file is in the program because:     Root file specified for compilation CONTROL_FAILS_AS_EXPECTED"
       },
       "status": "pass",
       "evidence": "npm run typecheck exits 0 cleanly (verified 2026-07-24 at SHA 6603527). negative_control points tsc at a nonexistent file, which correctly fails, proving the tsc invocation itself is capable of a non-zero exit."
