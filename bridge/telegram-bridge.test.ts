@@ -2871,8 +2871,14 @@ test("RCA item 6: /reset clears a pending abort notice — a fresh session has n
     turnTimeoutMs: 30,
   });
 
+  // Poll 1 starts the hung turn; wait for the 30ms deadline to actually abort
+  // it before /reset arrives. Draining all three polls back-to-back would let
+  // /reset run BEFORE the abort sets the flag, which tests nothing.
   await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  // Poll 2 delivers /reset (handled bridge-side, never queued).
   await bridge.drainOnce();
+  // Poll 3 delivers the post-reset message.
   await bridge.drainOnce();
   for (let i = 0; i < 100 && seen.length < 2; i++) {
     await new Promise((resolve) => setTimeout(resolve, 20));
