@@ -166,8 +166,8 @@ export function createMemoryGateHook(auditLogPath: string): HookCallback {
       return {};
     } catch (err) {
       appendAudit(auditLogPath, {
-        toolName: input.tool_name,
-        hash: hashInput(input.tool_input),
+        toolName,
+        hash,
         surface: "internal-error",
         decision: "deny",
         errorCode: (err as NodeJS.ErrnoException)?.code,
