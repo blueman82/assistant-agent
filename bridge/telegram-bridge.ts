@@ -840,16 +840,9 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         graceTimer = setTimeout(() => {
           void (async () => {
             try {
-              const result = (await tg(config, "sendMessage", {
-                chat_id: config.chatId,
-                text: "working…",
-                disable_notification: true,
-              })) as { message_id?: number };
-              if (typeof result.message_id === "number") {
-                tickerMessageId = result.message_id;
-                await renderTickerOnce();
-                scheduleNextRender();
-              }
+              tickerMessageId = await sendSilentMessage(config, "working…");
+              await renderTickerOnce();
+              scheduleNextRender();
             } catch {
               // Placeholder send failed — the ticker just never appears.
               // Never affects the turn.
