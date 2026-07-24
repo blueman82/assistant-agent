@@ -45,7 +45,8 @@ workflow.config.yaml
 # See resolveSystemPromptPath in proactive/systemPrompt.ts for the order.
 prompts/system.local.md
 
-# Bridge session-persistence runtime file (RACHEL_SESSION_FILE, set only in
-# bridge/launchd.plist) — carries a live Telegram session id, same category
-# as tasks/ and .claude/ above: local runtime state, never distributed.
-.rachel/bridge-session.json
+# Rachel's local runtime directory — same category as tasks/ and .claude/
+# above: read at runtime on this one machine, never distributed. Holds the
+# bridge session pointer (RACHEL_SESSION_FILE, set only in bridge/launchd.plist,
+# carrying a live Telegram session id), the service logs, and loop reports.
+.rachel/
