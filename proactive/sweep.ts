@@ -116,6 +116,31 @@ function defaultWriteFile(path: string, content: string): void {
   writeFileSync(path, content);
 }
 
+// tmp-sweep default seams. Exported for sweep.test.ts, which injects a
+// mkdtemp homeDir and then exercises these against the real filesystem —
+// production callers go through SweepDeps like every other seam.
+export function defaultReadDirFn(path: string): string[] | undefined {
+  try {
+    return readdirSync(path);
+  } catch (err) {
+    // A tmp dir that was never created is the normal state on a fresh host.
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    throw err;
+  }
+}
+
+// lstat, never stat: it reports on the symlink itself rather than its target,
+// so isFile() rejects symlinks and directories in one check.
+export function defaultLstatFn(path: string): Stats | undefined {
+  return lstatSync(path, { throwIfNoEntry: false });
+}
+
+export function defaultUnlinkFn(path: string): void {
+  unlinkSync(path);
+}
+
 const REPO_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 
 function resolveSweepDeps(overrides?: Partial<SweepDeps>): SweepDeps {
