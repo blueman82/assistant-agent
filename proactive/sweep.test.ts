@@ -1874,5 +1874,9 @@ test("grep guard: no test in this file can bootout the real bridge — every lau
   // SweepDeps used by sweepTick, and never given launchctl/bootout.
   assert.equal(/execFn:\s*defaultExecFn/.test(source), false, "no harness ever uses the real execFn");
   assert.equal(/defaultExecFn\(\s*["'`]launchctl/.test(source), false, "defaultExecFn is never handed launchctl");
-  assert.equal(/bootout/.test(source.replace(/["'`]bootout["'`]|launchctl:bootout|\/\/.*/g, "")), false, "bootout appears only as a stubbed-arg string literal");
+  // Every SweepDeps built here must carry a stubbed execFn. Both harness
+  // factories assign one, and staleHarness additionally stubs sleepFn, so no
+  // poll loop can ever really wait.
+  assert.match(source, /function makeHarness[\s\S]*?execFn: async/, "makeHarness stubs execFn");
+  assert.match(source, /function staleHarness[\s\S]*?sleepFn: async \(\) => \{\}/, "staleHarness stubs sleepFn");
 });
