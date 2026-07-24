@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultExecFn, defaultLstatFn, defaultReadDirFn, defaultUnlinkFn, sweepTick } from "./sweep.ts";
+import { defaultExecFn, defaultLstatFn, defaultReadDirFn, defaultUnlinkFn, sweepTick, parseEtimeMs } from "./sweep.ts";
 import type { SweepDeps } from "./sweep.ts";
 import type { Severity } from "./push.ts";
 
@@ -1576,6 +1576,40 @@ test("the tmp sweep only ever touches paths under the injected homeDir's .rachel
   }
 });
 
+
+// --- parseEtimeMs: elapsed time parser for ps -o etime= output ---
+
+test("parseEtimeMs parses mm:ss format", async () => {
+  // 03:45 = 3 minutes 45 seconds = (3 * 60 + 45) * 1000 ms
+  const result = parseEtimeMs("03:45");
+  assert.equal(result, (3 * 60 + 45) * 1000);
+});
+
+test("parseEtimeMs parses hh:mm:ss format", async () => {
+  // 02:30:45 = 2 hours 30 minutes 45 seconds
+  const expected = (2 * 60 * 60 + 30 * 60 + 45) * 1000;
+  const result = parseEtimeMs("02:30:45");
+  assert.equal(result, expected);
+});
+
+test("parseEtimeMs parses dd-hh:mm:ss format (multi-day)", async () => {
+  // 5-12:30:45 = 5 days 12 hours 30 minutes 45 seconds
+  const expected = (5 * 24 * 60 * 60 + 12 * 60 * 60 + 30 * 60 + 45) * 1000;
+  const result = parseEtimeMs("5-12:30:45");
+  assert.equal(result, expected);
+});
+
+test("parseEtimeMs returns undefined for malformed input", async () => {
+  assert.equal(parseEtimeMs("not-a-duration"), undefined);
+  assert.equal(parseEtimeMs(""), undefined);
+});
+
+test("parseEtimeMs handles leading whitespace", async () => {
+  const result = parseEtimeMs("  01:30:00");
+  const expected = (1 * 60 * 60 + 30 * 60) * 1000;
+  assert.equal(result, expected);
+});
+
 // --- bridge-stale: the auto-remediating stale-process family (RCA item 11) ---
 //
 // Every test here drives a fully-stubbed execFn: launchctl, ps and git are all
@@ -1824,7 +1858,7 @@ test("a capped-out failure is reported once under a state distinct from the succ
   const h = staleHarness({ etime: "05:00:00", bootstrapExit: 5 });
   for (let i = 0; i < 6; i += 1) await sweepTick(h.deps);
   const failures = h.pushes.filter((p) => p.family === "bridge-stale" && /fail/i.test(p.state));
-  assert.ok(failures.length >= 1, "the operator is told the auto-remediation itself failed");
+  assert.equal(failures.length, 1, "the operator is told the auto-remediation itself failed");
   const successes = h.pushes.filter((p) => p.family === "bridge-stale" && !/fail/i.test(p.state));
   assert.equal(successes.length, 0, "a failed restart never claims success");
 });
@@ -1896,6 +1930,84 @@ test("an exploding git in the stale family is caught and the rest of the tick st
   assert.equal(results["bridge-stale"], "failed", "the failure is recorded, not propagated");
   assert.equal(results["memory-lint"], "ok", "later families still ran");
 });
+
+test("no pid in launchctl print output is logged and skipped (not a restart or failure)", async () => {
+  const h = makeHarness();
+  h.deps.execFn = async (cmd, args, opts) => {
+    h.execCalls.push({ cmd, args, opts });
+    if (cmd === "launchctl") {
+      h.order.push(`launchctl:${args[0]}`);
+      // Missing pid line in the output
+      return { stdout: "com.rachel.telegram-bridge = {\n\tstate = running\n}", stderr: "", exitCode: 0 };
+    }
+    return { stdout: "", stderr: "", exitCode: 0 };
+  };
+  h.deps.sleepFn = async () => {};
+  const results = await sweepTick(h.deps);
+  assert.equal(results["bridge-stale"], "ok");
+  assert.ok(h.logs.some((l) => l.includes("no pid")), `no-pid case logged: ${h.logs.join(" | ")}`);
+  assert.equal(h.pushes.filter((p) => p.family === "bridge-stale").length, 0);
+});
+
+test("unparseable commit date is logged and skipped", async () => {
+  const h = staleHarness({ etime: "05:00:00" });
+  const base = h.deps.execFn;
+  h.deps.execFn = async (cmd, args, opts) => {
+    if (cmd === "git") {
+      h.execCalls.push({ cmd, args, opts });
+      h.order.push("git");
+      // Return an ISO string that Date.parse will reject
+      return { stdout: "not-a-date\t9e8b1ec\n", stderr: "", exitCode: 0 };
+    }
+    return base(cmd, args, opts);
+  };
+  const results = await sweepTick(h.deps);
+  assert.equal(results["bridge-stale"], "ok");
+  assert.ok(h.logs.some((l) => l.includes("unparseable commit date")), `unparseable date logged: ${h.logs.join(" | ")}`);
+  const subs = h.execCalls.filter((c) => c.cmd === "launchctl").map((c) => c.args[0]);
+  assert.equal(subs.includes("bootout"), false, "unparseable date prevents restart");
+});
+
+test("git log non-zero exit is logged and skipped", async () => {
+  const h = staleHarness({ etime: "05:00:00" });
+  const base = h.deps.execFn;
+  h.deps.execFn = async (cmd, args, opts) => {
+    if (cmd === "git") {
+      h.execCalls.push({ cmd, args, opts });
+      return { stdout: "", stderr: "fatal: bad revision", exitCode: 128 };
+    }
+    return base(cmd, args, opts);
+  };
+  const results = await sweepTick(h.deps);
+  assert.equal(results["bridge-stale"], "ok");
+  assert.ok(h.logs.some((l) => l.includes("git log exited")), `git log failure logged: ${h.logs.join(" | ")}`);
+  const subs = h.execCalls.filter((c) => c.cmd === "launchctl").map((c) => c.args[0]);
+  assert.equal(subs.includes("bootout"), false, "git failure prevents restart");
+});
+
+test("bootout failure is logged but does not prevent bootstrap retry on the next commit", async () => {
+  const h = staleHarness({ etime: "05:00:00", bootoutExit: 1 });
+  const results = await sweepTick(h.deps);
+  assert.equal(results["bridge-stale"], "ok");
+  const bootouts = h.execCalls.filter((c) => c.cmd === "launchctl" && c.args[0] === "bootout").length;
+  assert.equal(bootouts, 1, "bootout was attempted once");
+  assert.equal(h.pushes.filter((p) => p.family === "bridge-stale").length, 0, "failed attempt does not push on first tick");
+  assert.ok(h.logs.some((l) => l.includes("restart attempt")), `bootout failure logged: ${h.logs.join(" | ")}`);
+});
+
+test("bootstrap exit 5 after bootout is retried once before giving up", async () => {
+  const h = staleHarness({ etime: "05:00:00", bootstrapExit: 5 });
+  await sweepTick(h.deps);
+  // With bootstrapExit=5, the staleExecFn returns exit 5 on first bootstrap,
+  // and restartBridge retries it exactly once. The second attempt returns
+  // the same exit 5 (bootstrapExit is constant), so it fails.
+  const bootstraps = h.execCalls.filter((c) => c.cmd === "launchctl" && c.args[0] === "bootstrap").length;
+  assert.ok(bootstraps >= 1, "at least one bootstrap attempt was made");
+  // With the single retry, we should have 2 attempts (first fails with 5, second also fails with 5)
+  assert.equal(bootstraps, 2, "bootstrap was retried exactly once after exit 5");
+  assert.ok(h.logs.some((l) => l.includes("restart attempt")), `bootstrap failure logged: ${h.logs.join(" | ")}`);
+});
+
 
 test("grep guard for proactive/sweep.test.ts: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
   const source = await (await import("node:fs/promises")).readFile(new URL("./sweep.test.ts", import.meta.url), "utf8");
