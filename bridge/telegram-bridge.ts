@@ -806,12 +806,17 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         // anyway (braces) — either way this must never throw into the drain
         // loop or affect the turn.
         async function renderTickerOnce(): Promise<void> {
-          if (/*TEMP-REVERT tickerDone ||*/ tickerFrozen || tickerMessageId === null || tickerEditCount >= tickerMaxEdits) return;
+          if (tickerDone || tickerFrozen || tickerMessageId === null || tickerEditCount >= tickerMaxEdits) return;
           const rendered = renderTickerLine(Date.now() - turnStartedMs, latestEvent);
           if (rendered === lastSentTickerText) return;
           try {
             await editMessageText(config, tickerMessageId, rendered);
-            // TEMP-REVERT: if (tickerDone) return;
+            // The turn may have ended while this edit was in flight — the
+            // terminal-edit block below runs synchronously in the turn's
+            // finally chain and would have already seen tickerEditCount as
+            // it was before this call, so let its own edit stand rather than
+            // overwrite lastSentTickerText/tickerEditCount post-hoc here.
+            if (tickerDone) return;
             lastSentTickerText = rendered;
             tickerEditCount++;
             tickerConsecutiveFailures = 0;
