@@ -92,18 +92,26 @@ function isInsideMemoryDirPermissive(filePath: string): boolean {
   }
 }
 
-export function createMemoryGateHook(): HookCallback {
+// auditLogPath mirrors createSendGateHook's own required param — same
+// RACHEL_AUDIT_LOG_PATH-resolved value is passed by rachel.ts's wiring, so
+// both gates' decisions land in one shared audit trail. Without this, the
+// gate denied silently: no record survived a deny, an error, or even that
+// the hook fired at all (security review finding, 2026-07-24).
+export function createMemoryGateHook(auditLogPath: string): HookCallback {
   return async (input) => {
     try {
       if (input.hook_event_name !== "PreToolUse") {
         return {};
       }
 
+      const toolName = input.tool_name;
+      const hash = hashInput(input.tool_input);
+
       if (process.env["RACHEL_UNTRUSTED_CONTENT"]) {
         const untrustedReason =
           "This run is processing untrusted content (RACHEL_UNTRUSTED_CONTENT) — memory writes are disabled. Surface anything worth remembering in your digest instead.";
 
-        if (input.tool_name === "Write" || input.tool_name === "Edit") {
+        if (toolName === "Write" || toolName === "Edit") {
           const filePath = (input.tool_input as Record<string, unknown>)?.["file_path"];
           // Untrusted context: a resolution failure DENIES rather than
           // falls back — ambiguity in a security check is not a reason to
@@ -111,13 +119,15 @@ export function createMemoryGateHook(): HookCallback {
           // resolveReal failure) reaches the hook's own top-level
           // try/catch below, which denies on any exception.
           if (typeof filePath === "string" && isInsideMemoryDirOrThrow(filePath)) {
+            appendAudit(auditLogPath, { toolName, hash, surface: "untrusted-lockout", decision: "deny" });
             return denyOutput(untrustedReason);
           }
         }
 
-        if (input.tool_name === "Bash") {
+        if (toolName === "Bash") {
           const command = (input.tool_input as Record<string, unknown>)?.["command"];
           if (typeof command === "string" && command.includes(MEMORY_DIR)) {
+            appendAudit(auditLogPath, { toolName, hash, surface: "untrusted-lockout-bash", decision: "deny" });
             return denyOutput(untrustedReason);
           }
           // Best-effort: also catch the ~/.rachel/memory shorthand a shell
@@ -125,12 +135,13 @@ export function createMemoryGateHook(): HookCallback {
           // in bashPatterns.ts (small, explicit patterns, not a general path
           // resolver).
           if (typeof command === "string" && /~\/\.rachel\/memory\b/.test(command)) {
+            appendAudit(auditLogPath, { toolName, hash, surface: "untrusted-lockout-bash", decision: "deny" });
             return denyOutput(untrustedReason);
           }
         }
       }
 
-      if (input.tool_name === "Write") {
+      if (toolName === "Write") {
         const filePath = (input.tool_input as Record<string, unknown>)?.["file_path"];
         const content = (input.tool_input as Record<string, unknown>)?.["content"];
         if (
@@ -144,14 +155,43 @@ export function createMemoryGateHook(): HookCallback {
           const errors = findings.filter((f) => f.level === "error");
           if (errors.length > 0) {
             const reason = errors.map((f) => f.message).join("; ");
+            appendAudit(auditLogPath, { toolName, hash, surface: "frontmatter-schema", decision: "deny" });
             return denyOutput(`Memory frontmatter invalid — fix and retry: ${reason}`);
           }
         }
       }
 
       return {};
-    } catch {
+    } catch (err) {
+      appendAudit(auditLogPath, {
+        toolName: input.tool_name,
+        hash: hashInput(input.tool_input),
+        surface: "internal-error",
+        decision: "deny",
+        errorCode: (err as NodeJS.ErrnoException)?.code,
+        errorMessage: err instanceof Error ? err.message : String(err),
+      });
       return denyOutput("Internal hook error — denied by default.");
     }
   };
+}
+
+// Same fail-silent wrapper as sendGate.ts's appendAudit: an audit-log write
+// failure must never affect the gate decision already returned.
+function appendAudit(
+  auditLogPath: string,
+  row: {
+    toolName: string;
+    hash: string;
+    surface: string;
+    decision: "allow" | "deny";
+    errorCode?: string;
+    errorMessage?: string;
+  },
+): void {
+  try {
+    appendAuditRow(auditLogPath, { ts: new Date().toISOString(), event: "decision", ...row });
+  } catch {
+    // Audit-log failure must never affect the gate decision already returned.
+  }
 }
