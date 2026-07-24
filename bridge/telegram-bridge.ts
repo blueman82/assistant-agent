@@ -210,8 +210,45 @@ function readLoopStopCounts(progressPath: string, fs: FsFunctions): Record<strin
   return {};
 }
 
+// Overlap rule (spec: streaming-relay-wake-channel §"Overlap rule").
+//
+// On loop exit the agent's OWN wake file is the primary report; the watchdog's
+// exit ping demotes to a crash fallback. Returns true when a slug-matching wake
+// file — pending "<slug>.json" or already-consumed "<slug>.done" — exists and
+// is NEWER than the loop's spawn_time, meaning this run reported for itself.
+//
+// Freshness is the file's mtime, read through the same injectable fs.stat seam
+// the rest of the watchdog uses: created_at inside the JSON is producer-written
+// and may be absent or malformed, and a .done file has been renamed after the
+// fact anyway. An older file is a previous run's leftover for a recycled slug.
+//
+// Any failure (no wake dir, unreadable dir, unstattable file) returns false, so
+// the ping FIRES — the crash-before-wake case is exactly what the watchdog is
+// for, and the safe default is one extra ping, never a silently swallowed exit.
+// This governs the EXIT ping only; stall pings are never suppressed.
+function hasFreshWakeFile(opts: {
+  wakeDir: string;
+  slug: string;
+  spawnTime: number;
+  fs: FsFunctions;
+}): boolean {
+  const { wakeDir, slug, spawnTime, fs } = opts;
+  try {
+    if (!fs.existsSync(wakeDir)) return false;
+    const candidates = [`${slug}.json`, `${slug}.done`];
+    for (const filename of fs.readdir(wakeDir)) {
+      if (!candidates.includes(filename)) continue;
+      try {
+        if (fs.stat(join(wakeDir, filename)).mtimeMs > spawnTime) return true;
+      } catch { /* unstattable — treat as no wake file */ }
+    }
+  } catch { /* wake dir unreadable — treat as no wake file */ }
+  return false;
+}
+
 async function checkWatchdogs(opts: {
   watchdogDir: string;
+  wakeDir: string;
   pollPeriodMs: number;
   fs: FsFunctions;
   isPidAlive: (pid: number, expectedCmd?: string) => boolean;  // injectable for tests (stress-test fix 1)
