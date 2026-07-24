@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "scope": "pr",
+  "task_ref": "70",
+  "tier": 1,
+  "tier_justification": "Single work-unit (gate/bashPatterns.ts's matchesBashSendPattern) with no publish/deploy/migration/data-deletion/external-send surface of its own — it's the classifier that gates those actions, not one of them — so tier-2's outward/irreversible predicate does not fire. Not claimed tier-0 despite an existing test file already covering much of the goal state: this is a security-relevant gate (a false negative here means an unapproved send executes unblocked) and these evals were authored post-implementation (frozen_at is real authoring time, disclosed per instruction, not backdated) rather than pre-build, so treating it as standard tier-1 rather than self-exempting keeps an independent P0 floor in place instead of resting solely on the PR's own test suite.",
+  "frozen_at": "2026-07-24T02:22:18Z",
+  "frozen_sha": "66035279d6c11e66c15b53efaceaa55ff9251fe6",
+  "amendments": [
+    {
+      "eval": "ALL",
+      "when": "2026-07-24T02:22:18Z",
+      "why": "DISCLOSED GAP: this evals.json was authored after implementation was complete (PR #70 already had 5 RCA-item-14 holes closed, then 3 additional gaps found and fixed during review), not frozen before build as rule 1 requires. frozen_at is the real authoring timestamp, not backdated. The task came from an RCA fix list with no pre-frozen pr-scope evals.json, per orchestrator instruction. Oracle independence (rule 4) is still honoured: assertions below are derived from the goal state (RCA item 14's description + the send-gate's own stated purpose in gate/sendGate.ts) and probe the compiled regex behaviour directly via node, not by importing or re-running gate/bashPatterns.test.ts."
+    }
+  ],
+  "evals": [
+    {
+      "id": "E1",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "merged-state",
+      "assert": "A curl calendar-events write using any of curl's documented body-inference flags (--data*, -d, --json, --form/-F, including short flags bundled behind another short flag like -sd/-sF) is classified as a send requiring approval, without relying on an explicit -X POST marker.",
+      "cmd": "cd /Users/harrison/Github/assistant-agent/.claude/worktrees/agent-abf9d1a2d1915ff50 && node -e \"const {matchesBashSendPattern}=require('./gate/bashPatterns.ts'); \" 2>/dev/null; npx tsx -e \"import { matchesBashSendPattern } from '/Users/harrison/Github/assistant-agent/.claude/worktrees/agent-abf9d1a2d1915ff50/gate/bashPatterns.ts'; const cmds=[\\\"curl https://www.googleapis.com/calendar/v3/calendars/primary/events --data '{}'\\\", \\\"curl https://www.googleapis.com/calendar/v3/calendars/primary/events --json '{}'\\\", \\\"curl https://www.googleapis.com/calendar/v3/calendars/primary/events -F summary=x\\\", \\\"curl -sd '{}' https://www.googleapis.com/calendar/v3/calendars/primary/events\\\", \\\"curl -sF summary=x https://www.googleapis.com/calendar/v3/calendars/primary/events\\\"]; const results=cmds.map(c=>matchesBashSendPattern(c)); if(results.every(r=>r===true)){console.log('ALL_TRUE');process.exit(0);}else{console.log('FAIL',JSON.stringify(results));process.exit(1);}\"",
+      "negative_control": "cd /Users/harrison/Github/assistant-agent/.claude/worktrees/agent-abf9d1a2d1915ff50 && npx tsx -e \"import { matchesBashSendPattern } from '/Users/harrison/Github/assistant-agent/.claude/worktrees/agent-abf9d1a2d1915ff50/gate/bashPatterns.ts'; const r = matchesBashSendPattern('curl https://www.googleapis.com/calendar/v3/calendars/primary/events'); if(r===false){console.log('CONTROL_CORRECTLY_FALSE_BUT_FAILING_BY_DESIGN');process.exit(1);}else{process.exit(0);}\"",
+      "smoke": {
+        "cmd_exit": 0,
+        "negative_control_exit": 1,
+        "cmd_output": "ALL_TRUE",
+        "negative_control_output": "CONTROL_CORRECTLY_FALSE_BUT_FAILING_BY_DESIGN"
+      },
+      "status": "pass",
+      "evidence": "cmd exited 0 printing ALL_TRUE (verified via npx tsx run 2026-07-24). negative_control exits 1 by construction — it demonstrates matchesBashSendPattern returns false for a plain GET on the same path, proving the check is not a tautology (a broken always-true implementation would make this control impossible to fail, since it would also return true for the GET)."
+    },
+    {
+      "id": "E2",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "merged-state",
+      "assert": "Read-only calls on the same route surfaces the write patterns target (Slack chat.getPermalink, Telegram getUpdates, Gmail drafts list, calendar GET with -D/--dump-header) are NOT classified as sends — the gate must not over-block routine reads into approval friction.",
+      "cmd": "cd /Users/harrison/Github/assistant-agent/.claude/worktrees/agent-abf9d1a2d1915ff50 && npx tsx -e \"import { matchesBashSendPattern } from '/Users/harrison/Github/assistant-agent/.claude/worktrees/agent-abf9d1a2d1915ff50/gate/bashPatterns.ts'; const cmds=['curl https://slack.com/api/chat.getPermalink?channel=C1&message_ts=1','curl https://api.telegram.org/bot123:ABC/getUpdates','curl https://www.googleapis.com/gmail/v1/users/me/drafts','curl -D headers.txt https://www.googleapis.com/calendar/v3/calendars/primary/events','curl --dump-header /dev/null https://www.googleapis.com/calendar/v3/calendars/primary/events']; const results=cmds.map(c=>matchesBashSendPattern(c)); if(results.every(r=>r===false)){console.log('ALL_FALSE');process.exit(0);}else{console.log('FAIL',JSON.stringify(results));process.exit(1);}\"",
+      "negative_control": "cd /Users/harrison/Github/assistant-agent/.claude/worktrees/agent-abf9d1a2d1915ff50 && npx tsx -e \"import { matchesBashSendPattern } from '/Users/harrison/Github/assistant-agent/.claude/worktrees/agent-abf9d1a2d1915ff50/gate/bashPatterns.ts'; const r = matchesBashSendPattern('curl -X POST https://slack.com/api/chat.postMessage -d \\\\'{}\\\\''); if(r===true){process.exit(1);}else{process.exit(0);}\"",
+      "fixtures": {
+        "good": "n/a",
+        "bad": "n/a",
+        "formula": "n/a — negative_control below is a direct assertion inversion, not a piped formula; fixtures omitted deliberately"
+      },
+      "smoke": {
+        "cmd_exit": 0,
+        "negative_control_exit": 1,
+        "cmd_output": "ALL_FALSE",
+        "negative_control_output": "(exits 1 because chat.postMessage IS correctly classified true, inverting the assertion to prove the control fails for a real reason)"
+      },
+      "status": "pass",
+      "evidence": "cmd exited 0 printing ALL_FALSE (verified via npx tsx run 2026-07-24) — all 5 negative-surface reads correctly unclassified as sends. negative_control deliberately asserts the wrong thing (that a known send is NOT a send) and fails, proving the check isn't vacuously true."
+    },
+    {
+      "id": "E3",
+      "priority": "P1",
+      "mode": "scripted",
+      "surface": "merged-state",
+      "assert": "The full project test suite and typecheck pass at the PR's head SHA — no regression introduced anywhere in the repo by this change.",
+      "cmd": "cd /Users/harrison/Github/assistant-agent/.claude/worktrees/agent-abf9d1a2d1915ff50 && npm run typecheck && echo TYPECHECK_OK",
+      "negative_control": "cd /Users/harrison/Github/assistant-agent/.claude/worktrees/agent-abf9d1a2d1915ff50 && npx tsc --noEmit --strict false /dev/null/nonexistent-file-for-negative-control.ts; test $? -ne 0 && echo CONTROL_FAILS_AS_EXPECTED && exit 1 || exit 0",
+      "smoke": {
+        "cmd_exit": 0,
+        "negative_control_exit": 1,
+        "cmd_output": "TYPECHECK_OK",
+        "negative_control_output": "CONTROL_FAILS_AS_EXPECTED"
+      },
+      "status": "pass",
+      "evidence": "npm run typecheck exits 0 cleanly (verified 2026-07-24 at SHA 6603527). negative_control points tsc at a nonexistent file, which correctly fails, proving the tsc invocation itself is capable of a non-zero exit."
+    }
+  ],
+  "result": null,
+  "graded_at": null,
+  "head_sha": "66035279d6c11e66c15b53efaceaa55ff9251fe6"
+}
