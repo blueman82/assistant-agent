@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "scope": "pr",
+  "task_ref": "72",
+  "tier": 1,
+  "tier_justification": "More than a single trivial work-unit (the /stop inoculation fix + ABORT_ARTIFACT_PREFIX wording generalization + system.md update + new/updated tests), but no irreversible/outward surface in the tier-2 sense (publish, deploy, migration, external send) — this is turn-input construction inside a background Telegram bridge process, with no UI/CLI/served-endpoint surface a human directly drives, so rule 6's strongest-surface requirement does not apply. Tier 1: standard, 4 end-state evals, 4 negative controls, P0/P1 split.",
+  "frozen_at": "2026-07-24T08:54:52Z",
+  "frozen_sha": "20716d454d7b990a8548069f1960f940955b5ec8",
+  "amendments": [
+    {
+      "eval": "ALL",
+      "when": "2026-07-24T08:54:52Z",
+      "why": "DISCLOSED: this evals.json was authored after PR #72 was already implemented AND after a MERGE-BLOCKER fix was applied during this review pass (the /stop handler did not set pendingAbortNotice, reopening the exact ghost-rejection bug this PR targets via a second trigger). No pre-frozen pr-scope evals.json existed for this RCA-batch fix, per the task owner's explicit instruction. frozen_sha is stamped as the branch's real current HEAD (post-fix, post-push) at authoring time, not backdated; frozen_at is the real authoring timestamp, not backdated. Every eval was written and smoke-run fresh against the merged, exported createBridge surface using independently-written driver scripts with a hand-rolled fake transport (not the PR's own makeStubTransport/basePushOpts test helpers), to preserve oracle independence per rule 4. This matches the disclosed pattern already used for PR #69 (merged), PR #70 (gated), and PR #71 (this same review pass)."
+    }
+  ],
+  "evals": [
+    {
+      "id": "E1",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "An operator /stop on an in-flight turn causes the NEXT turn's input to carry the abort-artifact prefix, exactly as a deadline timeout would — the MERGE-BLOCKER this review pass fixed",
+      "cmd": "npx tsx .rachel-evals-scratch/e1_stop_inoculates.mjs",
+      "negative_control": "npx tsx .rachel-evals-scratch/e1_negative.mjs",
+      "smoke": {
+        "cmd_exit": 0,
+        "negative_control_exit": 1,
+        "cmd_output": "PASS: /stop inoculated the next turn's input",
+        "negative_control_output": "negative control: asserting the follow-up is unprefixed fails as expected, because /stop correctly inoculates it"
+      },
+      "status": "pass",
+      "evidence": "npx tsx .rachel-evals-scratch/e1_stop_inoculates.mjs -> exit 0, 'PASS: /stop inoculated the next turn's input'. Negative control exit 1 as required."
+    },
+    {
+      "id": "E2",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "A genuine deadline-timeout abort still inoculates the next turn's input (regression check on the pre-existing RCA item 6 behavior this PR's /stop fix sits alongside)",
+      "cmd": "npx tsx .rachel-evals-scratch/e2_deadline_inoculates.mjs",
+      "negative_control": "npx tsx .rachel-evals-scratch/e2_negative.mjs",
+      "smoke": {
+        "cmd_exit": 0,
+        "negative_control_exit": 1,
+        "cmd_output": "PASS: deadline abort inoculated the next turn's input",
+        "negative_control_output": "negative control: asserting the second turn is unprefixed fails as expected"
+      },
+      "status": "pass",
+      "evidence": "npx tsx .rachel-evals-scratch/e2_deadline_inoculates.mjs -> exit 0. Negative control exit 1 as required."
+    },
+    {
+      "id": "E3",
+      "priority": "P0",
+      "mode": "scripted",
+      "surface": "artifact-path",
+      "assert": "A normally completed turn (no abort, no /stop) never prefixes the following turn's input — a false positive here would corrupt every ordinary conversation",
+      "cmd": "npx tsx .rachel-evals-scratch/e3_no_false_prefix.mjs",
+      "negative_control": "npx tsx .rachel-evals-scratch/e3_negative.mjs",
+      "smoke": {
+        "cmd_exit": 0,
+        "negative_control_exit": 1,
+        "cmd_output": "PASS: a normally completed turn never prefixes the next one",
+        "negative_control_output": "negative control: asserting the second turn is prefixed fails as expected"
+      },
+      "status": "pass",
+      "evidence": "npx tsx .rachel-evals-scratch/e3_no_false_prefix.mjs -> exit 0. Negative control exit 1 as required."
+    },
+    {
+      "id": "E4",
+      "priority": "P1",
+      "mode": "scripted",
+      "surface": "merged-state",
+      "assert": "The merged branch typechecks cleanly with tsc --noEmit (no type regressions from the /stop fix or the ABORT_ARTIFACT_PREFIX wording change)",
+      "cmd": "npm run typecheck",
+      "negative_control": ".rachel-evals-scratch/e4_negative_broken_ts.sh",
+      "smoke": {
+        "cmd_exit": 0,
+        "negative_control_exit": 2,
+        "cmd_output": "> assistant-agent@0.1.0 typecheck\n> tsc --noEmit",
+        "negative_control_output": "error TS2322: Type 'string' is not assignable to type 'number'."
+      },
+      "status": "pass",
+      "evidence": "npm run typecheck -> exit 0, no diagnostics. Negative control (deliberate type error) -> exit 2 with TS2322."
+    }
+  ],
+  "result": null,
+  "graded_at": null,
+  "head_sha": "20716d454d7b990a8548069f1960f940955b5ec8"
+}
