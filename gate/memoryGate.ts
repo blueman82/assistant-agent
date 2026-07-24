@@ -2,7 +2,8 @@ import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import { denyOutput } from "./sendGate.ts";
+import { denyOutput, hashInput } from "./sendGate.ts";
+import { appendAuditRow } from "./auditLog.ts";
 import { validateFrontmatter } from "../proactive/memoryLint.ts";
 
 const MEMORY_DIR = join(homedir(), ".rachel", "memory");
