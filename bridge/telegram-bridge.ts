@@ -256,7 +256,7 @@ async function checkWatchdogs(opts: {
   // rejects — the caller wraps push() with a direct-send fallback).
   pushPing: (eventId: string, state: string, text: string) => Promise<void>;
 }): Promise<void> {
-  const { watchdogDir, pollPeriodMs, fs, isPidAlive: pidAliveCheck, pushPing } = opts;
+  const { watchdogDir, wakeDir, pollPeriodMs, fs, isPidAlive: pidAliveCheck, pushPing } = opts;
 
   if (!fs.existsSync(watchdogDir)) return;
 
