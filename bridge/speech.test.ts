@@ -128,6 +128,63 @@ test("convertToOgg() throws on nonzero exit", async () => {
   await assert.rejects(() => convertToOgg("/tmp/reply.wav", "/tmp/reply.ogg", fn), /command not found/);
 });
 
+// Regression: RCA 2026-07-23 headline finding 3. mlx-whisper performs a
+// HuggingFace Hub freshness check on every call even with the model fully
+// cached. With the HF endpoint unreachable it hung past 45s before touching
+// the audio, and the execFile budget SIGTERMed it — five such failures in the
+// bridge log. HF_HUB_OFFLINE=1 makes huggingface_hub use the local cache
+// only: measured 4.3s vs 12.2s, no network touch.
+test("transcribe() sets HF_HUB_OFFLINE=1 in the child env (no HuggingFace hub round-trip)", async () => {
+  const { fn, calls } = stubExec({ stdout: "hello there\n" });
+  await transcribe("/tmp/voice.ogg", fn);
+  assert.equal(calls[0]!.env?.HF_HUB_OFFLINE, "1");
+});
+
+// The child env REPLACES rather than merges (node's execFile, same trap as
+// the SDK's query() env). Passing a bare { HF_HUB_OFFLINE: "1" } would strip
+// HOME — and huggingface_hub locates its cache via HOME. Offline mode plus no
+// cache path is a hard failure, i.e. the exact opposite of this fix.
+test("transcribe() inherits the parent env rather than replacing it (HOME locates the HF cache)", async () => {
+  const { fn, calls } = stubExec({ stdout: "hello there\n" });
+  await transcribe("/tmp/voice.ogg", fn);
+  assert.equal(calls[0]!.env?.HOME, process.env.HOME);
+  assert.equal(calls[0]!.env?.PATH, process.env.PATH);
+});
+
+// Same hub check on the synthesis side: "Fetching 56 files" was observed in
+// the live logs for the Kokoro model, which is likewise already cached.
+test("synthesize() sets HF_HUB_OFFLINE=1 in the child env", async () => {
+  const { fn, calls } = stubExec({});
+  await synthesize("hello Gary", "/tmp/reply.wav", fn);
+  assert.equal(calls[0]!.env?.HF_HUB_OFFLINE, "1");
+});
+
+test("synthesize() inherits the parent env rather than replacing it", async () => {
+  const { fn, calls } = stubExec({});
+  await synthesize("hello Gary", "/tmp/reply.wav", fn);
+  assert.equal(calls[0]!.env?.HOME, process.env.HOME);
+  assert.equal(calls[0]!.env?.PATH, process.env.PATH);
+});
+
+// ffmpeg is not a HuggingFace consumer — it gets no env override, so the
+// child simply inherits the parent's environment via execFile's default.
+test("convertToOgg() passes no env override (ffmpeg has no HuggingFace dependency)", async () => {
+  const { fn, calls } = stubExec({});
+  await convertToOgg("/tmp/reply.wav", "/tmp/reply.ogg", fn);
+  assert.equal(calls[0]!.env, undefined);
+});
+
+// Item 4 (Gary's decision, overruling the RCA author's "no change"): a human
+// may legitimately send a voice note longer than the old 30s budget allowed.
+test("transcribe() budget is 2 minutes, room for a genuinely long voice note", async () => {
+  const { fn, calls } = stubExec({ stdout: "hello there\n" });
+  await transcribe("/tmp/voice.ogg", fn);
+  assert.ok(
+    calls[0]!.timeoutMs >= 120_000,
+    `transcribe budget must be at least 120000ms, got ${calls[0]!.timeoutMs}`,
+  );
+});
+
 test("grep guard: no test in this file ever invokes defaultExecFileFn (no real subprocess spawn in CI)", async () => {
   const source = await (await import("node:fs/promises")).readFile(new URL("./speech.test.ts", import.meta.url), "utf8");
   assert.equal(/defaultExecFileFn\(/.test(source), false);
