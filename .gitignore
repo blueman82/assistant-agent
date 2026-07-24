@@ -50,3 +50,7 @@ prompts/system.local.md
 # bridge session pointer (RACHEL_SESSION_FILE, set only in bridge/launchd.plist,
 # carrying a live Telegram session id), the service logs, and loop reports.
 .rachel/
+
+# Frozen task-evals working material (pr-scope evals.json). Working material
+# only — the durable artifact is the SHA-bound PR comment post_evals.sh posts.
+.evals/
