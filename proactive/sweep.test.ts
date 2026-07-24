@@ -1567,10 +1567,312 @@ test("the tmp sweep only ever touches paths under the injected homeDir's .rachel
   for (const path of unlinked) {
     assert.ok(path.startsWith(join(h.homeDir, ".rachel", "tmp") + "/"), `unlink escaped the tmp dir: ${path}`);
   }
+=======
+// --- bridge-stale: the auto-remediating stale-process family (RCA item 11) ---
+//
+// Every test here drives a fully-stubbed execFn: launchctl, ps and git are all
+// fakes, and sleepFn is a no-op. No test in this file may ever bootout the
+// live com.rachel.telegram-bridge — the grep guard at the bottom pins that.
+
+const STALE_PID = 4242;
+const RUNNING_WITH_PID = `com.rachel.telegram-bridge = {\n\tstate = running\n\tpid = ${STALE_PID}\n}`;
+
+interface StaleOpts {
+  // Elapsed time of the bridge process, as `ps -o etime=` renders it.
+  etime?: string;
+  // Committer date of the newest commit touching the relevant paths.
+  commitISO?: string;
+  commitSha?: string;
+  // Number of `launchctl print` polls after bootout that still find the
+  // service before it finally goes absent.
+  pollsBeforeGone?: number;
+  bootoutExit?: number;
+  bootstrapExit?: number;
+  running?: boolean;
+}
+
+// Stubs the whole external surface the bridge-stale family touches. Records
+// every launchctl subcommand in order so the bootout -> poll -> bootstrap
+// sequence can be asserted directly.
+function staleExecFn(h: ReturnType<typeof makeHarness>, o: StaleOpts = {}): SweepDeps["execFn"] {
+  const commitISO = o.commitISO ?? "2026-07-15T09:00:00Z";
+  const running = o.running ?? true;
+  let printsSinceBootout = 0;
+  let bootedOut = false;
+  return async (cmd, args, opts) => {
+    h.execCalls.push({ cmd, args, opts });
+    if (cmd === "launchctl") {
+      const sub = args[0];
+      h.order.push(`launchctl:${sub}`);
+      if (sub === "print") {
+        if (bootedOut) {
+          printsSinceBootout += 1;
+          if (printsSinceBootout <= (o.pollsBeforeGone ?? 0)) {
+            return { stdout: RUNNING_WITH_PID, stderr: "", exitCode: 0 };
+          }
+          return { stdout: "", stderr: "Could not find service", exitCode: 113 };
+        }
+        return running
+          ? { stdout: RUNNING_WITH_PID, stderr: "", exitCode: 0 }
+          : { stdout: "", stderr: "Could not find service", exitCode: 113 };
+      }
+      if (sub === "bootout") {
+        bootedOut = true;
+        return { stdout: "", stderr: "", exitCode: o.bootoutExit ?? 0 };
+      }
+      if (sub === "bootstrap") {
+        bootedOut = false;
+        return { stdout: "", stderr: o.bootstrapExit ? "bootstrap failed" : "", exitCode: o.bootstrapExit ?? 0 };
+      }
+    }
+    if (cmd === "ps") {
+      h.order.push("ps");
+      return { stdout: `${o.etime ?? "10:00:00"}\n`, stderr: "", exitCode: 0 };
+    }
+    if (cmd === "git") {
+      h.order.push("git");
+      return { stdout: `${commitISO}\t${o.commitSha ?? "9e8b1ec"}\n`, stderr: "", exitCode: 0 };
+    }
+    return { stdout: "", stderr: "", exitCode: 0 };
+  };
+}
+
+// A harness with the sleep stubbed out — the poll loop must never really wait.
+function staleHarness(o: StaleOpts = {}) {
+  const h = makeHarness();
+  h.deps.execFn = staleExecFn(h, o);
+  h.deps.sleepFn = async () => {};
+  return h;
+}
+
+test("a bridge started before the newest relevant commit is restarted without asking", async () => {
+  // DAYTIME is 2026-07-15T11:00:00Z; etime 01:00:00 puts the process start at
+  // 10:00Z, which is AFTER the 09:00Z commit... so make the process older.
+  const h = staleHarness({ etime: "05:00:00", commitISO: "2026-07-15T09:00:00Z" });
+  await sweepTick(h.deps);
+  const subs = h.execCalls.filter((c) => c.cmd === "launchctl").map((c) => c.args[0]);
+  assert.ok(subs.includes("bootout"), "the stale bridge was booted out");
+  assert.ok(subs.includes("bootstrap"), "the bridge was bootstrapped again");
+  const fyi = h.pushes.find((p) => p.family === "bridge-stale");
+  assert.ok(fyi, "an FYI was pushed");
+  assert.equal(fyi.severity, "normal");
+  assert.ok(fyi.text.includes("9e8b1ec"), `the FYI names the SHA it restarted onto: ${fyi.text}`);
+});
+
+test("the restart FYI is an after-the-fact statement, never a request for approval", async () => {
+  const h = staleHarness({ etime: "05:00:00" });
+  await sweepTick(h.deps);
+  const fyi = h.pushes.find((p) => p.family === "bridge-stale");
+  assert.ok(fyi);
+  assert.doesNotMatch(fyi.text, /\?|approve|shall I|should I|may I|would you like/i, `no approval language: ${fyi.text}`);
+  assert.match(fyi.text, /restarted/i, "states the restart as already done");
+});
+
+test("the restart is pushed only AFTER the bootstrap, never before the bootout", async () => {
+  const h = staleHarness({ etime: "05:00:00" });
+  await sweepTick(h.deps);
+  const pushIdx = h.order.indexOf("push:bridge-stale");
+  const bootstrapIdx = h.order.indexOf("launchctl:bootstrap");
+  assert.ok(bootstrapIdx >= 0 && pushIdx > bootstrapIdx, `act then notify: ${h.order.join(",")}`);
+});
+
+test("a bridge started after the newest relevant commit is left alone", async () => {
+  // etime 01:00:00 => started 10:00Z, newer than the 09:00Z commit.
+  const h = staleHarness({ etime: "01:00:00", commitISO: "2026-07-15T09:00:00Z" });
+  await sweepTick(h.deps);
+  const subs = h.execCalls.filter((c) => c.cmd === "launchctl").map((c) => c.args[0]);
+  assert.equal(subs.includes("bootout"), false, "a fresh bridge is never restarted");
+  assert.equal(h.pushes.filter((p) => p.family === "bridge-stale").length, 0);
+});
+
+test("staleness is measured against commits touching rachel.ts, bridge/ and prompts/ only", async () => {
+  const h = staleHarness({ etime: "05:00:00" });
+  await sweepTick(h.deps);
+  const gitCall = h.execCalls.find((c) => c.cmd === "git");
+  assert.ok(gitCall, "git was consulted");
+  const args = gitCall.args;
+  const sep = args.indexOf("--");
+  assert.ok(sep > 0, `paths are passed after a -- separator: ${args.join(" ")}`);
+  assert.deepEqual(args.slice(sep + 1), ["rachel.ts", "bridge/", "prompts/"]);
+  assert.ok(args.includes("HEAD"), "the comparison is against the checked-out HEAD, not a remote ref");
+});
+
+test("a merge touching only irrelevant paths yields no relevant commit and triggers no restart", async () => {
+  const h = makeHarness();
+  // git finds nothing touching the watched paths since forever: empty stdout.
+  h.deps.execFn = async (cmd, args, opts) => {
+    h.execCalls.push({ cmd, args, opts });
+    if (cmd === "git") return { stdout: "\n", stderr: "", exitCode: 0 };
+    if (cmd === "ps") return { stdout: "99:00:00\n", stderr: "", exitCode: 0 };
+    if (cmd === "launchctl") {
+      h.order.push(`launchctl:${args[0]}`);
+      return { stdout: RUNNING_WITH_PID, stderr: "", exitCode: 0 };
+    }
+    return { stdout: "", stderr: "", exitCode: 0 };
+  };
+  h.deps.sleepFn = async () => {};
+  await sweepTick(h.deps);
+  assert.equal(h.order.includes("launchctl:bootout"), false, "no relevant commit means nothing to be stale against");
+  assert.equal(h.pushes.filter((p) => p.family === "bridge-stale").length, 0);
+});
+
+test("bootout is followed by polling until the service is genuinely absent, before bootstrap", async () => {
+  const h = staleHarness({ etime: "05:00:00", pollsBeforeGone: 3 });
+  await sweepTick(h.deps);
+  const seq = h.order.filter((e) => e.startsWith("launchctl:"));
+  const bootoutIdx = seq.indexOf("launchctl:bootout");
+  const bootstrapIdx = seq.indexOf("launchctl:bootstrap");
+  assert.ok(bootoutIdx >= 0 && bootstrapIdx > bootoutIdx, "bootout precedes bootstrap");
+  const pollsBetween = seq.slice(bootoutIdx + 1, bootstrapIdx).filter((e) => e === "launchctl:print").length;
+  assert.ok(pollsBetween >= 4, `polled until absent (${pollsBetween} prints) rather than bootstrapping immediately`);
+});
+
+test("a service that never goes away is not bootstrapped on top of itself", async () => {
+  const h = staleHarness({ etime: "05:00:00", pollsBeforeGone: 10_000 });
+  await sweepTick(h.deps);
+  const subs = h.execCalls.filter((c) => c.cmd === "launchctl").map((c) => c.args[0]);
+  assert.equal(subs.includes("bootstrap"), false, "never bootstrap while the old job is still draining");
+});
+
+test("a bridge mid-turn is not restarted; the next tick can retry", async () => {
+  const h = staleHarness({ etime: "05:00:00" });
+  h.deps.readFileFn = (path) => {
+    if (path.endsWith("bridge-heartbeat.json")) {
+      return JSON.stringify({
+        schema_version: 1,
+        last_poll_at: new Date(DAYTIME().getTime() - 60_000).toISOString(),
+        queue_depth: 1,
+        turn_in_flight_since: new Date(DAYTIME().getTime() - 60_000).toISOString(),
+      });
+    }
+    return h.files.get(path);
+  };
+  await sweepTick(h.deps);
+  const subs = h.execCalls.filter((c) => c.cmd === "launchctl").map((c) => c.args[0]);
+  assert.equal(subs.includes("bootout"), false, "never restart while a turn is in flight");
+  assert.ok(h.logs.some((l) => l.includes("mid-turn")), `the skip is logged: ${h.logs.join(" | ")}`);
+});
+
+test("a missing heartbeat is not treated as evidence of a turn in flight", async () => {
+  // Skipping on unknown would permanently disable remediation on a bridge
+  // whose heartbeat file is broken — exactly the bridge most likely stale.
+  const h = staleHarness({ etime: "05:00:00" });
+  await sweepTick(h.deps);
+  const subs = h.execCalls.filter((c) => c.cmd === "launchctl").map((c) => c.args[0]);
+  assert.ok(subs.includes("bootout"), "no heartbeat evidence means proceed, not skip");
+});
+
+test("a long-finished turn does not block the restart", async () => {
+  const h = staleHarness({ etime: "05:00:00" });
+  h.deps.readFileFn = (path) => {
+    if (path.endsWith("bridge-heartbeat.json")) {
+      return JSON.stringify({
+        schema_version: 1,
+        last_poll_at: new Date(DAYTIME().getTime() - 60_000).toISOString(),
+        queue_depth: 0,
+        turn_in_flight_since: new Date(DAYTIME().getTime() - 3 * 60 * 60_000).toISOString(),
+      });
+    }
+    return h.files.get(path);
+  };
+  await sweepTick(h.deps);
+  const subs = h.execCalls.filter((c) => c.cmd === "launchctl").map((c) => c.args[0]);
+  assert.ok(subs.includes("bootout"), "a turn_in_flight_since older than the turn ceiling is stale bookkeeping, not a live turn");
+});
+
+test("a failed restart does not thrash: attempts are capped across ticks and the family never throws", async () => {
+  const h = staleHarness({ etime: "05:00:00", bootstrapExit: 5 });
+  const results = [];
+  for (let i = 0; i < 6; i += 1) {
+    results.push(await sweepTick(h.deps));
+  }
+  for (const r of results) {
+    assert.notEqual(r["bridge-stale"], undefined, "the family ran");
+    assert.equal(r["bridge-stale"], "ok", "a failed restart is handled, never thrown out of the sweep");
+  }
+  const bootouts = h.execCalls.filter((c) => c.cmd === "launchctl" && c.args[0] === "bootout").length;
+  assert.ok(bootouts <= 3, `attempts are capped, got ${bootouts} bootouts across 6 ticks`);
+  assert.ok(bootouts >= 1, "at least one attempt was made");
+});
+
+test("a capped-out failure is reported once under a state distinct from the success state", async () => {
+  const h = staleHarness({ etime: "05:00:00", bootstrapExit: 5 });
+  for (let i = 0; i < 6; i += 1) await sweepTick(h.deps);
+  const failures = h.pushes.filter((p) => p.family === "bridge-stale" && /fail/i.test(p.state));
+  assert.ok(failures.length >= 1, "the operator is told the auto-remediation itself failed");
+  const successes = h.pushes.filter((p) => p.family === "bridge-stale" && !/fail/i.test(p.state));
+  assert.equal(successes.length, 0, "a failed restart never claims success");
+});
+
+test("a new relevant commit re-arms the attempt budget after a capped-out failure", async () => {
+  const h = staleHarness({ etime: "05:00:00", bootstrapExit: 5 });
+  for (let i = 0; i < 6; i += 1) await sweepTick(h.deps);
+  const before = h.execCalls.filter((c) => c.cmd === "launchctl" && c.args[0] === "bootout").length;
+  // A newer commit lands: the cap is per target SHA, so remediation retries.
+  h.deps.execFn = staleExecFn(h, { etime: "05:00:00", commitSha: "abc1234", bootstrapExit: 5 });
+  await sweepTick(h.deps);
+  const after = h.execCalls.filter((c) => c.cmd === "launchctl" && c.args[0] === "bootout").length;
+  assert.ok(after > before, "a different target SHA resets the attempt counter");
+});
+
+test("a successful restart re-arms dedup for a genuine second restart on a later commit", async () => {
+  const h = staleHarness({ etime: "05:00:00", commitSha: "1111111" });
+  await sweepTick(h.deps);
+  h.deps.execFn = staleExecFn(h, { etime: "05:00:00", commitSha: "2222222" });
+  await sweepTick(h.deps);
+  const states = h.pushes.filter((p) => p.family === "bridge-stale").map((p) => p.state);
+  assert.equal(new Set(states).size, states.length, `each genuine restart carries its own dedup state: ${states.join(",")}`);
+  assert.equal(states.length, 2);
+});
+
+test("a bridge launchd reports as down is left to the bridge-liveness family", async () => {
+  const h = staleHarness({ etime: "05:00:00", running: false });
+  await sweepTick(h.deps);
+  const subs = h.execCalls.filter((c) => c.cmd === "launchctl").map((c) => c.args[0]);
+  assert.equal(subs.includes("bootout"), false, "down-detection is bridge-liveness's job, not this family's");
+});
+
+test("an unparseable ps etime is a logged skip, never a restart and never a family failure", async () => {
+  const h = staleHarness({ etime: "05:00:00" });
+  const base = h.deps.execFn;
+  h.deps.execFn = async (cmd, args, opts) => {
+    if (cmd === "ps") {
+      h.execCalls.push({ cmd, args, opts });
+      return { stdout: "not-a-duration\n", stderr: "", exitCode: 0 };
+    }
+    return base(cmd, args, opts);
+  };
+  const results = await sweepTick(h.deps);
+  assert.equal(results["bridge-stale"], "ok");
+  const subs = h.execCalls.filter((c) => c.cmd === "launchctl").map((c) => c.args[0]);
+  assert.equal(subs.includes("bootout"), false, "an unreadable start time is never grounds for a restart");
+});
+
+test("an exploding launchctl in the stale family is caught and the rest of the tick still runs", async () => {
+  const h = staleHarness({ etime: "05:00:00" });
+  const base = h.deps.execFn;
+  h.deps.execFn = async (cmd, args, opts) => {
+    if (cmd === "git") throw new Error("git exploded");
+    return base(cmd, args, opts);
+  };
+  const results = await sweepTick(h.deps);
+  assert.equal(results["bridge-stale"], "failed", "the failure is recorded, not propagated");
+  assert.equal(results["memory-lint"], "ok", "later families still ran");
+>>>>>>> 16e5bc4 (Update TypeScript: sweep.test.ts via Edit [2026-07-24 02:33])
 });
 
 test("grep guard for proactive/sweep.test.ts: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
   const source = await (await import("node:fs/promises")).readFile(new URL("./sweep.test.ts", import.meta.url), "utf8");
   const realFetchCall = /fetch\(\s*["'`]https:\/\/api\.telegram\.org/;
   assert.equal(realFetchCall.test(source), false);
+});
+
+test("grep guard: no test in this file can bootout the real bridge — every launchctl call goes through an injected execFn", async () => {
+  const source = await (await import("node:fs/promises")).readFile(new URL("./sweep.test.ts", import.meta.url), "utf8");
+  // defaultExecFn is the only path to a real subprocess. It may be imported
+  // and unit-tested on harmless commands, but must never be wired into a
+  // SweepDeps used by sweepTick, and never given launchctl/bootout.
+  assert.equal(/execFn:\s*defaultExecFn/.test(source), false, "no harness ever uses the real execFn");
+  assert.equal(/defaultExecFn\(\s*["'`]launchctl/.test(source), false, "defaultExecFn is never handed launchctl");
+  assert.equal(/bootout/.test(source.replace(/["'`]bootout["'`]|launchctl:bootout|\/\/.*/g, "")), false, "bootout appears only as a stubbed-arg string literal");
 });
