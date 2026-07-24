@@ -2863,7 +2863,7 @@ test("RCA item 6: the abort-artifact prefix is one-shot — it does not leak int
   await bridge.stop();
 
   assert.equal(seen.length, 3, `expected three turns, got: ${JSON.stringify(seen)}`);
-  assert.ok(seen[1]!.includes("auto-aborted"));
+  assert.ok(seen[1]!.includes("aborted by the bridge"));
   assert.equal(seen[2], "third", "the third turn must be unprefixed — no abort preceded it");
 });
 
