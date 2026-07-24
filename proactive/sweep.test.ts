@@ -1567,7 +1567,8 @@ test("the tmp sweep only ever touches paths under the injected homeDir's .rachel
   for (const path of unlinked) {
     assert.ok(path.startsWith(join(h.homeDir, ".rachel", "tmp") + "/"), `unlink escaped the tmp dir: ${path}`);
   }
-=======
+});
+
 // --- bridge-stale: the auto-remediating stale-process family (RCA item 11) ---
 //
 // Every test here drives a fully-stubbed execFn: launchctl, ps and git are all
