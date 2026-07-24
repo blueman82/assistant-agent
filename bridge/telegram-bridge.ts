@@ -894,6 +894,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     await processUpdates(result ?? []);
     await checkWatchdogs({
       watchdogDir,
+      wakeDir,
       pollPeriodMs: pollIntervalMs,
       fs: resolvedFs,
       isPidAlive: resolvedIsPidAlive,
