@@ -3978,3 +3978,71 @@ test("ticker: a turn that finishes inside the 3s grace window sends no placehold
   assert.equal(silentSends.length, 0, "no ticker placeholder should be sent for a turn inside the grace window");
   assert.equal(edits.length, 0, "no ticker edits should occur for a turn inside the grace window");
 });
+
+test("ticker: a turn that outruns the grace window sends a silent placeholder, then an in-place edit carrying elapsed time and the latest tool event, before the turn ends", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
+  for (const c of calls) void c; // keep lint quiet if calls unused before assertions below
+
+  const sendMessageIds: number[] = [];
+  const wrappedTransport: typeof transport = async (input, init) => {
+    const res = await transport(input, init);
+    const url = String(input);
+    if (url.includes("/sendMessage")) sendMessageIds.push(9001);
+    return url.includes("/sendMessage")
+      ? ({ ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response)
+      : res;
+  };
+
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("  [Bash] npm test", "tool");
+    await new Promise((r) => setTimeout(r, 2600));
+    emit("  [Read] bridge/api.ts", "tool");
+    await new Promise((r) => setTimeout(r, 2600));
+    emit("Job finished.", "text");
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport: wrappedTransport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    typingIntervalMs: 100000,
+  });
+
+  await bridge.drainOnce();
+  // t=3.5s: grace has expired (3s) and the immediate first edit should have
+  // fired, but the turn (5.2s) has not finished yet — this is the window
+  // that proves the ticker updates DURING the turn, not only at the end.
+  await new Promise((resolve) => setTimeout(resolve, 3500));
+
+  const editsSoFar = calls.filter((c) => c.url.includes("/editMessageText"));
+  const editTexts = editsSoFar.map((c) => String((c.body as Record<string, unknown>)["text"] ?? ""));
+
+  assert.ok(editsSoFar.length >= 1, `expected at least one editMessageText before turn completion, got ${editsSoFar.length}`);
+  assert.ok(
+    editTexts.some((t) => /\d+m\d+s|\d+s/.test(t)),
+    `expected an edit with elapsed-time reading, got: ${JSON.stringify(editTexts)}`,
+  );
+  assert.ok(
+    editTexts.some((t) => t.includes("npm test") || t.includes("bridge/api.ts")),
+    `expected an edit carrying the latest tool event, got: ${JSON.stringify(editTexts)}`,
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  await bridge.stop();
+
+  const sends = calls.filter((c) => c.url.includes("/sendMessage"));
+  const silentSends = sends.filter((c) => (c.body as Record<string, unknown>)["disable_notification"] === true);
+  assert.equal(silentSends.length, 1, "expected exactly one silent ticker placeholder");
+
+  const finalReply = sends.find(
+    (c) => String((c.body as Record<string, unknown>)["text"] ?? "").includes("Job finished.") &&
+      (c.body as Record<string, unknown>)["disable_notification"] !== true,
+  );
+  assert.ok(finalReply, "expected the final reply to be sent as its own notifying message");
+});
