@@ -130,6 +130,13 @@ test("calendar events GET with unrelated flags starting in d -> false, since no 
   );
 });
 
+test("calendar events GET with -D dump-header -> false, since -D is a read flag, not -d", () => {
+  assert.equal(
+    matchesBashSendPattern("curl -D headers.txt https://www.googleapis.com/calendar/v3/calendars/primary/events"),
+    false,
+  );
+});
+
 // Hole 2: Telegram send endpoints beyond sendMessage.
 
 test("telegram sendVoice -> true", () => {
