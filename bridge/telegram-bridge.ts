@@ -575,6 +575,10 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
 
     if (text === "/reset") {
       resetSession();
+      // A fresh session holds none of the aborted turn's residue, so there is
+      // nothing left to explain — carrying the note across would assert an
+      // abort into a context that has no trace of one.
+      pendingAbortNotice = false;
       await reply("Session reset.");
       return;
     }
