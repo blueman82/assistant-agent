@@ -4199,23 +4199,24 @@ test("ticker: skips an edit when the rendered text is unchanged from the last se
   await bridge.stop();
 
   const edits = calls.filter((c) => c.url.includes("/editMessageText"));
-  const editTexts = edits.map((c) => String(c.body["text"] ?? ""));
+  const editTexts = edits.map((c) => String((c.body as Record<string, unknown>)["text"] ?? ""));
   for (let i = 1; i < editTexts.length; i++) {
     assert.notEqual(editTexts[i], editTexts[i - 1], `expected no two consecutive edits with identical text, got: ${JSON.stringify(editTexts)}`);
   }
 });
 
 test("ticker: a 429 with retry_after is honoured (waited out) and future cadence is doubled, without throwing into the drain loop", async () => {
-  const calls: { url: string; body: Record<string, unknown> }[] = [];
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
   let editAttempts = 0;
-  const transport: typeof fetch = async (input, init) => {
+  const recordingTransport: typeof transport = async (input, init) => {
     const url = String(input);
-    const body = init?.body ? (JSON.parse(init.body as string) as Record<string, unknown>) : {};
-    calls.push({ url, body });
-    if (url.includes("/getUpdates")) return { ok: true, json: async () => ({ ok: true, result: [] }) } as Response;
     if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
     if (url.includes("/editMessageText")) {
       editAttempts++;
+      await transport(input, init); // records the call
       if (editAttempts === 1) {
         // First edit (fires at grace expiry) is rate-limited.
         return {
@@ -4226,7 +4227,7 @@ test("ticker: a 429 with retry_after is honoured (waited out) and future cadence
       }
       return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
     }
-    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+    return transport(input, init);
   };
 
   const runTurnStub: BridgeRunTurn = async (_input, emit) => {
@@ -4237,7 +4238,7 @@ test("ticker: a 429 with retry_after is honoured (waited out) and future cadence
 
   const bridge = createBridge({
     ...basePushOpts(),
-    config: { token: "t", chatId: "12345", transport },
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
     resetSession: () => {},
@@ -4250,24 +4251,24 @@ test("ticker: a 429 with retry_after is honoured (waited out) and future cadence
   await bridge.stop();
 
   assert.ok(editAttempts >= 2, `expected the ticker to retry after honouring retry_after, got ${editAttempts} attempt(s)`);
-  const successfulEdits = calls.filter((c) => c.url.includes("/editMessageText")).slice(1);
+  const successfulEdits = calls.filter((c) => c.url.includes("/editMessageText"));
   assert.ok(successfulEdits.length >= 1, "expected at least one successful edit after the 429 was honoured");
 });
 
 test("ticker: exponential backoff freezes after 3 consecutive edit failures and never throws into the drain loop", async () => {
-  const calls: { url: string; body: Record<string, unknown> }[] = [];
+  const { transport } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
   let editAttempts = 0;
-  const transport: typeof fetch = async (input, init) => {
+  const recordingTransport: typeof transport = async (input, init) => {
     const url = String(input);
-    const body = init?.body ? (JSON.parse(init.body as string) as Record<string, unknown>) : {};
-    calls.push({ url, body });
-    if (url.includes("/getUpdates")) return { ok: true, json: async () => ({ ok: true, result: [] }) } as Response;
     if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
     if (url.includes("/editMessageText")) {
       editAttempts++;
       return { ok: false, json: async () => ({ ok: false, description: "Internal Server Error" }) } as Response;
     }
-    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+    return transport(input, init);
   };
 
   const runTurnStub: BridgeRunTurn = async (_input, emit) => {
@@ -4286,7 +4287,7 @@ test("ticker: exponential backoff freezes after 3 consecutive edit failures and 
 
   const bridge = createBridge({
     ...basePushOpts(),
-    config: { token: "t", chatId: "12345", transport },
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
     runTurn: wrappedRunTurn,
     getSessionId: () => undefined,
     resetSession: () => {},
@@ -4303,14 +4304,14 @@ test("ticker: exponential backoff freezes after 3 consecutive edit failures and 
 });
 
 test("ticker: never fires under 120 edits — the edit cap is enforced even on an extremely long turn", async () => {
-  const calls: { url: string; body: Record<string, unknown> }[] = [];
-  const transport: typeof fetch = async (input, init) => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
+  const recordingTransport: typeof transport = async (input, init) => {
     const url = String(input);
-    const body = init?.body ? (JSON.parse(init.body as string) as Record<string, unknown>) : {};
-    calls.push({ url, body });
-    if (url.includes("/getUpdates")) return { ok: true, json: async () => ({ ok: true, result: [] }) } as Response;
     if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
-    return { ok: true, json: async () => ({ ok: true, result: {} }) } as Response;
+    return transport(input, init);
   };
 
   // Simulate 130 renders directly against the cap constant rather than
@@ -4329,7 +4330,7 @@ test("ticker: never fires under 120 edits — the edit cap is enforced even on a
 
   const bridge = createBridge({
     ...basePushOpts(),
-    config: { token: "t", chatId: "12345", transport },
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
     resetSession: () => {},
