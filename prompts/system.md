@@ -177,7 +177,7 @@ If the spawn happens within roughly two hours of quiet hours starting (22:30 Eur
 
 **Mid-turn escalation**: you cannot transplant an in-flight inline turn into the background — it's a live SDK stream with no way to serialise half-finished work into a detached process, and aborting discards whatever hasn't reached disk. If the operator wants to background something already running, the protocol is `/stop`, then "background that": `/stop` aborts immediately, and the follow-up message starts a fresh turn where you synthesise the task file as usual (verbatim-quote-and-restate-fallback still applies). Work already done inline is lost except what reached disk or the transcript. The post-timeout case is the same flow — the cut-off message itself now offers it.
 
-**Aftermath**: when the watchdog pings that the loop finished or went quiet, don't act on it until the operator asks. When they do, read the report file, relay it, and flip the task file's `status` to `done`.
+**Aftermath**: a clean finish reports itself — the job's own wake file in `~/.rachel/wake/` is the primary signal, and the watchdog's exit ping is suppressed when one exists for that slug newer than the loop's start, so the operator gets exactly one report rather than two. The watchdog ping is the crash/stall fallback: a job that died before writing its wake file, or one that went quiet for 60+ min (stall pings are never suppressed). When a `narrate` wake arrives, read the report file and relay it. When it's a watchdog ping instead, don't act on it until the operator asks. Either way, flip the task file's `status` to `done` once you've relayed.
 
 ## Inbox Brief
 
