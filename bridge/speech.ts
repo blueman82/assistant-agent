@@ -13,8 +13,29 @@ const VENV_PYTHON = join(homedir(), ".rachel", "venvs", "speech", "bin", "python
 const TRANSCRIBE_SCRIPT = join(REPO_DIR, "scripts", "speech", "transcribe.py");
 const SYNTHESIZE_SCRIPT = join(REPO_DIR, "scripts", "speech", "synthesize.py");
 
-const TRANSCRIBE_TIMEOUT_MS = 30_000;
+// A human may legitimately send a long voice note, and transcription cost
+// scales with audio length. The old 30s budget was sized for the compute
+// alone; it SIGTERMed five real transcriptions on 2026-07-23 when a stalled
+// HuggingFace hub check ate the whole budget before the audio was touched.
+// HF_HUB_OFFLINE (below) removes that stall; 2 minutes covers the audio.
+const TRANSCRIBE_TIMEOUT_MS = 120_000;
 const CONVERT_TIMEOUT_MS = 15_000;
+
+// Both mlx-whisper and mlx-audio perform a HuggingFace Hub freshness check on
+// every call even when the model is fully cached locally. Measured 2026-07-23:
+// 12.2s with the check ("Fetching 4 files" on stderr) vs 4.3s with it off, and
+// with the HF endpoint unreachable it hung past 45s before touching the audio
+// at all. HF_HUB_OFFLINE=1 tells huggingface_hub to use the local cache only.
+// scripts/speech/setup.sh pre-fetches and verifies both models so offline mode
+// can never meet a cold cache — that pre-fetch is this flag's safety net.
+//
+// Built per call and spread over process.env deliberately: node's execFile
+// REPLACES the child environment rather than merging it, and huggingface_hub
+// locates its cache via HOME. A bare { HF_HUB_OFFLINE: "1" } would strip HOME
+// and turn offline mode into a guaranteed cache miss.
+function hfOfflineEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, HF_HUB_OFFLINE: "1" };
+}
 
 // Synthesis cost scales with text length, so a flat budget is a cliff, not a
 // limit. Measured on host against the real venv: 210 chars -> 6s (dominated by
