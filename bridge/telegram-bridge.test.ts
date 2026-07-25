@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync, existsSync as realExistsSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync as realExistsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -4344,22 +4344,6 @@ test("checkLaunchAllowed: worktree path containing repo basename blocks launch (
 });
 
 // ---------------------------------------------------------------------------
-// Streaming ticker (Part A of the wake-channel spec): a turn that outruns a
-// 3s grace window gets a silent placeholder message that edits in place with
-// elapsed time + the latest live event, so Gary sees the bridge is alive on
-// a long-running turn instead of Telegram-side silence. A turn that finishes
-// inside the grace window shows no ticker at all — that's the point of the
-// grace window, not an oversight.
-// ---------------------------------------------------------------------------
-
-test("ticker: a turn that finishes inside the 3s grace window sends no placeholder and no edits", async () => {
-  const { transport, calls } = makeStubTransport([
-    messageUpdate(1, "quick question"),
-    { ok: true, result: [] },
-  ]);
-
-  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
-    emit("instant answer", "text");
 // Wake channel consumer (spec Part B). These use REAL temp dirs rather than
 // the stub fs above: the whole point of the design is the .done/.bad rename
 // semantics, which are real filesystem behaviour.
@@ -4410,50 +4394,6 @@ test("wake consumer: a narrate wake starts a real Rachel turn carrying its sourc
     getSessionId: () => undefined,
     resetSession: () => {},
     pollIntervalMs: 5,
-  });
-
-  await bridge.drainOnce();
-  // Wait past the 3s grace window to prove the grace timer was cleared on
-  // turn completion, not merely that no ticker had fired yet by 30ms.
-  await new Promise((resolve) => setTimeout(resolve, 3300));
-  await bridge.stop();
-
-  const sends = calls.filter((c) => c.url.includes("/sendMessage"));
-  const edits = calls.filter((c) => c.url.includes("/editMessageText"));
-  const silentSends = sends.filter((c) => (c.body as Record<string, unknown>)["disable_notification"] === true);
-
-  assert.equal(silentSends.length, 0, "no ticker placeholder should be sent for a turn inside the grace window");
-  assert.equal(edits.length, 0, "no ticker edits should occur for a turn inside the grace window");
-});
-
-test("ticker: a turn that outruns the grace window sends a silent placeholder, then an in-place edit carrying elapsed time and the latest tool event, before the turn ends", async () => {
-  const { transport, calls } = makeStubTransport([
-    messageUpdate(1, "run a long job"),
-    { ok: true, result: [] },
-  ]);
-
-  // sendMessage must return a message_id so the ticker can issue edits
-  // against it — the stub transport's default response doesn't carry one.
-  const wrappedTransport: typeof transport = async (input, init) => {
-    const url = String(input);
-    if (url.includes("/sendMessage")) {
-      await transport(input, init); // still records the call
-      return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
-    }
-    return transport(input, init);
-  };
-
-  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
-    emit("  [Bash] npm test", "tool");
-    await new Promise((r) => setTimeout(r, 2600));
-    emit("  [Read] bridge/api.ts", "tool");
-    await new Promise((r) => setTimeout(r, 2600));
-    emit("Job finished.", "text");
-  };
-
-  const bridge = createBridge({
-    ...basePushOpts(),
-    config: { token: "t", chatId: "12345", transport: wrappedTransport },
     typingIntervalMs: 100000,
     wakeDir,
   });
@@ -4489,61 +4429,6 @@ test("wake consumer: an fyi wake reaches Telegram without starting a turn", asyn
     resetSession: () => {},
     pollIntervalMs: 5,
     typingIntervalMs: 100000,
-  });
-
-  await bridge.drainOnce();
-  // t=3.5s: grace has expired (3s) and the immediate first edit should have
-  // fired, but the turn (5.2s) has not finished yet — this is the window
-  // that proves the ticker updates DURING the turn, not only at the end.
-  await new Promise((resolve) => setTimeout(resolve, 3500));
-
-  const editsSoFar = calls.filter((c) => c.url.includes("/editMessageText"));
-  const editTexts = editsSoFar.map((c) => String((c.body as Record<string, unknown>)["text"] ?? ""));
-
-  assert.ok(editsSoFar.length >= 1, `expected at least one editMessageText before turn completion, got ${editsSoFar.length}`);
-  assert.ok(
-    editTexts.some((t) => /\d+m\d+s|\d+s/.test(t)),
-    `expected an edit with elapsed-time reading, got: ${JSON.stringify(editTexts)}`,
-  );
-  assert.ok(
-    editTexts.some((t) => t.includes("npm test") || t.includes("bridge/api.ts")),
-    `expected an edit carrying the latest tool event, got: ${JSON.stringify(editTexts)}`,
-  );
-
-  await new Promise((resolve) => setTimeout(resolve, 2000));
-  await bridge.stop();
-
-  const sends = calls.filter((c) => c.url.includes("/sendMessage"));
-  const silentSends = sends.filter((c) => (c.body as Record<string, unknown>)["disable_notification"] === true);
-  assert.equal(silentSends.length, 1, "expected exactly one silent ticker placeholder");
-
-  const finalReply = sends.find(
-    (c) => String((c.body as Record<string, unknown>)["text"] ?? "").includes("Job finished.") &&
-      (c.body as Record<string, unknown>)["disable_notification"] !== true,
-  );
-  assert.ok(finalReply, "expected the final reply to be sent as its own notifying message");
-});
-
-test("ticker: terminal edit on a turn that errors reads 'failed', not 'done'", async () => {
-  const { transport, calls } = makeStubTransport([
-    messageUpdate(1, "run a long job"),
-    { ok: true, result: [] },
-  ]);
-  const recordingTransport: typeof transport = async (input, init) => {
-    const url = String(input);
-    if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
-    return transport(input, init);
-  };
-
-  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
-    emit("  [Bash] npm test", "tool");
-    await new Promise((r) => setTimeout(r, 3200));
-    throw new Error("boom");
-  };
-
-  const bridge = createBridge({
-    ...basePushOpts(),
-    config: { token: "t", chatId: "12345", transport: recordingTransport },
     wakeDir,
   });
 
@@ -4643,6 +4528,311 @@ test("wake consumer: malformed JSON is renamed .bad and never crashes the poll l
     resetSession: () => {},
     pollIntervalMs: 5,
     typingIntervalMs: 100000,
+    wakeDir,
+  });
+
+  // Must not throw — a malformed producer file cannot be allowed to kill polling.
+  await bridge.drainOnce();
+  await sleepMs(300);
+  await bridge.stop();
+
+  assert.deepEqual(realReaddirSync(wakeDir), ["broken.json.bad"]);
+  assert.deepEqual(turnInputs, []);
+  assert.deepEqual(sentTexts(calls), [], "a malformed wake produces no delivery");
+});
+
+test("wake consumer: a field that cannot coerce to a string is quarantined .bad, not replayed forever", async () => {
+  // Valid JSON, but wake.message's shape makes String() throw (no toString/
+  // valueOf primitive coercion path) — this used to escape checkWakeFiles
+  // uncaught, since the String() calls sat between the JSON.parse catch and
+  // the claiming rename, so the file was never renamed off .json and the
+  // outer poll-loop catch retried the same poison file forever.
+  const wakeDir = makeWakeDir();
+  writeWakeFile(wakeDir, "poison.json", '{"id":"p","source":"s","mode":"fyi","severity":"normal","message":{"toString":1,"valueOf":2},"created_at":"now"}');
+
+  const { transport, calls } = makeStubTransport([{ ok: true, result: [] }]);
+  const turnInputs: string[] = [];
+  const runTurnStub: BridgeRunTurn = async (input) => { turnInputs.push(input); };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    typingIntervalMs: 100000,
+    wakeDir,
+  });
+
+  // Must not throw — a poison field must not crash the poll loop.
+  await bridge.drainOnce();
+  await sleepMs(300);
+  await bridge.stop();
+
+  assert.deepEqual(realReaddirSync(wakeDir), ["poison.json.bad"], "the poison file must be quarantined, not left as .json to replay");
+  assert.deepEqual(turnInputs, []);
+  assert.deepEqual(sentTexts(calls), [], "a quarantined wake produces no delivery");
+});
+
+test("wake consumer: a top-level null wake file is quarantined .bad, not replayed forever", async () => {
+  // Valid JSON (the literal `null`), but every field access on it throws —
+  // same failure shape as the poison-object case above, different trigger.
+  const wakeDir = makeWakeDir();
+  writeWakeFile(wakeDir, "nullwake.json", "null");
+
+  const { transport, calls } = makeStubTransport([{ ok: true, result: [] }]);
+  const turnInputs: string[] = [];
+  const runTurnStub: BridgeRunTurn = async (input) => { turnInputs.push(input); };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    typingIntervalMs: 100000,
+    wakeDir,
+  });
+
+  await bridge.drainOnce();
+  await sleepMs(300);
+  await bridge.stop();
+
+  assert.deepEqual(realReaddirSync(wakeDir), ["nullwake.json.bad"], "a null wake file must be quarantined, not left as .json to replay");
+  assert.deepEqual(turnInputs, []);
+  assert.deepEqual(sentTexts(calls), [], "a quarantined wake produces no delivery");
+});
+
+test("wake consumer: the wake file is renamed .done BEFORE the turn is dispatched (at-most-once)", async () => {
+  const wakeDir = makeWakeDir();
+  writeWakeFile(wakeDir, "ordered.json", {
+    id: "ordered", source: "adhoc:ordered", mode: "narrate",
+    severity: "normal", message: "ordering probe",
+    created_at: new Date().toISOString(),
+  });
+
+  const { transport } = makeStubTransport([{ ok: true, result: [] }]);
+  // Snapshot the on-disk state from INSIDE the turn: if the rename happened
+  // before dispatch, the .json is already gone by the time runTurn is entered.
+  let dirDuringTurn: string[] = [];
+  const runTurnStub: BridgeRunTurn = async () => {
+    dirDuringTurn = realReaddirSync(wakeDir);
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    typingIntervalMs: 100000,
+    wakeDir,
+  });
+
+  await bridge.drainOnce();
+  await sleepMs(300);
+  await bridge.stop();
+
+  assert.ok(!dirDuringTurn.includes("ordered.json"), `the pending .json must already be renamed when the turn starts, saw: ${JSON.stringify(dirDuringTurn)}`);
+  assert.deepEqual(dirDuringTurn, ["ordered.done"]);
+});
+
+test("wake consumer: at most 5 wake files are processed per poll iteration", async () => {
+  const wakeDir = makeWakeDir();
+  for (let i = 0; i < 8; i++) {
+    writeWakeFile(wakeDir, `w${i}.json`, {
+      id: `w${i}`, source: "sweep:flood", mode: "fyi",
+      severity: "normal", message: `flood ${i}`,
+      created_at: new Date().toISOString(),
+    });
+  }
+
+  const { transport } = makeStubTransport([{ ok: true, result: [] }]);
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => {},
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    typingIntervalMs: 100000,
+    wakeDir,
+  });
+
+  await bridge.drainOnce();
+  await sleepMs(300);
+  await bridge.stop();
+
+  const entries = realReaddirSync(wakeDir);
+  assert.equal(entries.filter((f) => f.endsWith(".done")).length, 5, `expected exactly 5 consumed per iteration, got: ${JSON.stringify(entries)}`);
+  assert.equal(entries.filter((f) => f.endsWith(".json")).length, 3, `expected 3 left pending, got: ${JSON.stringify(entries)}`);
+});
+
+test("wake consumer: an absent wake directory is a silent no-op", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "rachel-wake-absent-"));
+  const wakeDir = join(parent, "never-created");
+
+  const { transport, calls } = makeStubTransport([{ ok: true, result: [] }]);
+  const turnInputs: string[] = [];
+  const runTurnStub: BridgeRunTurn = async (input) => { turnInputs.push(input); };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    typingIntervalMs: 100000,
+    wakeDir,
+  });
+
+  await bridge.drainOnce();
+  await sleepMs(300);
+  await bridge.stop();
+
+  assert.deepEqual(turnInputs, []);
+  assert.deepEqual(sentTexts(calls), []);
+});
+
+// ---------------------------------------------------------------------------
+// Streaming ticker (Part A of the wake-channel spec): a turn that outruns a
+// 3s grace window gets a silent placeholder message that edits in place with
+// elapsed time + the latest live event, so Gary sees the bridge is alive on
+// a long-running turn instead of Telegram-side silence. A turn that finishes
+// inside the grace window shows no ticker at all — that's the point of the
+// grace window, not an oversight.
+// ---------------------------------------------------------------------------
+
+test("ticker: a turn that finishes inside the 3s grace window sends no placeholder and no edits", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "quick question"),
+    { ok: true, result: [] },
+  ]);
+
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("instant answer", "text");
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  // Wait past the 3s grace window to prove the grace timer was cleared on
+  // turn completion, not merely that no ticker had fired yet by 30ms.
+  await new Promise((resolve) => setTimeout(resolve, 3300));
+  await bridge.stop();
+
+  const sends = calls.filter((c) => c.url.includes("/sendMessage"));
+  const edits = calls.filter((c) => c.url.includes("/editMessageText"));
+  const silentSends = sends.filter((c) => (c.body as Record<string, unknown>)["disable_notification"] === true);
+
+  assert.equal(silentSends.length, 0, "no ticker placeholder should be sent for a turn inside the grace window");
+  assert.equal(edits.length, 0, "no ticker edits should occur for a turn inside the grace window");
+});
+
+test("ticker: a turn that outruns the grace window sends a silent placeholder, then an in-place edit carrying elapsed time and the latest tool event, before the turn ends", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
+
+  // sendMessage must return a message_id so the ticker can issue edits
+  // against it — the stub transport's default response doesn't carry one.
+  const wrappedTransport: typeof transport = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/sendMessage")) {
+      await transport(input, init); // still records the call
+      return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
+    }
+    return transport(input, init);
+  };
+
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("  [Bash] npm test", "tool");
+    await new Promise((r) => setTimeout(r, 2600));
+    emit("  [Read] bridge/api.ts", "tool");
+    await new Promise((r) => setTimeout(r, 2600));
+    emit("Job finished.", "text");
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport: wrappedTransport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    typingIntervalMs: 100000,
+  });
+
+  await bridge.drainOnce();
+  // t=3.5s: grace has expired (3s) and the immediate first edit should have
+  // fired, but the turn (5.2s) has not finished yet — this is the window
+  // that proves the ticker updates DURING the turn, not only at the end.
+  await new Promise((resolve) => setTimeout(resolve, 3500));
+
+  const editsSoFar = calls.filter((c) => c.url.includes("/editMessageText"));
+  const editTexts = editsSoFar.map((c) => String((c.body as Record<string, unknown>)["text"] ?? ""));
+
+  assert.ok(editsSoFar.length >= 1, `expected at least one editMessageText before turn completion, got ${editsSoFar.length}`);
+  assert.ok(
+    editTexts.some((t) => /\d+m\d+s|\d+s/.test(t)),
+    `expected an edit with elapsed-time reading, got: ${JSON.stringify(editTexts)}`,
+  );
+  assert.ok(
+    editTexts.some((t) => t.includes("npm test") || t.includes("bridge/api.ts")),
+    `expected an edit carrying the latest tool event, got: ${JSON.stringify(editTexts)}`,
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  await bridge.stop();
+
+  const sends = calls.filter((c) => c.url.includes("/sendMessage"));
+  const silentSends = sends.filter((c) => (c.body as Record<string, unknown>)["disable_notification"] === true);
+  assert.equal(silentSends.length, 1, "expected exactly one silent ticker placeholder");
+
+  const finalReply = sends.find(
+    (c) => String((c.body as Record<string, unknown>)["text"] ?? "").includes("Job finished.") &&
+      (c.body as Record<string, unknown>)["disable_notification"] !== true,
+  );
+  assert.ok(finalReply, "expected the final reply to be sent as its own notifying message");
+});
+
+test("ticker: terminal edit on a turn that errors reads 'failed', not 'done'", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "run a long job"),
+    { ok: true, result: [] },
+  ]);
+  const recordingTransport: typeof transport = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/sendMessage")) return { ok: true, json: async () => ({ ok: true, result: { message_id: 9001 } }) } as Response;
+    return transport(input, init);
+  };
+
+  const runTurnStub: BridgeRunTurn = async (_input, emit) => {
+    emit("  [Bash] npm test", "tool");
+    await new Promise((r) => setTimeout(r, 3200));
+    throw new Error("boom");
+  };
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport: recordingTransport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    typingIntervalMs: 100000,
   });
 
   await bridge.drainOnce();
@@ -4678,35 +4868,6 @@ test("ticker: terminal edit on a turn that times out reads 'timed out', not 'don
   const bridge = createBridge({
     ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport: recordingTransport },
-    wakeDir,
-  });
-
-  // Must not throw — a malformed producer file cannot be allowed to kill polling.
-  await bridge.drainOnce();
-  await sleepMs(300);
-  await bridge.stop();
-
-  assert.deepEqual(realReaddirSync(wakeDir), ["broken.json.bad"]);
-  assert.deepEqual(turnInputs, []);
-  assert.deepEqual(sentTexts(calls), [], "a malformed wake produces no delivery");
-});
-
-test("wake consumer: a field that cannot coerce to a string is quarantined .bad, not replayed forever", async () => {
-  // Valid JSON, but wake.message's shape makes String() throw (no toString/
-  // valueOf primitive coercion path) — this used to escape checkWakeFiles
-  // uncaught, since the String() calls sat between the JSON.parse catch and
-  // the claiming rename, so the file was never renamed off .json and the
-  // outer poll-loop catch retried the same poison file forever.
-  const wakeDir = makeWakeDir();
-  writeWakeFile(wakeDir, "poison.json", '{"id":"p","source":"s","mode":"fyi","severity":"normal","message":{"toString":1,"valueOf":2},"created_at":"now"}');
-
-  const { transport, calls } = makeStubTransport([{ ok: true, result: [] }]);
-  const turnInputs: string[] = [];
-  const runTurnStub: BridgeRunTurn = async (input) => { turnInputs.push(input); };
-
-  const bridge = createBridge({
-    ...basePushOpts(),
-    config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
     resetSession: () => {},
@@ -4767,36 +4928,6 @@ test("ticker: coalesces to the latest event only — an edit never carries a sta
   assert.ok(!editTexts.some((t) => t.includes("first-event")), `no edit should carry the stale first event once a newer one has arrived, got: ${JSON.stringify(editTexts)}`);
 });
 
-test("wake consumer: a top-level null wake file is quarantined .bad, not replayed forever", async () => {
-  // Valid JSON (the literal `null`), but every field access on it throws —
-  // same failure shape as the poison-object case above, different trigger.
-  const wakeDir = makeWakeDir();
-  writeWakeFile(wakeDir, "nullwake.json", "null");
-
-  const { transport, calls } = makeStubTransport([{ ok: true, result: [] }]);
-  const turnInputs: string[] = [];
-  const runTurnStub: BridgeRunTurn = async (input) => { turnInputs.push(input); };
-
-  const bridge = createBridge({
-    ...basePushOpts(),
-    config: { token: "t", chatId: "12345", transport },
-    runTurn: runTurnStub,
-    getSessionId: () => undefined,
-    resetSession: () => {},
-    pollIntervalMs: 5,
-    typingIntervalMs: 100000,
-    wakeDir,
-  });
-
-  await bridge.drainOnce();
-  await sleepMs(300);
-  await bridge.stop();
-
-  assert.deepEqual(realReaddirSync(wakeDir), ["nullwake.json.bad"], "a null wake file must be quarantined, not left as .json to replay");
-  assert.deepEqual(turnInputs, []);
-  assert.deepEqual(sentTexts(calls), [], "a quarantined wake produces no delivery");
-});
-
 test("ticker: skips an edit when the rendered text is unchanged since the last sent edit", async () => {
   const { transport, calls } = makeStubTransport([
     messageUpdate(1, "run a long job"),
@@ -4822,49 +4953,6 @@ test("ticker: skips an edit when the rendered text is unchanged since the last s
   const bridge = createBridge({
     ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport: recordingTransport },
-    runTurn: runTurnStub,
-    getSessionId: () => undefined,
-    resetSession: () => {},
-    pollIntervalMs: 5,
-    typingIntervalMs: 100000,
-    tickerGraceMs: 10,
-    tickerJitterMinMs: 50,
-    tickerJitterMaxMs: 50,
-  });
-
-  await bridge.drainOnce();
-  await new Promise((resolve) => setTimeout(resolve, 700));
-  await bridge.stop();
-
-  const edits = calls.filter((c) => c.url.includes("/editMessageText"));
-  const editTexts = edits.map((c) => String((c.body as Record<string, unknown>)["text"] ?? ""));
-  // ~600ms at a 50ms render cadence is ~12 render attempts, but elapsed only
-  // advances in whole seconds, so an un-guarded ticker would send ~12
-  // edits; a guarded one sends at most a couple (grace-expiry render + the
-  // terminal edit once elapsed crosses a second boundary or the turn ends).
-  assert.ok(edits.length <= 3, `expected skip-if-unchanged to suppress most same-second renders, got ${edits.length} edits: ${JSON.stringify(editTexts)}`);
-});
-
-test("wake consumer: the wake file is renamed .done BEFORE the turn is dispatched (at-most-once)", async () => {
-  const wakeDir = makeWakeDir();
-  writeWakeFile(wakeDir, "ordered.json", {
-    id: "ordered", source: "adhoc:ordered", mode: "narrate",
-    severity: "normal", message: "ordering probe",
-    created_at: new Date().toISOString(),
-  });
-
-  const { transport } = makeStubTransport([{ ok: true, result: [] }]);
-  // Snapshot the on-disk state from INSIDE the turn: if the rename happened
-  // before dispatch, the .json is already gone by the time runTurn is entered.
-  let dirDuringTurn: string[] = [];
-  const runTurnStub: BridgeRunTurn = async () => {
-    dirDuringTurn = realReaddirSync(wakeDir);
-  };
-
-  const bridge = createBridge({
-    ...basePushOpts(),
-    config: { token: "t", chatId: "12345", transport: recordingTransport },
-    config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
     resetSession: () => {},
@@ -4937,59 +5025,6 @@ test("ticker: a 429 with retry_after is honoured, and the gap before the next ed
   const bridge = createBridge({
     ...basePushOpts(),
     config: { token: "t", chatId: "12345", transport: recordingTransport },
-    wakeDir,
-  });
-
-  await bridge.drainOnce();
-  await sleepMs(300);
-  await bridge.stop();
-
-  assert.ok(!dirDuringTurn.includes("ordered.json"), `the pending .json must already be renamed when the turn starts, saw: ${JSON.stringify(dirDuringTurn)}`);
-  assert.deepEqual(dirDuringTurn, ["ordered.done"]);
-});
-
-test("wake consumer: at most 5 wake files are processed per poll iteration", async () => {
-  const wakeDir = makeWakeDir();
-  for (let i = 0; i < 8; i++) {
-    writeWakeFile(wakeDir, `w${i}.json`, {
-      id: `w${i}`, source: "sweep:flood", mode: "fyi",
-      severity: "normal", message: `flood ${i}`,
-      created_at: new Date().toISOString(),
-    });
-  }
-
-  const { transport } = makeStubTransport([{ ok: true, result: [] }]);
-  const bridge = createBridge({
-    ...basePushOpts(),
-    config: { token: "t", chatId: "12345", transport },
-    runTurn: async () => {},
-    getSessionId: () => undefined,
-    resetSession: () => {},
-    pollIntervalMs: 5,
-    typingIntervalMs: 100000,
-    wakeDir,
-  });
-
-  await bridge.drainOnce();
-  await sleepMs(300);
-  await bridge.stop();
-
-  const entries = realReaddirSync(wakeDir);
-  assert.equal(entries.filter((f) => f.endsWith(".done")).length, 5, `expected exactly 5 consumed per iteration, got: ${JSON.stringify(entries)}`);
-  assert.equal(entries.filter((f) => f.endsWith(".json")).length, 3, `expected 3 left pending, got: ${JSON.stringify(entries)}`);
-});
-
-test("wake consumer: an absent wake directory is a silent no-op", async () => {
-  const parent = mkdtempSync(join(tmpdir(), "rachel-wake-absent-"));
-  const wakeDir = join(parent, "never-created");
-
-  const { transport, calls } = makeStubTransport([{ ok: true, result: [] }]);
-  const turnInputs: string[] = [];
-  const runTurnStub: BridgeRunTurn = async (input) => { turnInputs.push(input); };
-
-  const bridge = createBridge({
-    ...basePushOpts(),
-    config: { token: "t", chatId: "12345", transport },
     runTurn: runTurnStub,
     getSessionId: () => undefined,
     resetSession: () => {},
