@@ -14,19 +14,17 @@ docs/coderails/plans/
 # Personal task files — Gary's own, not for distribution. This repo runs on
 # one machine; nothing under tasks/ is shared. ONLY the generic example is
 # tracked. Everything else stays local, including anything created later.
-# The launchd plists are the one exception (see below).
 #
-# The personal task files remain runtime dependencies — read by the launchd
-# jobs and proactive/sweep.ts — so they must exist on disk here. They are
-# simply no longer distributed via git.
+# No exceptions for launchd plists (Gary, 2026-07-26): a plist committed to
+# this repo hardcoded an absolute, operator-identifying local path, and the
+# repo is public — that PR was closed and scrubbed, and the exception that
+# allowed it removed here. The personal task files AND the launchd plists
+# remain runtime dependencies — read by scripts/install.sh, the launchd
+# jobs, and proactive/sweep.ts — so they must exist on disk here. They are
+# simply no longer distributed via git, full stop.
 tasks/*
 !tasks/.gitkeep
 !tasks/EXAMPLE-task.md
-# The launchd plists are install machinery, not personal content: they carry no
-# operator name and no absolute path — scripts/install.sh stamps __REPO_PATH__
-# at install time. scripts/install.test.ts reads them from the checkout, so
-# untracking them fails 26 tests on any clean clone.
-!tasks/*-launchd.plist
 
 # Local agent config and personal artifacts — same principle as tasks/ above:
 # this repo runs on one machine, so none of it is distributed. All of it is
