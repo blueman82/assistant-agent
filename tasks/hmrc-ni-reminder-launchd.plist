@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Daily Telegram reminder: pay HMRC voluntary Class 2 National Insurance
+  contributions (see tasks/2026-07-26-hmrc-voluntary-ni-payment-reminder.md).
+
+  Not a Rachel/agent invocation — the message is fixed and needs no
+  reasoning, so this calls bridge/notify.ts directly against a static
+  message file (~/.rachel/reminders/hmrc-ni-payment-message.txt), the same
+  file-in/Telegram-out path Rachel's other one-shot proactive pushes use.
+
+  Fires once daily at 08:15 (chosen to sit clear of the other 08:xx jobs:
+  inbox-brief at 08:05, proactive-calendar at 08:00).
+
+  To disable once Gary confirms payment is done:
+    launchctl bootout gui/$(id -u)/com.rachel.hmrc-ni-reminder
+    rm ~/Library/LaunchAgents/com.rachel.hmrc-ni-reminder.plist
+  (also flip status: done in the task file above.)
+
+  Install: copy to ~/Library/LaunchAgents/com.rachel.hmrc-ni-reminder.plist,
+  replace __REPO_PATH__ with the absolute path to this repo checkout, then
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.rachel.hmrc-ni-reminder.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <key>Label</key>
+  <string>com.rachel.hmrc-ni-reminder</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__REPO_PATH__/node_modules/.bin/tsx</string>
+    <string>__REPO_PATH__/bridge/notify.ts</string>
+    <string>/Users/harrison/.rachel/reminders/hmrc-ni-payment-message.txt</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__REPO_PATH__</string>
+
+  <key>StandardOutPath</key>
+  <string>__REPO_PATH__/.rachel/hmrc-ni-reminder.log</string>
+  <key>StandardErrorPath</key>
+  <string>__REPO_PATH__/.rachel/hmrc-ni-reminder.log</string>
+
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict>
+      <key>Hour</key>
+      <integer>8</integer>
+      <key>Minute</key>
+      <integer>15</integer>
+    </dict>
+  </array>
+</dict>
+</plist>
