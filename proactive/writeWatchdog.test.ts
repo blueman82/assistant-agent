@@ -159,6 +159,22 @@ test("cliMain rejects an unknown flag", async () => {
   assert.ok(!existsSync(join(dir, "rt-loop.watchdog.json")));
 });
 
+test("cliMain rejects a duplicate flag", async () => {
+  const dir = tmpDir();
+  const exitCode = await runInProcess([...validArgs(dir), "--pid", "12345"]);
+  assert.equal(exitCode, 2);
+  assert.ok(!existsSync(join(dir, "rt-loop.watchdog.json")));
+});
+
+test("cliMain rejects a pid past Number.MAX_SAFE_INTEGER rather than silently rounding it", async () => {
+  const dir = tmpDir();
+  // 2^53 + 1: passes the digits-only regex, but Number() would round it.
+  const args = validArgs(dir).map((a, i, all) => (all[i - 1] === "--pid" ? "9007199254740993" : a));
+  const exitCode = await runInProcess(args);
+  assert.equal(exitCode, 2);
+  assert.ok(!existsSync(join(dir, "rt-loop.watchdog.json")));
+});
+
 test("cliMain rejects a non-numeric pid", async () => {
   const dir = tmpDir();
   const args = validArgs(dir).map((a, i, all) => (all[i - 1] === "--pid" ? "abc" : a));
