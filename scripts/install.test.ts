@@ -367,13 +367,13 @@ test("verification names a service that failed to load and exits nonzero", () =>
 // Proves as a side effect that the repo path is resolved from the script's
 // own location, not from cwd or a hardcoded path.
 function makeFakeRepo(fakeRepo: string, opts: { nodeModules: boolean }): string {
-  for (const dir of ["scripts", "bridge", "tasks"]) mkdirSync(join(fakeRepo, dir), { recursive: true });
+  for (const dir of ["scripts", "bridge", "tasks", "launchd"]) mkdirSync(join(fakeRepo, dir), { recursive: true });
   const fakeInstaller = join(fakeRepo, "scripts", "install.sh");
   copyFileSync(INSTALLER, fakeInstaller);
   chmodSync(fakeInstaller, 0o755);
   copyFileSync(join(REPO_ROOT, "bridge", "launchd.plist"), join(fakeRepo, "bridge", "launchd.plist"));
   for (const f of ["inbox-brief-launchd.plist", "proactive-sweep-launchd.plist", "proactive-calendar-launchd.plist"]) {
-    copyFileSync(join(REPO_ROOT, "tasks", f), join(fakeRepo, "tasks", f));
+    copyFileSync(join(REPO_ROOT, "launchd", f), join(fakeRepo, "launchd", f));
   }
   if (opts.nodeModules) {
     const bin = join(fakeRepo, "node_modules", ".bin");

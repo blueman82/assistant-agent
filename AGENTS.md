@@ -39,17 +39,18 @@ This schema is a documented extension of the coderails wiki schema, not a fork o
 | `architecture/` | How the system is built — components, wiring, data flow |
 | `capabilities/` | What Rachel can do — one page per tool surface |
 | `patterns/` | Reusable approaches — how to extend, configure, evolve |
-| `investigations/` | Filed-back answers to Gary's queries |
+| `investigations/` | Filed-back answers to queries: a question posed, alternatives weighed, a conclusion recorded |
 | `sources/` | Ingested references — docs, gists, PRs |
 | `templates/` | Page skeletons — copy, don't edit |
-| `personal/` | Gary's own personal-life reference facts (memberships, appointments, contacts) — not about Rachel's engineering, but durable facts Rachel should recall on request |
+
+**`personal/` retired (Gary, 2026-07-28):** a `personal/` page type existed briefly for non-engineering reference material (gym membership, family health insurance). Removed entirely from the wiki vault — content deleted, history rewritten via `git filter-repo`, and the directory gitignored — because the wiki repo is public and personal-life facts (member numbers, premiums, family names) should never be committed there. Do not re-add a `personal/` row to this table; the wiki-taxonomy hook only allows the directories listed above.
 
 ## Page format
 
 ```yaml
 ---
 title: ""
-type: architecture | capability | pattern | investigation | source | personal
+type: architecture | capability | pattern | investigation | source
 created: YYYY-MM-DD
 last_updated: YYYY-MM-DD
 sources: []   # file paths or URLs consulted

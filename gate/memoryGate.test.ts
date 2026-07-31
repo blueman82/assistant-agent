@@ -52,8 +52,8 @@ function makeWriteInput(filePath: string, content: string): PreToolUseHookInput 
 
 function withUntrustedFlag(fn: () => Promise<void>): Promise<void> {
   const original = process.env["RACHEL_UNTRUSTED_CONTENT"];
-  // Literal value from tasks/inbox-brief-launchd.plist (SO-17: reproduce the
-  // real shape, not a simplified stand-in).
+  // Literal value from launchd/inbox-brief-launchd.plist (SO-17: reproduce
+  // the real shape, not a simplified stand-in).
   process.env["RACHEL_UNTRUSTED_CONTENT"] = "1";
   return fn().finally(() => {
     if (original === undefined) {
