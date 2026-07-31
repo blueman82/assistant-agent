@@ -92,6 +92,11 @@ function validateFlags(flags: Map<string, string>): string | undefined {
   if (!PID_RE.test(pid)) {
     return `invalid --pid ${JSON.stringify(pid)}: must be a positive integer`;
   }
+  // A digit string past 2^53 would survive PID_RE but get silently rounded by
+  // Number() — accidental sanitisation. Reject it instead.
+  if (!Number.isSafeInteger(Number(pid))) {
+    return `invalid --pid ${JSON.stringify(pid)}: exceeds Number.MAX_SAFE_INTEGER`;
+  }
   for (const flag of ["--loop-name", "--expected-cmd", "--session-id"]) {
     const value = flags.get(flag);
     if (value === undefined) continue;
