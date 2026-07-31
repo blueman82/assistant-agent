@@ -234,6 +234,41 @@ test("the CLI run as a real subprocess exits 2 on invalid input without writing"
   assert.ok(!existsSync(join(dir, "rt-loop.watchdog.json")));
 });
 
+test("the CLI exits 1 (not 2) with stderr when the target dir cannot be created", () => {
+  // A --dir nested under a regular file: mkdirSync fails with ENOTDIR. Pins
+  // the exit-code contract — 2 is caller error, 1 is an fs failure after
+  // validation passed.
+  const blocker = join(tmpDir(), "blocker");
+  writeFileSync(blocker, "not a directory");
+  const { status, stderr } = runCliSubprocess(validArgs(join(blocker, "sub")));
+  assert.equal(status, 1, `expected exit 1 for an fs failure, got ${status}; stderr: ${stderr}`);
+  assert.ok(stderr.length > 0, "an fs failure must be reported on stderr");
+});
+
+// Regression pin for the guard's pathToFileURL comparison: the old raw
+// `file://${argv[1]}` string comparison silently no-oped (exit 0, no output,
+// no file) when the script path contained a space, because import.meta.url
+// percent-encodes it — verified against the pre-fix guard. The copy must live
+// inside proactive/ so its relative ../bridge import still resolves. A
+// symlinked path is NOT usable as the probe here: Node resolves the ESM main
+// module to its realpath, so import.meta.url never matches a symlinked
+// argv[1] under either guard.
+test("the CLI guard still fires when invoked via a space-containing script path", () => {
+  const spacedCopy = join(repoRoot, "proactive", `writeWatchdog guard probe ${process.pid}.ts`);
+  copyFileSync(cliPath, spacedCopy);
+  try {
+    const { status, stdout, stderr } = runCliSubprocess([], spacedCopy);
+    assert.equal(
+      status,
+      2,
+      `expected usage exit 2 — a silent exit 0 means the guard regressed to the raw string comparison; stdout: ${stdout}; stderr: ${stderr}`,
+    );
+    assert.ok(stderr.includes("usage"), `stderr should carry the usage line, got: ${stderr}`);
+  } finally {
+    unlinkSync(spacedCopy);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // ROUND-TRIP: the CLI's real output file through the bridge's real consumer
 // ---------------------------------------------------------------------------
