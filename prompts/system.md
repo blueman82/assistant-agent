@@ -163,9 +163,9 @@ When the operator says "run the X loop" or "launch the X loop":
 3. Spawn: `~/.rachel/loops/` is created by the bridge at startup, but run `mkdir -p ~/.rachel/loops` first in case you're launching from terminal mode without the bridge running. Use it for logs:
    `mkdir -p ~/.rachel/loops && cd <repo> && nohup <absolute-path-to>/claude -p "<body>" --permission-mode <permission_mode> --output-format stream-json --include-partial-messages --verbose > ~/.rachel/loops/<slug>-<timestamp>.log 2>&1 &`
    Do not write logs to `~/.claude/coderails-dashboard/runs/` — that dir is the dashboard collector's domain and fs-watched for UI refreshes.
-4. Write the watchdog file by running the writer CLI from the assistant-agent repo root — never write the JSON yourself; a hand-authored file drifted from the bridge's `WatchdogEntry` schema once and silently broke the exit ping:
+4. Write the watchdog file by running the writer CLI (absolute paths, so the snippet works from whatever cwd step 3 left you in — its `cd <repo>` means you are usually NOT in the assistant-agent repo) — never write the JSON yourself; a hand-authored file drifted from the bridge's `WatchdogEntry` schema once and silently broke the exit ping:
    ```bash
-   ./node_modules/.bin/tsx proactive/writeWatchdog.ts \
+   /Users/harrison/Github/assistant-agent/node_modules/.bin/tsx /Users/harrison/Github/assistant-agent/proactive/writeWatchdog.ts \
      --slug <slug> --loop-name "<human name>" --pid <pid> --expected-cmd claude \
      --repo <repo> --log-path $HOME/.rachel/loops/<slug>-<timestamp>.log \
      --progress-json-glob "$HOME/.claude/agentic-loop/*<repo-basename>*/*/progress.json"
