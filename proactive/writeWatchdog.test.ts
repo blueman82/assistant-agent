@@ -113,6 +113,25 @@ test("cliMain carries optional --progress-json-path and --session-id through whe
   assert.equal(entry.session_id, "abc-123");
 });
 
+test("cliMain overwrites an existing entry wholesale on relaunch, re-arming spawn_time and updating pid", async () => {
+  const dir = tmpDir();
+  assert.equal(await runInProcess(validArgs(dir)), 0);
+  const first = JSON.parse(readFileSync(join(dir, "rt-loop.watchdog.json"), "utf8")) as WatchdogEntry;
+  // Date.now() has ms granularity — the pause makes spawn_time re-arming
+  // observable as a strict increase.
+  await new Promise((r) => setTimeout(r, 10));
+  const relaunchArgs = validArgs(dir).map((a, i, all) => (all[i - 1] === "--pid" ? "11111" : a));
+  assert.equal(await runInProcess(relaunchArgs), 0);
+  const second = JSON.parse(readFileSync(join(dir, "rt-loop.watchdog.json"), "utf8")) as WatchdogEntry;
+  assert.deepEqual(Object.keys(second).sort(), ALL_14_FIELDS);
+  assert.equal(second.pid, 11111, "the relaunch's pid must win");
+  assert.ok(
+    second.spawn_time > first.spawn_time,
+    `spawn_time must be re-armed by the relaunch: ${second.spawn_time} vs ${first.spawn_time}`,
+  );
+  assert.equal(second.done, false);
+});
+
 test("cliMain creates the target directory when it does not exist yet", async () => {
   const dir = join(tmpDir(), "does-not-exist-yet");
   assert.ok(!existsSync(dir), "precondition: dir must not exist");
