@@ -149,16 +149,25 @@ export async function cliMain(argv: string[]): Promise<number> {
   const entry = buildEntry(parsed, Date.now());
   const dir = parsed.get("--dir") ?? join(homedir(), ".rachel", "loops");
   const path = join(dir, `${entry.slug}.watchdog.json`);
+  const tmpPath = `${path}.tmp.${process.pid}`;
   try {
     mkdirSync(dir, { recursive: true });
     // House atomic-write idiom: temp file + same-dir rename, so the bridge's
     // poll loop can never read a half-written entry.
-    const tmpPath = `${path}.tmp.${process.pid}`;
     writeFileSync(tmpPath, JSON.stringify(entry, null, 2) + "\n");
+    // Overwriting an existing <slug>.watchdog.json is INTENDED: relaunching a
+    // loop re-registers the slug and re-arms dedup via the fresh spawn_time.
     renameSync(tmpPath, path);
     console.log(`[write-watchdog] wrote ${path} (spawn_time=${entry.spawn_time})`);
     return 0;
   } catch (err) {
+    // Best-effort cleanup so failed runs never accumulate orphaned
+    // .tmp.<pid> files (the hygiene sweep only cleans ~/.rachel/tmp).
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      // ignore — the tmp file may never have been created
+    }
     console.error(`[write-watchdog] ${err instanceof Error ? err.stack ?? String(err) : String(err)}`);
     return 1;
   }
