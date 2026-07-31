@@ -175,9 +175,14 @@ export async function cliMain(argv: string[]): Promise<number> {
 
 // Only run as a CLI when executed directly, not when imported by a test —
 // same guard as memoryAppend.ts/push.ts/sweep.ts. MUST stay the last
-// statement in this module (SO-4): the top-level await runs during module
+// statement in this module (SO-4 — a standing order from the 2026-07 loop
+// retros: ESM CLI guard below all consts, tested as a real subprocess,
+// because of the TDZ crash class): the top-level await runs during module
 // evaluation, so any `const` declared below it would be in its temporal dead
 // zone for every CLI code path.
-if (import.meta.url === `file://${process.argv[1]}`) {
+// pathToFileURL, not a raw `file://${argv[1]}` string: the raw comparison
+// silently no-ops (exit 0, no file written) on space-containing paths, the
+// worst failure for a CLI whose contract is exit 0 = file written.
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   process.exit(await cliMain(process.argv));
 }
