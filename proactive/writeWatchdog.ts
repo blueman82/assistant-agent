@@ -14,9 +14,10 @@
 // The WatchdogEntry import below is the enforcement mechanism: the entry is
 // built as a typed object literal, so a future required field added to the
 // interface becomes a typecheck failure HERE rather than silent drift.
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { WatchdogEntry } from "../bridge/telegram-bridge.ts";
 
 // The slug becomes the filename (<slug>.watchdog.json) and the wake-file
