@@ -347,15 +347,15 @@ test("runTurn's query options read model/effort from proactive/modelConfig.ts's 
     // "captured the default at import time" — both would produce the same
     // value on a fresh process. A non-default switch is the only way to
     // prove runTurn re-reads state instead of a stale const.
-    const modelSwitch = setModel("claude-opus-4-8");
-    assert.equal(modelSwitch.ok, true, "test precondition: switching to claude-opus-4-8 must succeed");
+    const modelSwitch = setModel("claude-opus-5");
+    assert.equal(modelSwitch.ok, true, "test precondition: switching to claude-opus-5 must succeed");
     const effortSwitch = setEffort("xhigh");
     assert.equal(effortSwitch.ok, true, "test precondition: switching to xhigh must succeed");
 
     const captured: { model?: unknown; effort?: unknown } = {};
     await realRunTurn("probe", () => {}, new AbortController().signal, makeCapturingQueryFn(captured));
 
-    assert.equal(captured.model, "claude-opus-4-8", "runTurn's options.model must reflect the NEW switched value, not a boot-time const");
+    assert.equal(captured.model, "claude-opus-5", "runTurn's options.model must reflect the NEW switched value, not a boot-time const");
     assert.equal(captured.effort, "xhigh", "runTurn's options.effort must reflect the NEW switched value, not a boot-time const");
   } finally {
     setModel(originalModel);
@@ -830,7 +830,7 @@ test("/model with no argument replies with the current model and the valid optio
 
 test("/model <valid-name> switches the model and confirms it takes effect on the next turn", async () => {
   const { transport, calls } = makeStubTransport([
-    messageUpdate(1, "/model claude-opus-4-8"),
+    messageUpdate(1, "/model claude-opus-5"),
     { ok: true, result: [] },
   ]);
 
@@ -849,10 +849,10 @@ test("/model <valid-name> switches the model and confirms it takes effect on the
     await new Promise((resolve) => setTimeout(resolve, 30));
     await bridge.stop();
 
-    assert.equal(getModel(), "claude-opus-4-8", "setModel must have applied the switch");
+    assert.equal(getModel(), "claude-opus-5", "setModel must have applied the switch");
     const sendCall = calls.find((c) => c.url.includes("/sendMessage"));
     const text = String((sendCall?.body as { text?: string } | undefined)?.text ?? "");
-    assert.ok(text.includes("claude-opus-4-8"), `expected confirmation naming the new model — got: ${text}`);
+    assert.ok(text.includes("claude-opus-5"), `expected confirmation naming the new model — got: ${text}`);
   } finally {
     setModel(originalModel);
   }

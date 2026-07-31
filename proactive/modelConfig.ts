@@ -32,7 +32,7 @@
 // switch silently change which model the unattended scheduled jobs run
 // on, which is worse than the current per-process isolation.
 
-export const VALID_MODELS = ["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5", "claude-fable-5"] as const;
+export const VALID_MODELS = ["claude-sonnet-5", "claude-opus-5", "claude-haiku-4-5", "claude-fable-5"] as const;
 export type ValidModel = (typeof VALID_MODELS)[number];
 
 // Short names for the whitelisted models above — resolved to a full ID
@@ -41,8 +41,13 @@ export type ValidModel = (typeof VALID_MODELS)[number];
 // IDs are matched byte-exact and are never lowercased, so a mixed-case full
 // ID (e.g. "Claude-Sonnet-5") is still rejected exactly as before aliasing
 // was added.
+//
+// "opus" points at claude-opus-5 (released 2026-07-24). claude-opus-4-8 has
+// been removed from VALID_MODELS entirely — Gary's explicit instruction was
+// not to use 4.8 even as a fallback, so there is no "opus4.8" alias and the
+// full ID "claude-opus-4-8" is rejected like any other off-whitelist value.
 const MODEL_ALIASES: Record<string, ValidModel> = {
-  opus: "claude-opus-4-8",
+  opus: "claude-opus-5",
   sonnet: "claude-sonnet-5",
   haiku: "claude-haiku-4-5",
   fable: "claude-fable-5",
