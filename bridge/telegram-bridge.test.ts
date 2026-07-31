@@ -4560,10 +4560,16 @@ test("producer: the ad-hoc task template instructs the spawned job to write a wa
 
   // The constraints block is part 3 of the BODY — the block the template says
   // goes verbatim into every synthesised file. The wake step must be inside
-  // it, not in the frontmatter list under "Synthesising the task file".
+  // it, not in the frontmatter list under "Synthesising the task file". The
+  // block is a fenced code block (PR #80 restructured it with XML tags for
+  // legibility), so its end is the closing fence, not the first blank line —
+  // an intro sentence now precedes the fence with a blank line of its own.
   const constraintsStart = section.indexOf("**The fixed constraints block**");
   assert.ok(constraintsStart >= 0, "expected the fixed constraints block in the template");
-  const blockEnd = section.indexOf("\n\n", constraintsStart);
+  const fenceStart = section.indexOf("\n```\n", constraintsStart);
+  assert.ok(fenceStart >= 0, "expected the constraints block to be a fenced code block");
+  const fenceEnd = section.indexOf("\n```\n", fenceStart + 1);
+  const blockEnd = fenceEnd === -1 ? -1 : fenceEnd + "\n```\n".length;
   const constraintsBlock = section.slice(constraintsStart, blockEnd === -1 ? undefined : blockEnd);
   assert.match(
     constraintsBlock,
