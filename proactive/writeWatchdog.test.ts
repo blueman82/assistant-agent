@@ -34,7 +34,7 @@ function tmpDir(): string {
   return mkdtempSync(join(tmpdir(), "rachel-test-writewatchdog-"));
 }
 
-// The full valid flag set, targeting a throwaway dir. Tests mutate copies.
+// The full required flag set plus --dir, targeting a throwaway dir. Tests mutate copies.
 function validArgs(dir: string, slug = "rt-loop"): string[] {
   return [
     "--slug", slug,
