@@ -39,10 +39,10 @@ test("boot default effort is high", async () => {
 
 test("RACHEL_MODEL override is honoured at boot when on the whitelist", async () => {
   const original = process.env["RACHEL_MODEL"];
-  process.env["RACHEL_MODEL"] = "claude-opus-4-8";
+  process.env["RACHEL_MODEL"] = "claude-opus-5";
   try {
     const mod = await import(`./modelConfig.ts?t=${Date.now()}-c`);
-    assert.equal(mod.getModel(), "claude-opus-4-8");
+    assert.equal(mod.getModel(), "claude-opus-5");
   } finally {
     if (original !== undefined) process.env["RACHEL_MODEL"] = original;
     else delete process.env["RACHEL_MODEL"];
@@ -158,10 +158,10 @@ test("handleConfigCommand: /model <valid-name> switches the model and confirms i
   const mod = await import(`./modelConfig.ts?t=${Date.now()}-m`);
   const original = mod.getModel();
   try {
-    const result = mod.handleConfigCommand("/model claude-opus-4-8");
-    assert.equal(mod.getModel(), "claude-opus-4-8");
+    const result = mod.handleConfigCommand("/model claude-opus-5");
+    assert.equal(mod.getModel(), "claude-opus-5");
     assert.ok(result !== undefined);
-    assert.ok(result!.includes("claude-opus-4-8"));
+    assert.ok(result!.includes("claude-opus-5"));
     assert.ok(result!.includes("takes effect on the next turn"));
   } finally {
     mod.setModel(original);
@@ -241,7 +241,7 @@ test("handleConfigCommand: a non-command input returns undefined", async () => {
 test("setModel: each alias resolves to its full whitelisted model ID", async () => {
   const mod = await import(`./modelConfig.ts?t=${Date.now()}-u`);
   const cases: Array<[string, string]> = [
-    ["opus", "claude-opus-4-8"],
+    ["opus", "claude-opus-5"],
     ["sonnet", "claude-sonnet-5"],
     ["haiku", "claude-haiku-4-5"],
     ["fable", "claude-fable-5"],
@@ -273,8 +273,38 @@ test("setModel: aliases are case-insensitive (OPUS, Opus, opus all resolve)", as
   const mod = await import(`./modelConfig.ts?t=${Date.now()}-x`);
   for (const spelling of ["OPUS", "Opus", "opus"]) {
     const result = mod.setModel(spelling);
-    assert.deepEqual(result, { ok: true, value: "claude-opus-4-8" }, `${spelling} should resolve`);
+    assert.deepEqual(result, { ok: true, value: "claude-opus-5" }, `${spelling} should resolve`);
   }
+});
+
+test("setModel: claude-opus-5 is a valid full model ID", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-opus5a`);
+  const result = mod.setModel("claude-opus-5");
+  assert.deepEqual(result, { ok: true, value: "claude-opus-5" });
+  assert.equal(mod.getModel(), "claude-opus-5");
+});
+
+test("setModel: opus alias now resolves to claude-opus-5 (the new default per Anthropic's positioning)", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-opus5b`);
+  const result = mod.setModel("opus");
+  assert.deepEqual(result, { ok: true, value: "claude-opus-5" });
+  assert.equal(mod.getModel(), "claude-opus-5");
+});
+
+test("setModel: claude-opus-4-8 is no longer a valid model (removed per Gary's explicit instruction, not kept as a fallback)", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-opus5c`);
+  const original = mod.getModel();
+  const result = mod.setModel("claude-opus-4-8");
+  assert.equal(result.ok, false, "claude-opus-4-8 must be rejected, not silently accepted");
+  assert.equal(mod.getModel(), original, "rejection must leave state unchanged");
+});
+
+test("setModel: the opus4.8 alias no longer exists (falls through to the unknown-alias rejection)", async () => {
+  const mod = await import(`./modelConfig.ts?t=${Date.now()}-opus5d`);
+  const original = mod.getModel();
+  const result = mod.setModel("opus4.8");
+  assert.equal(result.ok, false, "opus4.8 must not resolve to anything now that 4.8 is removed");
+  assert.equal(mod.getModel(), original);
 });
 
 test("setModel: an unknown alias falls through to the existing rejection, state unchanged", async () => {
@@ -309,7 +339,7 @@ test("RACHEL_MODEL env var also accepts an alias at boot (consistent surface wit
   process.env["RACHEL_MODEL"] = "opus";
   try {
     const mod = await import(`./modelConfig.ts?t=${Date.now()}-ab`);
-    assert.equal(mod.getModel(), "claude-opus-4-8");
+    assert.equal(mod.getModel(), "claude-opus-5");
   } finally {
     if (original !== undefined) process.env["RACHEL_MODEL"] = original;
     else delete process.env["RACHEL_MODEL"];
@@ -401,9 +431,9 @@ test("parseArgvConfig: a single config command applies and reports, with no rema
   const original = mod.getModel();
   try {
     const { configReplies, remainingPrompt } = mod.parseArgvConfig(["/model", "opus"]);
-    assert.equal(mod.getModel(), "claude-opus-4-8");
+    assert.equal(mod.getModel(), "claude-opus-5");
     assert.equal(configReplies.length, 1);
-    assert.ok(configReplies[0].includes("claude-opus-4-8"));
+    assert.ok(configReplies[0].includes("claude-opus-5"));
     assert.equal(remainingPrompt, "");
   } finally {
     mod.setModel(original);
@@ -416,10 +446,10 @@ test("parseArgvConfig: multiple config commands in one argv all apply (Gary's ex
   const originalEffort = mod.getEffort();
   try {
     const { configReplies, remainingPrompt } = mod.parseArgvConfig(["/model", "opus", "/effort", "xhigh"]);
-    assert.equal(mod.getModel(), "claude-opus-4-8");
+    assert.equal(mod.getModel(), "claude-opus-5");
     assert.equal(mod.getEffort(), "xhigh");
     assert.equal(configReplies.length, 2);
-    assert.ok(configReplies[0].includes("claude-opus-4-8"));
+    assert.ok(configReplies[0].includes("claude-opus-5"));
     assert.ok(configReplies[1].includes("xhigh"));
     assert.equal(remainingPrompt, "");
   } finally {
@@ -486,7 +516,7 @@ test("parseArgvConfig: mixed invocation applies config THEN returns the rest as 
   const original = mod.getModel();
   try {
     const { configReplies, remainingPrompt } = mod.parseArgvConfig(["/model", "opus", "check", "my", "email"]);
-    assert.equal(mod.getModel(), "claude-opus-4-8");
+    assert.equal(mod.getModel(), "claude-opus-5");
     assert.equal(configReplies.length, 1);
     assert.equal(remainingPrompt, "check my email");
   } finally {
@@ -499,7 +529,7 @@ test("parseArgvConfig: a mixed invocation with config commands interleaved after
   const original = mod.getModel();
   try {
     const { configReplies, remainingPrompt } = mod.parseArgvConfig(["check", "my", "email", "/model", "opus"]);
-    assert.equal(mod.getModel(), "claude-opus-4-8");
+    assert.equal(mod.getModel(), "claude-opus-5");
     assert.equal(configReplies.length, 1);
     assert.equal(remainingPrompt, "check my email");
   } finally {
