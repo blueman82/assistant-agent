@@ -54,9 +54,12 @@ function runInProcess(args: string[]): Promise<number> {
 
 // Real subprocess — catches the SO-4 TDZ crash class (a const declared below
 // the import.meta CLI guard) that in-process cliMain calls can never see.
-function runCliSubprocess(args: string[]): { status: number; stdout: string; stderr: string } {
-  const res = spawnSync(tsxBin, [cliPath, ...args], { encoding: "utf8", timeout: 60_000 });
-  return { status: res.status ?? -1, stdout: res.stdout, stderr: res.stderr };
+// spawnSync's own failure (res.error: ENOENT, timeout kill, ...) is folded
+// into stderr so assertion messages show WHY the spawn failed, not just -1.
+function runCliSubprocess(args: string[], scriptPath = cliPath): { status: number; stdout: string; stderr: string } {
+  const res = spawnSync(tsxBin, [scriptPath, ...args], { encoding: "utf8", timeout: 60_000 });
+  const spawnError = res.error ? `\n[spawnSync error] ${String(res.error)}` : "";
+  return { status: res.status ?? -1, stdout: res.stdout ?? "", stderr: (res.stderr ?? "") + spawnError };
 }
 
 const ALL_14_FIELDS = [
