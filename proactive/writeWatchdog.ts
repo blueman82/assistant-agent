@@ -1,7 +1,9 @@
 #!/usr/bin/env -S npx tsx
 // Writer CLI for the loop watchdog: emits a schema-valid
 // ~/.rachel/loops/<slug>.watchdog.json entry for the bridge's checkWatchdogs
-// consumer (bridge/telegram-bridge.ts). This is the ONLY sanctioned writer —
+// consumer (bridge/telegram-bridge.ts). This is the only sanctioned CREATOR
+// of watchdog entries (the bridge's checkWatchdogs also mutates existing
+// entries — the done write-back in telegram-bridge.ts) —
 // prompts/system.md's loop-launcher flow invokes it instead of hand-authoring
 // the JSON, because a hand-written file drifted from the schema once
 // (started_at ISO string where the consumer reads spawn_time epoch ms) and
