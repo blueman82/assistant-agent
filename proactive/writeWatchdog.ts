@@ -30,7 +30,7 @@ const NEWLINE_RE = /[\n\r]/;
 // pid as the consumer needs it: a plain positive integer.
 const PID_RE = /^[1-9][0-9]*$/;
 
-// Required flags map positionally onto WatchdogEntry's caller-supplied
+// Required flags map one-to-one onto WatchdogEntry's caller-supplied
 // fields; everything else (spawn_time, last_check, wake_floor, pinged_at,
 // done) is computed here — callers never pass a timestamp.
 const REQUIRED_FLAGS = [
