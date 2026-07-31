@@ -69,9 +69,9 @@ HEARTBEAT_FILE="$HOME_DIR/.rachel/bridge-heartbeat.json"
 # below, never assumed.
 TEMPLATES=(
   bridge/launchd.plist
-  tasks/inbox-brief-launchd.plist
-  tasks/proactive-sweep-launchd.plist
-  tasks/proactive-calendar-launchd.plist
+  launchd/inbox-brief-launchd.plist
+  launchd/proactive-sweep-launchd.plist
+  launchd/proactive-calendar-launchd.plist
 )
 
 DRY_RUN=0
