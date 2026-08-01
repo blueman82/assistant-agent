@@ -1010,7 +1010,9 @@ function extractWikiConfigKey(content: string, key: string): string | undefined 
   return undefined;
 }
 
-async function checkWikiDebt(d: SweepDeps, pushDeps: Partial<PushDeps>): Promise<void> {
+// Exported for sweep.test.ts and the frozen WU-D evals, which drive it with
+// injected deps — production goes through sweepTick like every other family.
+export async function checkWikiDebt(d: SweepDeps, pushDeps: Partial<PushDeps>): Promise<void> {
   const content = d.readFileFn(join(d.repoDir, ".claude", "workflow.config.yaml"));
   if (content === undefined) {
     return;
