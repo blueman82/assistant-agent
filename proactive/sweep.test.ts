@@ -2104,6 +2104,12 @@ test("standing wiki-ingest debt pushes one [wiki] normal alert naming only post-
   assert.ok(p.text.includes("#84") && p.text.includes("#90"), `names the uncovered PRs: ${p.text}`);
   assert.ok(!p.text.includes("#79"), `pre-epoch PR is not debt: ${p.text}`);
   assert.ok(p.text.includes("sources/") && p.text.includes("no-op"), `names both ways to clear: ${p.text}`);
+  // A run that actually scanned logs candidate + uncovered counts, so an
+  // inert family (no line at all) is distinguishable from "scanned, clean".
+  assert.ok(
+    h.logs.some((l) => l.includes("wiki-debt: scanned 2 candidate") && l.includes("2 uncovered")),
+    `scan log line present: ${h.logs.join(" | ")}`,
+  );
 });
 
 test("a smaller debt set changes the event id and state (new debt re-pings, unchanged debt dedups)", async () => {
