@@ -2009,6 +2009,210 @@ test("bootstrap exit 5 after bootout is retried once before giving up", async ()
 });
 
 
+// --- wiki-ingest-debt family ---
+//
+// Secondary detector for the coderails merge gate's wiki-ingest debt check.
+// Config comes from the repo-local .claude/workflow.config.yaml (the SAME
+// file the gate reads), so the family is inert exactly when the gate is.
+
+const WIKI_CFG_PATH = join("/repo", ".claude", "workflow.config.yaml");
+const WIKI_CFG = "wiki_debt_epoch_pr: 80\nwiki_path: /vault\n";
+// gh pr list is newest-first; 90 and 84 are past the epoch (80), 79 is not.
+const GH_MERGED = JSON.stringify([{ number: 90 }, { number: 84 }, { number: 79 }]);
+
+function wikiHarness(opts: {
+  cfg?: string;
+  noCfg?: boolean;
+  originUrl?: string;
+  ghExit?: number;
+  ghStdout?: string;
+  fetchExit?: number;
+  logGrepExit?: number;
+  srcGrepExit?: number;
+} = {}) {
+  const h = makeHarness();
+  if (!opts.noCfg) {
+    h.files.set(WIKI_CFG_PATH, opts.cfg ?? WIKI_CFG);
+  }
+  h.deps.execFn = async (cmd, args, o) => {
+    h.execCalls.push({ cmd, args, opts: o });
+    if (cmd === "git" && args[2] === "remote") {
+      return { stdout: `${opts.originUrl ?? "git@github.com:blueman82/assistant-agent.git"}\n`, stderr: "", exitCode: 0 };
+    }
+    if (cmd === "gh") {
+      return { stdout: opts.ghStdout ?? GH_MERGED, stderr: (opts.ghExit ?? 0) === 0 ? "" : "gh boom", exitCode: opts.ghExit ?? 0 };
+    }
+    if (cmd === "git" && args[2] === "fetch") {
+      return { stdout: "", stderr: (opts.fetchExit ?? 0) === 0 ? "" : "vault gone", exitCode: opts.fetchExit ?? 0 };
+    }
+    if (cmd === "git" && args[2] === "grep") {
+      const isLog = args[args.length - 1] === "log.md";
+      return { stdout: "", stderr: "", exitCode: isLog ? (opts.logGrepExit ?? 1) : (opts.srcGrepExit ?? 1) };
+    }
+    return { stdout: RUNNING_STDOUT, stderr: "", exitCode: 0 };
+  };
+  return h;
+}
+
+// Substitutes the literal placeholders the same way the family must — used
+// only to compute EXPECTED grep arguments. The contract identity itself is
+// pinned against merge.sh's source below, not against this helper.
+function expectedPattern(template: string, repoEscaped: string, n: number): string {
+  return template.split("${repo_escaped}").join(repoEscaped).split("${n}").join(String(n));
+}
+
+test("wiki-debt coverage patterns are character-identical to merge.sh's REGEX IDENTITY contract", () => {
+  // The two coverage regexes are a frozen contract with coderails
+  // scripts/merge.sh (its REGEX IDENTITY comment block): the gate and this
+  // family must never disagree about what counts as covered. This reads
+  // merge.sh's source directly — the suite already depends on the
+  // ~/Github/coderails checkout (see hooks/scripts/tests/probe_conventions
+  // .test.sh), so a missing file is a hard failure, not a skip.
+  //
+  // ESCAPING EQUIVALENCE: merge.sh's patterns sit inside bash double quotes,
+  // where a backslash escapes only $, `, ", \ and newline. `"` is the only
+  // such character these patterns backslash (the sources pattern's [^\"]
+  // denotes [^"]); `\[` and `\|` pass through byte-identical. So the single
+  // documented transformation from shell source text to the TS constants is
+  // \" -> ".
+  const mergeSh = readFileSync(join(homedir(), "Github", "coderails", "scripts", "merge.sh"), "utf8");
+  const logM = mergeSh.match(/grep -qE "(.+)" origin\/main -- log\.md/);
+  const srcM = mergeSh.match(/grep -qE "(.+)" origin\/main -- sources\//);
+  assert.ok(logM, "merge.sh log.md coverage grep line found");
+  assert.ok(srcM, "merge.sh sources/ coverage grep line found");
+  const unescapeShellDquote = (s: string) => s.replace(/\\"/g, '"');
+  assert.equal(unescapeShellDquote(logM![1]!), WIKI_DEBT_LOG_PATTERN);
+  assert.equal(unescapeShellDquote(srcM![1]!), WIKI_DEBT_SOURCES_PATTERN);
+});
+
+test("standing wiki-ingest debt pushes one [wiki] normal alert naming only post-epoch uncovered PRs", async () => {
+  const h = wikiHarness();
+  const results = await sweepTick(h.deps);
+  assert.equal(results["wiki-debt"], "ok");
+  const wiki = h.pushes.filter((p) => p.family === "wiki-debt");
+  assert.equal(wiki.length, 1);
+  const p = wiki[0]!;
+  assert.equal(p.eventId, "wiki-debt:assistant-agent:84,90");
+  assert.equal(p.state, "84,90");
+  assert.equal(p.severity, "normal");
+  assert.ok(p.text.startsWith("[wiki]"), `tagged [wiki]: ${p.text}`);
+  assert.ok(p.text.includes("#84") && p.text.includes("#90"), `names the uncovered PRs: ${p.text}`);
+  assert.ok(!p.text.includes("#79"), `pre-epoch PR is not debt: ${p.text}`);
+  assert.ok(p.text.includes("sources/") && p.text.includes("no-op"), `names both ways to clear: ${p.text}`);
+});
+
+test("a smaller debt set changes the event id and state (new debt re-pings, unchanged debt dedups)", async () => {
+  const h = wikiHarness({ ghStdout: JSON.stringify([{ number: 90 }]) });
+  await sweepTick(h.deps);
+  const wiki = h.pushes.filter((p) => p.family === "wiki-debt");
+  assert.equal(wiki.length, 1);
+  assert.equal(wiki[0]!.eventId, "wiki-debt:assistant-agent:90");
+  assert.equal(wiki[0]!.state, "90");
+});
+
+test("coverage via the log.md no-op ledger grep silences the family", async () => {
+  const h = wikiHarness({ logGrepExit: 0 });
+  const results = await sweepTick(h.deps);
+  assert.equal(results["wiki-debt"], "ok");
+  assert.equal(h.pushes.filter((p) => p.family === "wiki-debt").length, 0);
+});
+
+test("coverage via the sources/ origin grep silences the family (either grep clears)", async () => {
+  const h = wikiHarness({ logGrepExit: 1, srcGrepExit: 0 });
+  const results = await sweepTick(h.deps);
+  assert.equal(results["wiki-debt"], "ok");
+  assert.equal(h.pushes.filter((p) => p.family === "wiki-debt").length, 0);
+  const srcGreps = h.execCalls.filter((c) => c.cmd === "git" && c.args[2] === "grep" && c.args[c.args.length - 1] === "sources/");
+  assert.ok(srcGreps.length > 0, "the sources/ grep was consulted after the log.md miss");
+});
+
+test("absent workflow.config.yaml is a silent no-op — no gh call, no push", async () => {
+  const h = wikiHarness({ noCfg: true });
+  const results = await sweepTick(h.deps);
+  assert.equal(results["wiki-debt"], "ok");
+  assert.equal(h.execCalls.filter((c) => c.cmd === "gh").length, 0);
+  assert.equal(h.pushes.filter((p) => p.family === "wiki-debt").length, 0);
+});
+
+test("non-numeric epoch and YAML-null wiki_path are each a silent no-op", async () => {
+  for (const cfg of [
+    "wiki_debt_epoch_pr: soon\nwiki_path: /vault\n",
+    "wiki_debt_epoch_pr: 80\nwiki_path: null\n",
+    "wiki_debt_epoch_pr: 80\nwiki_path: ~\n",
+    "unrelated_key: 5\n",
+  ]) {
+    const h = wikiHarness({ cfg });
+    const results = await sweepTick(h.deps);
+    assert.equal(results["wiki-debt"], "ok", `cfg ${JSON.stringify(cfg)} is inert`);
+    assert.equal(h.execCalls.filter((c) => c.cmd === "gh").length, 0, `no gh call for ${JSON.stringify(cfg)}`);
+    assert.equal(h.pushes.filter((p) => p.family === "wiki-debt").length, 0);
+  }
+});
+
+test("config values are stripped awk-style: inline comment before quotes, then surrounding quotes", async () => {
+  const h = wikiHarness({ cfg: 'wiki_debt_epoch_pr: "80" # PRs after 80\nwiki_path: "/vault" # the vault\n' });
+  const results = await sweepTick(h.deps);
+  assert.equal(results["wiki-debt"], "ok");
+  assert.equal(h.pushes.filter((p) => p.family === "wiki-debt").length, 1, "quoted+commented values still activate the family");
+  const grep = h.execCalls.find((c) => c.cmd === "git" && c.args[2] === "grep");
+  assert.ok(grep, "grep ran");
+  assert.equal(grep!.args[1], "/vault", "quoted wiki_path resolved to the bare vault path");
+});
+
+test("gh pr list failure is a wiki-debt family error, never a false all-clear", async () => {
+  const h = wikiHarness({ ghExit: 1 });
+  const results = await sweepTick(h.deps);
+  assert.equal(results["wiki-debt"], "failed");
+  assert.equal(h.pushes.filter((p) => p.family === "wiki-debt").length, 0);
+  assert.ok(h.logs.some((l) => l.includes("wiki-debt error") && l.includes("gh pr list")), `error logged: ${h.logs.join(" | ")}`);
+});
+
+test("gh exit 0 with empty stdout is a family error (gh can fail silently)", async () => {
+  const h = wikiHarness({ ghStdout: "" });
+  const results = await sweepTick(h.deps);
+  assert.equal(results["wiki-debt"], "failed");
+  assert.equal(h.pushes.filter((p) => p.family === "wiki-debt").length, 0);
+});
+
+test("a full 100-PR merged window is a family error (oldest debt would be truncated)", async () => {
+  const full = JSON.stringify(Array.from({ length: 100 }, (_, i) => ({ number: 200 - i })));
+  const h = wikiHarness({ ghStdout: full });
+  const results = await sweepTick(h.deps);
+  assert.equal(results["wiki-debt"], "failed");
+  assert.equal(h.pushes.filter((p) => p.family === "wiki-debt").length, 0);
+});
+
+test("vault fetch failure is a family error with no push", async () => {
+  const h = wikiHarness({ fetchExit: 1 });
+  const results = await sweepTick(h.deps);
+  assert.equal(results["wiki-debt"], "failed");
+  assert.equal(h.pushes.filter((p) => p.family === "wiki-debt").length, 0);
+});
+
+test("the greps receive the substituted contract patterns anchored to the vault's origin/main", async () => {
+  const h = wikiHarness();
+  await sweepTick(h.deps);
+  const logGrep = h.execCalls.find((c) => c.cmd === "git" && c.args[2] === "grep" && c.args[c.args.length - 1] === "log.md");
+  assert.ok(logGrep, "log.md grep ran");
+  assert.deepEqual(
+    logGrep!.args,
+    ["-C", "/vault", "grep", "-qE", expectedPattern(WIKI_DEBT_LOG_PATTERN, "assistant-agent", 84), "origin/main", "--", "log.md"],
+  );
+  const srcGrep = h.execCalls.find((c) => c.cmd === "git" && c.args[2] === "grep" && c.args[c.args.length - 1] === "sources/");
+  assert.ok(srcGrep, "sources/ grep ran");
+  assert.equal(srcGrep!.args[4], expectedPattern(WIKI_DEBT_SOURCES_PATTERN, "assistant-agent", 84));
+});
+
+test("repo names with ERE metacharacters are escaped before pattern interpolation", async () => {
+  const h = wikiHarness({ originUrl: "git@github.com:blueman82/my.repo.git", ghStdout: JSON.stringify([{ number: 90 }]) });
+  await sweepTick(h.deps);
+  const grep = h.execCalls.find((c) => c.cmd === "git" && c.args[2] === "grep");
+  assert.ok(grep, "grep ran");
+  assert.ok(grep!.args[4]!.includes("my\\.repo PR"), `dot escaped for ERE: ${grep!.args[4]}`);
+  const p = h.pushes.find((x) => x.family === "wiki-debt");
+  assert.ok(p && p.eventId.startsWith("wiki-debt:my.repo:"), "event id uses the unescaped repo short name");
+});
+
 test("grep guard for proactive/sweep.test.ts: no test in this file ever calls the real api.telegram.org network endpoint", async () => {
   const source = await (await import("node:fs/promises")).readFile(new URL("./sweep.test.ts", import.meta.url), "utf8");
   const realFetchCall = /fetch\(\s*["'`]https:\/\/api\.telegram\.org/;
