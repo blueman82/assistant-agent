@@ -1309,6 +1309,10 @@ export async function sweepTick(overrides?: Partial<SweepDeps>): Promise<Record<
     "calendar-escalation": await runFamily("calendar-escalation", d, errors, () => checkCalendarEscalation(d, cfg, pushDeps)),
     calendar: await runFamily("calendar", d, errors, () => runCalendarOneshot(d, cfg)),
     "memory-lint": await runFamily("memory-lint", d, errors, () => checkMemoryLint(d, pushDeps)),
+    // Secondary detector for the coderails merge gate's wiki-ingest debt
+    // check — surfaces standing debt between merges; the gate stays the
+    // enforcement. Inert unless .claude/workflow.config.yaml configures it.
+    "wiki-debt": await runFamily("wiki-debt", d, errors, () => checkWikiDebt(d, pushDeps)),
     // Last: pure local hygiene, alerts nobody, and nothing else depends on it.
     "tmp-sweep": await runFamily("tmp-sweep", d, errors, async () => {
       sweepTmpDir(d);
