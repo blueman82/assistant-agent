@@ -597,6 +597,7 @@ test("sweepTick reports per-family results and a healthy tick is all ok", async 
     "calendar-escalation": "ok",
     calendar: "ok",
     "memory-lint": "ok",
+    "wiki-debt": "ok",
     "tmp-sweep": "ok",
   });
 });
