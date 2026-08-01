@@ -2047,6 +2047,9 @@ function wikiHarness(opts: {
     if (cmd === "git" && args[2] === "fetch") {
       return { stdout: "", stderr: (opts.fetchExit ?? 0) === 0 ? "" : "vault gone", exitCode: opts.fetchExit ?? 0 };
     }
+    if (cmd === "git" && args[2] === "rev-parse") {
+      return { stdout: "", stderr: "", exitCode: opts.revParseExit ?? 0 };
+    }
     if (cmd === "git" && args[2] === "grep") {
       const isLog = args[args.length - 1] === "log.md";
       return { stdout: "", stderr: "", exitCode: isLog ? (opts.logGrepExit ?? 1) : (opts.srcGrepExit ?? 1) };
