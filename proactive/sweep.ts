@@ -1040,15 +1040,15 @@ export async function checkWikiDebt(d: SweepDeps, pushDeps: Partial<PushDeps>): 
   if (url.exitCode !== 0) {
     throw new Error(`wiki-debt: git remote get-url origin exited ${url.exitCode}: ${url.stderr.trim()}`);
   }
-  const owner = url.stdout.trim().replace(/\/$/, "").match(/[:/]([^:/]+\/[^:/]+?)(?:\.git)?$/)?.[1];
-  const repoShort = owner?.split("/")[1];
+  const ownerRepo = url.stdout.trim().replace(/\/$/, "").match(/[:/]([^:/]+\/[^:/]+?)(?:\.git)?$/)?.[1];
+  const repoShort = ownerRepo?.split("/")[1];
   // Mirrors the gate's hard block on an empty repo name: an empty name would
   // collapse the coverage regexes into matching ANY repo's coverage.
-  if (owner === undefined || repoShort === undefined || repoShort === "") {
+  if (ownerRepo === undefined || repoShort === undefined || repoShort === "") {
     throw new Error(`wiki-debt: could not resolve the origin repo from '${url.stdout.trim()}'`);
   }
 
-  const list = await d.execFn("gh", ["pr", "list", "--repo", owner, "--state", "merged", "--json", "number", "--limit", "100"]);
+  const list = await d.execFn("gh", ["pr", "list", "--repo", ownerRepo, "--state", "merged", "--json", "number", "--limit", "100"]);
   if (list.exitCode !== 0) {
     throw new Error(`wiki-debt: gh pr list exited ${list.exitCode}: ${list.stderr.trim()}`);
   }
