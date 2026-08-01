@@ -1032,12 +1032,19 @@ export async function checkWikiDebt(d: SweepDeps, pushDeps: Partial<PushDeps>): 
   if (wikiRel === "null" || wikiRel === "~") {
     wikiRel = undefined;
   }
-  // Config-keyed inertness, matching the gate's skip. One deliberate
-  // divergence: the gate BLOCKS a merge on a non-numeric epoch, but this
-  // secondary detector has no merge to block — it stays silent and lets the
-  // gate surface the config error loudly at the next merge attempt.
-  if (epoch === undefined || wikiRel === undefined || !/^[0-9]+$/.test(epoch)) {
+  // Config-keyed inertness, matching the gate's skip-before-validate order
+  // (merge.sh checks both keys are set before validating the epoch's shape):
+  // either key absent or YAML-null means the family is deactivated.
+  if (epoch === undefined || wikiRel === undefined) {
     return;
+  }
+  // Both keys set but a non-numeric epoch: the operator TRIED to activate
+  // the family, so this is a config error, not deactivation. The gate BLOCKS
+  // a merge on exactly this input (merge.sh's err); throwing here matches
+  // that loudness — a silent return would leave the detector dark while
+  // every tick reports "ok".
+  if (!/^[0-9]+$/.test(epoch)) {
+    throw new Error(`wiki-debt: wiki_debt_epoch_pr ('${epoch}') is not a PR number — fix .claude/workflow.config.yaml`);
   }
   const epochNum = Number(epoch);
   // Relative wiki_path resolves against the repo root (the directory holding
