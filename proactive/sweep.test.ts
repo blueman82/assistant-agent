@@ -2224,6 +2224,42 @@ test("vault fetch failure is a family error with no push", async () => {
   assert.equal(h.pushes.filter((p) => p.family === "wiki-debt").length, 0);
 });
 
+test("a fetch that 'succeeds' without materialising origin/main (rev-parse --verify fails) is a family error", async () => {
+  const h = wikiHarness({ revParseExit: 1 });
+  const results = await sweepTick(h.deps);
+  assert.equal(results["wiki-debt"], "failed");
+  assert.equal(h.pushes.filter((p) => p.family === "wiki-debt").length, 0);
+  assert.ok(
+    h.logs.some((l) => l.includes("wiki-debt error") && l.includes("origin/main")),
+    `error names the missing ref: ${h.logs.join(" | ")}`,
+  );
+});
+
+test("a relative wiki_path resolves against the repo root, not the sweep's cwd", async () => {
+  const h = wikiHarness({ cfg: "wiki_debt_epoch_pr: 80\nwiki_path: ../wiki\n" });
+  await sweepTick(h.deps);
+  const fetch = h.execCalls.find((c) => c.cmd === "git" && c.args[2] === "fetch");
+  assert.ok(fetch, "fetch ran");
+  // join("/repo", "../wiki") — the repo root (the directory holding
+  // .claude/) is the resolution base, same as the gate's project_root.
+  assert.equal(fetch!.args[1], "/wiki");
+});
+
+test("every wiki-debt external command carries a timeoutMs bound", async () => {
+  // The vault fetch talks to a git remote — a hang class new to the sweep —
+  // and families run sequentially with no outer deadline, so one unbounded
+  // wedged child would silently disable every later family on every tick.
+  const h = wikiHarness();
+  await sweepTick(h.deps);
+  const wikiCalls = h.execCalls.filter(
+    (c) => c.cmd === "gh" || (c.cmd === "git" && ["remote", "fetch", "rev-parse", "grep"].includes(c.args[2] ?? "")),
+  );
+  assert.ok(wikiCalls.length >= 6, `all wiki-debt command classes ran (got ${wikiCalls.length})`);
+  for (const c of wikiCalls) {
+    assert.equal(c.opts?.timeoutMs, 30_000, `${c.cmd} ${c.args.join(" ")} carries the bound`);
+  }
+});
+
 test("the greps receive the substituted contract patterns anchored to the vault's origin/main", async () => {
   const h = wikiHarness();
   await sweepTick(h.deps);
