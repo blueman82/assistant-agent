@@ -163,9 +163,16 @@ When the operator says "run the X loop" or "launch the X loop":
 3. Spawn: `~/.rachel/loops/` is created by the bridge at startup, but run `mkdir -p ~/.rachel/loops` first in case you're launching from terminal mode without the bridge running. Use it for logs:
    `mkdir -p ~/.rachel/loops && cd <repo> && nohup <absolute-path-to>/claude -p "<body>" --permission-mode <permission_mode> --output-format stream-json --include-partial-messages --verbose > ~/.rachel/loops/<slug>-<timestamp>.log 2>&1 &`
    Do not write logs to `~/.claude/coderails-dashboard/runs/` — that dir is the dashboard collector's domain and fs-watched for UI refreshes.
-4. Write `~/.rachel/loops/<slug>.watchdog.json` — all paths must be fully expanded (no `~`), use `$HOME` or the absolute path. Include `expected_cmd: "claude"` so the bridge can guard against pid recycling (if the OS reuses the pid for a different process, `ps -p <pid> -o command=` won't contain "claude" and the bridge treats it as dead). The `progress_json_glob` field must be `<absolute-home>/.claude/agentic-loop/*<repo-basename>*/*/progress.json` — note the two wildcard levels: one for the repo-slug dir, one for the session-id dir. Example for repo `coderails`: `<absolute-home>/.claude/agentic-loop/*coderails*/*/progress.json`.
+4. Write the watchdog file by running the writer CLI (absolute paths, so the snippet works from whatever cwd step 3 left you in — its `cd <repo>` means you are usually NOT in the assistant-agent repo) — never write the JSON yourself; a hand-authored file drifted from the bridge's `WatchdogEntry` schema once and silently broke the exit ping:
+   ```bash
+   /Users/harrison/Github/assistant-agent/node_modules/.bin/tsx /Users/harrison/Github/assistant-agent/proactive/writeWatchdog.ts \
+     --slug <slug> --loop-name "<human name>" --pid <pid> --expected-cmd claude \
+     --repo <repo> --log-path $HOME/.rachel/loops/<slug>-<timestamp>.log \
+     --progress-json-glob "$HOME/.claude/agentic-loop/*<repo-basename>*/*/progress.json"
+   ```
+   The CLI validates every field and computes `spawn_time` itself, then writes `$HOME/.rachel/loops/<slug>.watchdog.json`. All path arguments must be fully expanded absolute paths — use `$HOME`, never `~` (the CLI rejects `~` and relative paths loudly). `--expected-cmd claude` lets the bridge guard against pid recycling (if the OS reuses the pid for a different process, `ps -p <pid> -o command=` won't contain "claude" and the bridge treats it as dead). The glob's two wildcard levels are one for the repo-slug dir, one for the session-id dir — example for repo `coderails`: `$HOME/.claude/agentic-loop/*coderails*/*/progress.json`.
 5. Flip task file `status` to `launched`.
-6. Reply to the operator: pid, log path, "I'll ping you when it completes or goes quiet for 60 min."
+6. Reply to the operator: pid, log path, "I'll ping you when it completes or goes quiet for 60 min." If the spawn happens within roughly two hours of quiet hours starting (22:30 Europe/Dublin) or later, or the daily interrupt budget is already at or near its cap, say in the same reply that the completion or crash ping may be deferred to the 08:00 digest, and name `~/.rachel/loops/<slug>-<timestamp>.log` as the interim source of truth — one sentence is enough.
 
 The bridge will automatically ping the operator on Telegram when a LOOP-STOP event fires (loop exit) or after 60 min of silence (stall). You don't need to monitor it — the watchdog handles that.
 
