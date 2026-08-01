@@ -1051,7 +1051,7 @@ export async function checkWikiDebt(d: SweepDeps, pushDeps: Partial<PushDeps>): 
   // .claude/), same base the gate uses; absolute passes through.
   const vault = wikiRel.startsWith("/") ? wikiRel : join(d.repoDir, wikiRel);
 
-  const url = await d.execFn("git", ["-C", d.repoDir, "remote", "get-url", "origin"]);
+  const url = await d.execFn("git", ["-C", d.repoDir, "remote", "get-url", "origin"], { timeoutMs: WIKI_DEBT_EXEC_TIMEOUT_MS });
   if (url.exitCode !== 0) {
     throw new Error(`wiki-debt: git remote get-url origin exited ${url.exitCode}: ${url.stderr.trim()}`);
   }
