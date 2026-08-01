@@ -17,6 +17,10 @@ const testAuditLogPath = joinPath(testQueueDir, "audit.jsonl");
 process.env["RACHEL_AUDIT_LOG_PATH"] = testAuditLogPath;
 process.env["RACHEL_MEMORY_PATH"] = joinPath(testQueueDir, "memory", "MEMORY.md");
 
+const testMemoryDir = joinPath(homedir(), ".rachel", "memory");
+const memoryFixture = (filename: string): string => joinPath(testMemoryDir, filename);
+const outsideMemoryFixture = (filename: string): string => joinPath(testQueueDir, "outside-memory", filename);
+
 globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
   throw new Error(`Unexpected real fetch() call in memoryGate.test.ts — all transports must be stubbed. Called with: ${String(args[0])}`);
 }) as typeof fetch;
@@ -67,7 +71,7 @@ function withUntrustedFlag(fn: () => Promise<void>): Promise<void> {
 test("RACHEL_UNTRUSTED_CONTENT set + Write into memory dir -> deny", async () => {
   await withUntrustedFlag(async () => {
     const hook = createMemoryGateHook(testAuditLogPath);
-    const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", "---\nname: some-fact\n---\n");
+    const input = makeWriteInput(memoryFixture("some-fact.md"), "---\nname: some-fact\n---\n");
     const result = await hook(input, undefined, { signal: new AbortController().signal });
     assert.equal(permissionDecisionOf(result), "deny");
     assert.match(reasonOf(result) ?? "", /untrusted/i);
@@ -79,7 +83,7 @@ test("RACHEL_UNTRUSTED_CONTENT unset + Write into memory dir -> pass-through (no
   delete process.env["RACHEL_UNTRUSTED_CONTENT"];
   try {
     const hook = createMemoryGateHook(testAuditLogPath);
-    const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", "---\nname: some-fact\ndescription: x\ntype: preference\n---\nbody");
+    const input = makeWriteInput(memoryFixture("some-fact.md"), "---\nname: some-fact\ndescription: x\ntype: preference\n---\nbody");
     const result = await hook(input, undefined, { signal: new AbortController().signal });
     assert.deepEqual(result, {});
   } finally {
@@ -92,7 +96,7 @@ test("RACHEL_UNTRUSTED_CONTENT unset + Write into memory dir -> pass-through (no
 test("RACHEL_UNTRUSTED_CONTENT set + Write OUTSIDE memory dir -> pass-through", async () => {
   await withUntrustedFlag(async () => {
     const hook = createMemoryGateHook(testAuditLogPath);
-    const input = makeWriteInput("/Users/harrison/Github/assistant-agent/tasks/2026-07-23-something.md", "content");
+    const input = makeWriteInput(outsideMemoryFixture("2026-07-23-something.md"), "content");
     const result = await hook(input, undefined, { signal: new AbortController().signal });
     assert.deepEqual(result, {});
   });
@@ -284,7 +288,7 @@ test("RACHEL_UNTRUSTED_CONTENT set + Edit into memory dir -> deny", async () => 
       cwd: "/tmp",
       tool_name: "Edit",
       tool_input: {
-        file_path: "/Users/harrison/.rachel/memory/some-fact.md",
+        file_path: memoryFixture("some-fact.md"),
         old_string: "a",
         new_string: "attacker-controlled text",
       },
@@ -337,7 +341,7 @@ test("non-PreToolUse hook event -> pass-through with empty object even when untr
       transcript_path: "/dev/null",
       cwd: "/tmp",
       tool_name: "Write",
-      tool_input: { file_path: "/Users/harrison/.rachel/memory/some-fact.md", content: "x" },
+      tool_input: { file_path: memoryFixture("some-fact.md"), content: "x" },
     } as unknown as PreToolUseHookInput;
     const result = await hook(input, undefined, { signal: new AbortController().signal });
     assert.deepEqual(result, {});
@@ -363,7 +367,7 @@ test("RACHEL_UNTRUSTED_CONTENT set + Write into memory dir -> deny is audit-logg
   const auditPath = joinPath(mkdtempSync(joinPath(tmpdir(), "memorygate-audit-")), "audit.jsonl");
   await withUntrustedFlag(async () => {
     const hook = createMemoryGateHook(auditPath);
-    const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", "---\nname: some-fact\n---\n");
+    const input = makeWriteInput(memoryFixture("some-fact.md"), "---\nname: some-fact\n---\n");
     await hook(input, undefined, { signal: new AbortController().signal });
   });
   const rows = readFileSync(auditPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
@@ -378,7 +382,7 @@ test("Write of a memory fact file with bad frontmatter -> deny is audit-logged",
   const auditPath = joinPath(mkdtempSync(joinPath(tmpdir(), "memorygate-audit-")), "audit.jsonl");
   const hook = createMemoryGateHook(auditPath);
   const badContent = "---\nname: some-fact\ndescription: a one-line fact\n---\n\nBody text.\n";
-  const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", badContent);
+  const input = makeWriteInput(memoryFixture("some-fact.md"), badContent);
   await hook(input, undefined, { signal: new AbortController().signal });
   const rows = readFileSync(auditPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
   assert.equal(rows.length, 1);
@@ -413,7 +417,7 @@ test("a call that produces no deny writes no audit row (pass-through is not logg
   const auditPath = joinPath(mkdtempSync(joinPath(tmpdir(), "memorygate-audit-")), "audit.jsonl");
   const hook = createMemoryGateHook(auditPath);
   const validContent = "---\nname: some-fact\ndescription: a one-line fact\ntype: reference\n---\n\nBody text.\n";
-  const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", validContent);
+  const input = makeWriteInput(memoryFixture("some-fact.md"), validContent);
   const result = await hook(input, undefined, { signal: new AbortController().signal });
   assert.deepEqual(result, {});
   assert.throws(() => readFileSync(auditPath));
@@ -424,7 +428,7 @@ test("a call that produces no deny writes no audit row (pass-through is not logg
 test("Write of a memory fact file with valid frontmatter -> pass-through", async () => {
   const hook = createMemoryGateHook(testAuditLogPath);
   const validContent = "---\nname: some-fact\ndescription: a one-line fact\ntype: preference\n---\n\nBody text.\n";
-  const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", validContent);
+  const input = makeWriteInput(memoryFixture("some-fact.md"), validContent);
   const result = await hook(input, undefined, { signal: new AbortController().signal });
   assert.deepEqual(result, {});
 });
@@ -436,7 +440,7 @@ test("Write of a memory fact file MISSING only the optional date field -> pass-t
   // Gary's live store has pre-existing files without a date field, so this
   // must never block — only error-level findings may deny.
   const contentMissingDateOnly = "---\nname: some-fact\ndescription: a one-line fact\ntype: preference\n---\n\nBody text.\n";
-  const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", contentMissingDateOnly);
+  const input = makeWriteInput(memoryFixture("some-fact.md"), contentMissingDateOnly);
   const result = await hook(input, undefined, { signal: new AbortController().signal });
   assert.deepEqual(result, {}, "a warning-level-only finding set must pass through, not deny");
 });
@@ -445,7 +449,7 @@ test("Write of a memory fact file MISSING a required frontmatter field -> deny n
   const hook = createMemoryGateHook(testAuditLogPath);
   // Missing "type" entirely.
   const badContent = "---\nname: some-fact\ndescription: a one-line fact\n---\n\nBody text.\n";
-  const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", badContent);
+  const input = makeWriteInput(memoryFixture("some-fact.md"), badContent);
   const result = await hook(input, undefined, { signal: new AbortController().signal });
   assert.equal(permissionDecisionOf(result), "deny");
   assert.match(reasonOf(result) ?? "", /type/);
@@ -454,7 +458,7 @@ test("Write of a memory fact file MISSING a required frontmatter field -> deny n
 test("Write of a memory fact file with an INVALID type value -> deny naming the bad value", async () => {
   const hook = createMemoryGateHook(testAuditLogPath);
   const badContent = "---\nname: some-fact\ndescription: a one-line fact\ntype: user\n---\n\nBody text.\n";
-  const input = makeWriteInput("/Users/harrison/.rachel/memory/some-fact.md", badContent);
+  const input = makeWriteInput(memoryFixture("some-fact.md"), badContent);
   const result = await hook(input, undefined, { signal: new AbortController().signal });
   assert.equal(permissionDecisionOf(result), "deny");
   assert.match(reasonOf(result) ?? "", /type/);
@@ -463,21 +467,21 @@ test("Write of a memory fact file with an INVALID type value -> deny naming the 
 test("Write to MEMORY.md (the index, not a fact file) -> schema check does not apply", async () => {
   const hook = createMemoryGateHook(testAuditLogPath);
   const indexContent = "- [Some fact](some-fact.md) — a hook\n";
-  const input = makeWriteInput("/Users/harrison/.rachel/memory/MEMORY.md", indexContent);
+  const input = makeWriteInput(memoryFixture("MEMORY.md"), indexContent);
   const result = await hook(input, undefined, { signal: new AbortController().signal });
   assert.deepEqual(result, {});
 });
 
 test("Write of a non-.md file inside the memory dir -> schema check does not apply", async () => {
   const hook = createMemoryGateHook(testAuditLogPath);
-  const input = makeWriteInput("/Users/harrison/.rachel/memory/notes.txt", "arbitrary content");
+  const input = makeWriteInput(memoryFixture("notes.txt"), "arbitrary content");
   const result = await hook(input, undefined, { signal: new AbortController().signal });
   assert.deepEqual(result, {});
 });
 
 test("Write of a .md file OUTSIDE the memory dir with bad frontmatter -> schema check does not apply", async () => {
   const hook = createMemoryGateHook(testAuditLogPath);
-  const input = makeWriteInput("/Users/harrison/Github/assistant-agent/tasks/2026-07-23-something.md", "no frontmatter at all");
+  const input = makeWriteInput(outsideMemoryFixture("2026-07-23-something.md"), "no frontmatter at all");
   const result = await hook(input, undefined, { signal: new AbortController().signal });
   assert.deepEqual(result, {});
 });
@@ -524,7 +528,7 @@ test("WIRING+SAFETY: a real turn with RACHEL_UNTRUSTED_CONTENT set denies a memo
         transcript_path: "/dev/null",
         cwd: "/tmp",
         tool_name: "Write",
-        tool_input: { file_path: "/Users/harrison/.rachel/memory/attacker-planted.md", content: "attacker text" },
+        tool_input: { file_path: memoryFixture("attacker-planted.md"), content: "attacker text" },
       },
       undefined,
       { signal: new AbortController().signal },
