@@ -948,7 +948,8 @@ async function checkMemoryLint(d: SweepDeps, pushDeps: Partial<PushDeps>): Promi
   );
 }
 
-// --- Wiki-ingest debt: secondary detector for the coderails merge gate
+// --- The wiki-ingest-debt family (runFamily/push key: wiki-debt, per the
+// repo's push-family naming convention): secondary detector for the coderails merge gate
 // (scripts/merge.sh merge::has_wiki_ingest_for_merged_prs). The gate is the
 // ENFORCEMENT; this family only surfaces standing debt between merges so it
 // gets paid before the next merge blocks on it. Config comes from the SAME
