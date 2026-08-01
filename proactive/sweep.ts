@@ -4,7 +4,8 @@
 // store directly; every delivery decision (dedup, quiet, budget) lives in the
 // chokepoint. Tick order is fixed: deferred flush FIRST, then bridge-liveness,
 // then PR-red, then calendar (escalation then one-shot spawn), then the
-// memory-lint store scan, then the ~/.rachel/tmp hygiene sweep. Each family
+// memory-lint store scan, then the wiki-ingest-debt scan, then the
+// ~/.rachel/tmp hygiene sweep. Each family
 // runs in its own try/catch so one broken family never blocks the others and
 // the tick still exits 0.
 import { execFile } from "node:child_process";
@@ -947,6 +948,189 @@ async function checkMemoryLint(d: SweepDeps, pushDeps: Partial<PushDeps>): Promi
   );
 }
 
+// --- The wiki-ingest-debt family (runFamily/push key: wiki-debt, per the
+// repo's push-family naming convention): secondary detector for the coderails merge gate
+// (scripts/merge.sh merge::has_wiki_ingest_for_merged_prs). The gate is the
+// ENFORCEMENT; this family only surfaces standing debt between merges so it
+// gets paid before the next merge blocks on it. Config comes from the SAME
+// file the gate reads — the repo-local, deliberately untracked
+// .claude/workflow.config.yaml — never ~/.rachel/proactive/config.json
+// (that is push.ts's store): one source of truth for activation, so the
+// family is inert exactly when the gate is.
+//
+// REGEX IDENTITY: the two coverage patterns below are a frozen contract with
+// merge.sh's REGEX IDENTITY comment block — character-exact identical,
+// changed only in lockstep, or the gate and this family would disagree about
+// what counts as covered. sweep.test.ts cross-checks these strings against
+// merge.sh's source. ESCAPING EQUIVALENCE: merge.sh's patterns sit inside
+// bash double quotes, where a backslash escapes only $, `, ", \ and newline;
+// `"` is the only such character the patterns backslash (the sources
+// pattern's [^\"] denotes [^"]), while `\[` and `\|` pass through
+// byte-identical — so the single transformation from shell source to these
+// constants is \" -> ". ${repo_escaped} and ${n} are literal placeholders
+// substituted by wikiDebtPattern(), mirroring the gate's shell interpolation.
+// The sources pattern's (.*[^A-Za-z0-9._-])? group is a left boundary so a
+// suffix-colliding repo ("xtest-repo") can never clear "test-repo".
+export const WIKI_DEBT_LOG_PATTERN =
+  "^## \\[[0-9]{4}-[0-9]{2}-[0-9]{2}\\] no-op \\| ${repo_escaped} PR #${n}([^0-9]|$)";
+export const WIKI_DEBT_SOURCES_PATTERN =
+  "^origin:(.*[^A-Za-z0-9._-])?${repo_escaped} PRs? [^\"]*#${n}([^0-9]|$)";
+
+// split/join, never String.replace: repoEscaped carries backslashes, which
+// replace() would reinterpret as $-replacement patterns.
+function wikiDebtPattern(template: string, repoEscaped: string, n: number): string {
+  return template.split("${repo_escaped}").join(repoEscaped).split("${n}").join(String(n));
+}
+
+// Mirrors the gate's `sed 's/[][$.*+?^(){}|\\]/\\&/g'` — the same character
+// set ( ] [ $ . * + ? ^ ( ) { } | \ ), each backslash-prefixed, so a repo
+// name containing "." can never act as an ERE wildcard ("myXrepo" coverage
+// clearing "my.repo").
+function ereEscape(s: string): string {
+  return s.replace(/[[\]$.*+?^(){}|\\]/g, "\\$&");
+}
+
+// Line-based extractor mirroring merge.sh's awk semantics exactly: first
+// line starting `key:` wins; strip the key and following whitespace; strip
+// any inline comment BEFORE stripping quotes (awk's gsub order — a quoted
+// value containing '#' loses its tail, same as the gate); strip trailing
+// whitespace; strip one surrounding quote from each end. An empty result is
+// "unset" — the gate's `[[ -z ... ]]` treats them identically.
+function extractWikiConfigKey(content: string, key: string): string | undefined {
+  const prefix = `${key}:`;
+  for (const line of content.split("\n")) {
+    if (!line.startsWith(prefix)) {
+      continue;
+    }
+    let v = line.slice(prefix.length);
+    v = v.replace(/^[\t\v\f\r ]*/, "");
+    v = v.replace(/[\t\v\f\r ]*#.*$/, "");
+    v = v.replace(/[\t\v\f\r ]+$/, "");
+    v = v.replace(/^["']/, "").replace(/["']$/, "");
+    return v === "" ? undefined : v;
+  }
+  return undefined;
+}
+
+// Every external command in this family is bounded: the vault fetch talks to
+// a git REMOTE — a hang class new to the sweep (every other family execs only
+// local commands) — and families run sequentially with no outer deadline, so
+// one unbounded wedged child would silently disable every later family on
+// every subsequent tick.
+const WIKI_DEBT_EXEC_TIMEOUT_MS = 30_000;
+
+// Exported for sweep.test.ts and the frozen WU-D evals, which drive it with
+// injected deps — production goes through sweepTick like every other family.
+export async function checkWikiDebt(d: SweepDeps, pushDeps: Partial<PushDeps>): Promise<void> {
+  const content = d.readFileFn(join(d.repoDir, ".claude", "workflow.config.yaml"));
+  if (content === undefined) {
+    return;
+  }
+  const epoch = extractWikiConfigKey(content, "wiki_debt_epoch_pr");
+  let wikiRel = extractWikiConfigKey(content, "wiki_path");
+  // YAML nulls mean unset, same as the gate's `case ... null|'~'`.
+  if (wikiRel === "null" || wikiRel === "~") {
+    wikiRel = undefined;
+  }
+  // Config-keyed inertness, matching the gate's skip-before-validate order
+  // (merge.sh checks both keys are set before validating the epoch's shape):
+  // either key absent or YAML-null means the family is deactivated.
+  if (epoch === undefined || wikiRel === undefined) {
+    return;
+  }
+  // Both keys set but a non-numeric epoch: the operator TRIED to activate
+  // the family, so this is a config error, not deactivation. The gate BLOCKS
+  // a merge on exactly this input (merge.sh's err); throwing here matches
+  // that loudness — a silent return would leave the detector dark while
+  // every tick reports "ok".
+  if (!/^[0-9]+$/.test(epoch)) {
+    throw new Error(`wiki-debt: wiki_debt_epoch_pr ('${epoch}') is not a PR number — fix .claude/workflow.config.yaml`);
+  }
+  const epochNum = Number(epoch);
+  // Relative wiki_path resolves against the repo root (the directory holding
+  // .claude/), same base the gate uses; absolute passes through.
+  const vault = wikiRel.startsWith("/") ? wikiRel : join(d.repoDir, wikiRel);
+
+  const url = await d.execFn("git", ["-C", d.repoDir, "remote", "get-url", "origin"], { timeoutMs: WIKI_DEBT_EXEC_TIMEOUT_MS });
+  if (url.exitCode !== 0) {
+    throw new Error(`wiki-debt: git remote get-url origin exited ${url.exitCode}: ${url.stderr.trim()}`);
+  }
+  const ownerRepo = url.stdout.trim().replace(/\/$/, "").match(/[:/]([^:/]+\/[^:/]+?)(?:\.git)?$/)?.[1];
+  const repoShort = ownerRepo?.split("/")[1];
+  // Mirrors the gate's hard block on an empty repo name: an empty name would
+  // collapse the coverage regexes into matching ANY repo's coverage.
+  if (ownerRepo === undefined || repoShort === undefined || repoShort === "") {
+    throw new Error(`wiki-debt: could not resolve the origin repo from '${url.stdout.trim()}'`);
+  }
+
+  const list = await d.execFn("gh", ["pr", "list", "--repo", ownerRepo, "--state", "merged", "--json", "number", "--limit", "100"], { timeoutMs: WIKI_DEBT_EXEC_TIMEOUT_MS });
+  if (list.exitCode !== 0) {
+    throw new Error(`wiki-debt: gh pr list exited ${list.exitCode}: ${list.stderr.trim()}`);
+  }
+  // gh can exit 0 with empty stdout on some failure modes — that would parse
+  // as zero merged PRs and silently approve the debt. Fail loud instead.
+  if (list.stdout.trim() === "") {
+    throw new Error("wiki-debt: gh pr list returned an empty merged-PR response");
+  }
+  const merged = JSON.parse(list.stdout) as Array<{ number: number }>;
+  // gh pr list is newest-first, so a full window truncates the OLDEST merged
+  // PRs — exactly the ones most likely to carry unpaid debt.
+  if (merged.length === 100) {
+    throw new Error("wiki-debt: merged-PR window full — advance wiki_debt_epoch_pr or raise the limit");
+  }
+  // Unlike the gate there is no in-flight PR to exclude — the sweep runs
+  // between merges, so every merged PR past the epoch is a candidate.
+  const candidates = merged.map((p) => p.number).filter((n) => Number.isInteger(n) && n > epochNum);
+  const uncovered: number[] = [];
+  if (candidates.length > 0) {
+    // Only the vault's origin/main counts as durable coverage — one fetch,
+    // then verify the ref actually materialised (a fetch that "succeeds"
+    // without it would make every grep below a false "not covered").
+    const fetch = await d.execFn("git", ["-C", vault, "fetch", "-q", "origin", "main"], { timeoutMs: WIKI_DEBT_EXEC_TIMEOUT_MS });
+    if (fetch.exitCode !== 0) {
+      throw new Error(`wiki-debt: wiki fetch failed in ${vault}: ${fetch.stderr.trim()}`);
+    }
+    const verify = await d.execFn("git", ["-C", vault, "rev-parse", "-q", "--verify", "origin/main"], { timeoutMs: WIKI_DEBT_EXEC_TIMEOUT_MS });
+    if (verify.exitCode !== 0) {
+      throw new Error(`wiki-debt: vault has no origin/main ref after the fetch (${vault})`);
+    }
+
+    const repoEscaped = ereEscape(repoShort);
+    for (const n of [...candidates].sort((a, b) => a - b)) {
+      // Exit-code semantics mirror the gate's `grep -q || grep -q`: ANY
+      // non-zero exit is "not covered by this grep", so a grep error can only
+      // produce a false ping — never a false all-clear.
+      const logGrep = await d.execFn("git", ["-C", vault, "grep", "-qE", wikiDebtPattern(WIKI_DEBT_LOG_PATTERN, repoEscaped, n), "origin/main", "--", "log.md"], { timeoutMs: WIKI_DEBT_EXEC_TIMEOUT_MS });
+      if (logGrep.exitCode === 0) {
+        continue;
+      }
+      const srcGrep = await d.execFn("git", ["-C", vault, "grep", "-qE", wikiDebtPattern(WIKI_DEBT_SOURCES_PATTERN, repoEscaped, n), "origin/main", "--", "sources/"], { timeoutMs: WIKI_DEBT_EXEC_TIMEOUT_MS });
+      if (srcGrep.exitCode === 0) {
+        continue;
+      }
+      uncovered.push(n);
+    }
+  }
+  // One line whenever the scan actually ran, so an inert family (no line at
+  // all) is distinguishable from "scanned, found nothing" in the tick log.
+  d.log(`wiki-debt: scanned ${candidates.length} candidate PR(s) past epoch ${epochNum} — ${uncovered.length} uncovered`);
+  if (uncovered.length === 0) {
+    return;
+  }
+
+  // Event id and state both carry the sorted debt set: an unchanged set
+  // dedups in the chokepoint, while NEW debt (a different set) re-pings.
+  const setStr = uncovered.join(",");
+  await d.pushFn(
+    "wiki-debt",
+    `wiki-debt:${repoShort}:${setStr}`,
+    setStr,
+    "normal",
+    `[wiki] ingest debt: merged ${repoShort} PR(s) not covered in the wiki: ${uncovered.map((n) => `#${n}`).join(" ")} — clear each with a sources/*.md page whose origin: names the PR, or a log.md entry '## [YYYY-MM-DD] no-op | ${repoShort} PR #N — reason'.`,
+    pushDeps,
+  );
+}
+
 // --- tmp sweep (RCA 2026-07-23 item 16) ---
 //
 // ~/.rachel/tmp accumulates voice artifacts and downloaded images. The
@@ -1142,6 +1326,10 @@ export async function sweepTick(overrides?: Partial<SweepDeps>): Promise<Record<
     "calendar-escalation": await runFamily("calendar-escalation", d, errors, () => checkCalendarEscalation(d, cfg, pushDeps)),
     calendar: await runFamily("calendar", d, errors, () => runCalendarOneshot(d, cfg)),
     "memory-lint": await runFamily("memory-lint", d, errors, () => checkMemoryLint(d, pushDeps)),
+    // Secondary detector for the coderails merge gate's wiki-ingest debt
+    // check — surfaces standing debt between merges; the gate stays the
+    // enforcement. Inert unless .claude/workflow.config.yaml configures it.
+    "wiki-debt": await runFamily("wiki-debt", d, errors, () => checkWikiDebt(d, pushDeps)),
     // Last: pure local hygiene, alerts nobody, and nothing else depends on it.
     "tmp-sweep": await runFamily("tmp-sweep", d, errors, async () => {
       sweepTmpDir(d);
