@@ -1081,38 +1081,39 @@ export async function checkWikiDebt(d: SweepDeps, pushDeps: Partial<PushDeps>): 
   // Unlike the gate there is no in-flight PR to exclude — the sweep runs
   // between merges, so every merged PR past the epoch is a candidate.
   const candidates = merged.map((p) => p.number).filter((n) => Number.isInteger(n) && n > epochNum);
-  if (candidates.length === 0) {
-    return;
-  }
-
-  // Only the vault's origin/main counts as durable coverage — one fetch,
-  // then verify the ref actually materialised (a fetch that "succeeds"
-  // without it would make every grep below a false "not covered").
-  const fetch = await d.execFn("git", ["-C", vault, "fetch", "-q", "origin", "main"]);
-  if (fetch.exitCode !== 0) {
-    throw new Error(`wiki-debt: wiki fetch failed in ${vault}: ${fetch.stderr.trim()}`);
-  }
-  const verify = await d.execFn("git", ["-C", vault, "rev-parse", "-q", "--verify", "origin/main"]);
-  if (verify.exitCode !== 0) {
-    throw new Error(`wiki-debt: vault has no origin/main ref after the fetch (${vault})`);
-  }
-
-  const repoEscaped = ereEscape(repoShort);
   const uncovered: number[] = [];
-  for (const n of [...candidates].sort((a, b) => a - b)) {
-    // Exit-code semantics mirror the gate's `grep -q || grep -q`: ANY
-    // non-zero exit is "not covered by this grep", so a grep error can only
-    // produce a false ping — never a false all-clear.
-    const logGrep = await d.execFn("git", ["-C", vault, "grep", "-qE", wikiDebtPattern(WIKI_DEBT_LOG_PATTERN, repoEscaped, n), "origin/main", "--", "log.md"]);
-    if (logGrep.exitCode === 0) {
-      continue;
+  if (candidates.length > 0) {
+    // Only the vault's origin/main counts as durable coverage — one fetch,
+    // then verify the ref actually materialised (a fetch that "succeeds"
+    // without it would make every grep below a false "not covered").
+    const fetch = await d.execFn("git", ["-C", vault, "fetch", "-q", "origin", "main"], { timeoutMs: WIKI_DEBT_EXEC_TIMEOUT_MS });
+    if (fetch.exitCode !== 0) {
+      throw new Error(`wiki-debt: wiki fetch failed in ${vault}: ${fetch.stderr.trim()}`);
     }
-    const srcGrep = await d.execFn("git", ["-C", vault, "grep", "-qE", wikiDebtPattern(WIKI_DEBT_SOURCES_PATTERN, repoEscaped, n), "origin/main", "--", "sources/"]);
-    if (srcGrep.exitCode === 0) {
-      continue;
+    const verify = await d.execFn("git", ["-C", vault, "rev-parse", "-q", "--verify", "origin/main"], { timeoutMs: WIKI_DEBT_EXEC_TIMEOUT_MS });
+    if (verify.exitCode !== 0) {
+      throw new Error(`wiki-debt: vault has no origin/main ref after the fetch (${vault})`);
     }
-    uncovered.push(n);
+
+    const repoEscaped = ereEscape(repoShort);
+    for (const n of [...candidates].sort((a, b) => a - b)) {
+      // Exit-code semantics mirror the gate's `grep -q || grep -q`: ANY
+      // non-zero exit is "not covered by this grep", so a grep error can only
+      // produce a false ping — never a false all-clear.
+      const logGrep = await d.execFn("git", ["-C", vault, "grep", "-qE", wikiDebtPattern(WIKI_DEBT_LOG_PATTERN, repoEscaped, n), "origin/main", "--", "log.md"], { timeoutMs: WIKI_DEBT_EXEC_TIMEOUT_MS });
+      if (logGrep.exitCode === 0) {
+        continue;
+      }
+      const srcGrep = await d.execFn("git", ["-C", vault, "grep", "-qE", wikiDebtPattern(WIKI_DEBT_SOURCES_PATTERN, repoEscaped, n), "origin/main", "--", "sources/"], { timeoutMs: WIKI_DEBT_EXEC_TIMEOUT_MS });
+      if (srcGrep.exitCode === 0) {
+        continue;
+      }
+      uncovered.push(n);
+    }
   }
+  // One line whenever the scan actually ran, so an inert family (no line at
+  // all) is distinguishable from "scanned, found nothing" in the tick log.
+  d.log(`wiki-debt: scanned ${candidates.length} candidate PR(s) past epoch ${epochNum} — ${uncovered.length} uncovered`);
   if (uncovered.length === 0) {
     return;
   }
