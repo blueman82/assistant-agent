@@ -2028,6 +2028,7 @@ function wikiHarness(opts: {
   ghExit?: number;
   ghStdout?: string;
   fetchExit?: number;
+  revParseExit?: number;
   logGrepExit?: number;
   srcGrepExit?: number;
 } = {}) {
