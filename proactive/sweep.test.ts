@@ -2194,7 +2194,12 @@ test("gh pr list failure is a wiki-debt family error, never a false all-clear", 
   const results = await sweepTick(h.deps);
   assert.equal(results["wiki-debt"], "failed");
   assert.equal(h.pushes.filter((p) => p.family === "wiki-debt").length, 0);
-  assert.ok(h.logs.some((l) => l.includes("wiki-debt error") && l.includes("gh pr list")), `error logged: ${h.logs.join(" | ")}`);
+  // The child's stderr must reach the surfaced error — an exit code alone
+  // ("gh pr list exited 1") is undiagnosable from a tick log.
+  assert.ok(
+    h.logs.some((l) => l.includes("wiki-debt error") && l.includes("gh pr list") && l.includes("gh boom")),
+    `error carries the child's stderr: ${h.logs.join(" | ")}`,
+  );
 });
 
 test("gh exit 0 with empty stdout is a family error (gh can fail silently)", async () => {
