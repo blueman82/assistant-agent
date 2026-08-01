@@ -1012,6 +1012,13 @@ function extractWikiConfigKey(content: string, key: string): string | undefined 
   return undefined;
 }
 
+// Every external command in this family is bounded: the vault fetch talks to
+// a git REMOTE — a hang class new to the sweep (every other family execs only
+// local commands) — and families run sequentially with no outer deadline, so
+// one unbounded wedged child would silently disable every later family on
+// every subsequent tick.
+const WIKI_DEBT_EXEC_TIMEOUT_MS = 30_000;
+
 // Exported for sweep.test.ts and the frozen WU-D evals, which drive it with
 // injected deps — production goes through sweepTick like every other family.
 export async function checkWikiDebt(d: SweepDeps, pushDeps: Partial<PushDeps>): Promise<void> {
