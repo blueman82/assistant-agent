@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultExecFn, defaultLstatFn, defaultReadDirFn, defaultUnlinkFn, sweepTick, parseEtimeMs } from "./sweep.ts";
+import { defaultExecFn, defaultLstatFn, defaultReadDirFn, defaultUnlinkFn, sweepTick, parseEtimeMs, WIKI_DEBT_LOG_PATTERN, WIKI_DEBT_SOURCES_PATTERN } from "./sweep.ts";
 import type { SweepDeps } from "./sweep.ts";
 import type { Severity } from "./push.ts";
 
