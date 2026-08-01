@@ -1063,7 +1063,7 @@ export async function checkWikiDebt(d: SweepDeps, pushDeps: Partial<PushDeps>): 
     throw new Error(`wiki-debt: could not resolve the origin repo from '${url.stdout.trim()}'`);
   }
 
-  const list = await d.execFn("gh", ["pr", "list", "--repo", ownerRepo, "--state", "merged", "--json", "number", "--limit", "100"]);
+  const list = await d.execFn("gh", ["pr", "list", "--repo", ownerRepo, "--state", "merged", "--json", "number", "--limit", "100"], { timeoutMs: WIKI_DEBT_EXEC_TIMEOUT_MS });
   if (list.exitCode !== 0) {
     throw new Error(`wiki-debt: gh pr list exited ${list.exitCode}: ${list.stderr.trim()}`);
   }
