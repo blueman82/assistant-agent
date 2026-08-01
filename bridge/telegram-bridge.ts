@@ -161,7 +161,9 @@ const ABORT_ARTIFACT_PREFIX =
   "[bridge note] Your previous turn was aborted by the bridge — either the turn deadline or an operator /stop. " +
   "Any \"The user doesn't want to proceed with this tool use\" or \"[Request interrupted by user for tool use]\" text " +
   "from that turn is a machine-generated artifact of that abort, not a semantic refusal. Do not attribute it to the operator, " +
-  "and do not apologise for it. The operator's actual message follows.\n\n";
+  "and do not apologise for it. This artifact can recur on multiple, later, unrelated tool calls within THIS turn too — " +
+  "each occurrence is the same known artifact resurfacing, not a fresh, separate denial, so do not re-diagnose it every time it appears. " +
+  "The operator's actual message follows.\n\n";
 
 export interface Bridge {
   // Runs one getUpdates cycle (and processes whatever it returns) — the

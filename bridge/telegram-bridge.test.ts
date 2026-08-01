@@ -2825,6 +2825,62 @@ test("RCA item 6: after a deadline abort the NEXT turn's input is prefixed with 
   );
 });
 
+test("RCA item 6: the abort-artifact note warns that the artifact can recur on later, unrelated tool calls in the same turn", async () => {
+  // Live incident: within ONE next turn, 4 separate tool calls (2 Agent
+  // dispatches, 1 Bash, 1 Write) each independently hit the same
+  // harness-injected denial-shaped string and were wrongly re-diagnosed as 4
+  // fresh real denials. The prefix only warned about what already happened
+  // to the in-flight call — it said nothing about the string resurfacing on
+  // later, unrelated tool calls within that same next turn. The wording must
+  // say so explicitly, not just describe the originating event.
+  const { transport } = makeStubTransport([
+    messageUpdate(1, "hung"),
+    messageUpdate(2, "what happened?"),
+    { ok: true, result: [] },
+  ]);
+  const seen: string[] = [];
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (input, emit, signal) => {
+      seen.push(input);
+      if (input.includes("hung")) {
+        await new Promise<void>((resolve) => {
+          signal?.addEventListener("abort", () => resolve());
+        });
+        return;
+      }
+      emit("ok", "text");
+    },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+    turnTimeoutMs: 30,
+  });
+
+  await bridge.drainOnce();
+  await bridge.drainOnce();
+  for (let i = 0; i < 100 && seen.length < 2; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  await bridge.stop();
+
+  assert.equal(seen.length, 2, `expected both turns to run, got: ${JSON.stringify(seen)}`);
+  const note = seen[1]!;
+  assert.ok(
+    /multiple|later|subsequent|other|different|any tool call|each|recur/i.test(note) &&
+      /(tool call|tool use)/i.test(note),
+    `expected the note to warn the artifact can recur on later/other tool calls within the turn, got: ${JSON.stringify(note)}`,
+  );
+  assert.ok(
+    /each (occurrence|time|instance)|do not (re-?diagnose|treat)|not a (fresh|new|separate)|same (known )?(artifact|phenomenon)/i.test(note),
+    `expected the note to say later occurrences aren't fresh/separate denials, got: ${JSON.stringify(note)}`,
+  );
+  // Existing invariants must still hold after the wording change.
+  assert.ok(note.includes("aborted by the bridge"));
+  assert.ok(note.endsWith("what happened?"));
+});
+
 test("RCA item 6: the abort-artifact prefix is one-shot — it does not leak into a third turn", async () => {
   // The note describes the immediately preceding turn. Left sticky it would
   // assert an abort that did not happen, which is its own ghost.
