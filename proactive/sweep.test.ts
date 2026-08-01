@@ -2145,12 +2145,15 @@ test("absent workflow.config.yaml is a silent no-op — no gh call, no push", as
   assert.equal(h.pushes.filter((p) => p.family === "wiki-debt").length, 0);
 });
 
-test("non-numeric epoch and YAML-null wiki_path are each a silent no-op", async () => {
+test("missing keys and YAML-null wiki_path are each a silent no-op", async () => {
   for (const cfg of [
-    "wiki_debt_epoch_pr: soon\nwiki_path: /vault\n",
     "wiki_debt_epoch_pr: 80\nwiki_path: null\n",
     "wiki_debt_epoch_pr: 80\nwiki_path: ~\n",
     "unrelated_key: 5\n",
+    // Non-numeric epoch WITH wiki_path unset is still deactivation, matching
+    // the gate's skip-before-validate order (merge.sh checks both keys are
+    // set before it validates the epoch's shape).
+    "wiki_debt_epoch_pr: soon\n",
   ]) {
     const h = wikiHarness({ cfg });
     const results = await sweepTick(h.deps);
@@ -2158,6 +2161,22 @@ test("non-numeric epoch and YAML-null wiki_path are each a silent no-op", async 
     assert.equal(h.execCalls.filter((c) => c.cmd === "gh").length, 0, `no gh call for ${JSON.stringify(cfg)}`);
     assert.equal(h.pushes.filter((p) => p.family === "wiki-debt").length, 0);
   }
+});
+
+test("a present but non-numeric wiki_debt_epoch_pr is a family error, not a silent no-op", async () => {
+  // Both keys set means the operator TRIED to activate the family, so a bad
+  // epoch is a config error, not deactivation. The gate BLOCKS a merge on
+  // exactly this input (merge.sh's err); the detector matches that loudness
+  // — silent "ok" here would be a detector gone dark while looking green.
+  const h = wikiHarness({ cfg: "wiki_debt_epoch_pr: soon\nwiki_path: /vault\n" });
+  const results = await sweepTick(h.deps);
+  assert.equal(results["wiki-debt"], "failed");
+  assert.equal(h.execCalls.filter((c) => c.cmd === "gh").length, 0, "fails before any external command");
+  assert.equal(h.pushes.filter((p) => p.family === "wiki-debt").length, 0);
+  assert.ok(
+    h.logs.some((l) => l.includes("wiki-debt error") && l.includes("wiki_debt_epoch_pr") && l.includes("soon")),
+    `error names the key and the bad value: ${h.logs.join(" | ")}`,
+  );
 });
 
 test("config values are stripped awk-style: inline comment before quotes, then surrounding quotes", async () => {
