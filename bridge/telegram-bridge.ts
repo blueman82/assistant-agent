@@ -58,6 +58,7 @@ export interface CreateBridgeOptions {
   pollIntervalMs?: number;
   typingIntervalMs?: number;
   turnTimeoutMs?: number;
+  turnTeardownGraceMs?: number;
   // Injectable for tests — avoids hitting the real filesystem/network.
   downloadFileFn?: (config: ApiConfig, fileId: string, destPath: string) => Promise<void>;
   transcribeFn?: (audioPath: string) => Promise<string>;
@@ -140,6 +141,10 @@ const DEFAULT_TYPING_INTERVAL_MS = 5000;
 // so without a deadline one stuck turn blocks every later message indefinitely.
 // Generous enough that a legitimately long turn is never cut short.
 const DEFAULT_TURN_TIMEOUT_MS = 10 * 60 * 1000;
+// abort() is cooperative: the SDK query can take a few seconds to unwind
+// after the deadline wins. Keep teardown inside the FIFO's single-flight
+// boundary, but bound it so an abort-ignoring stream cannot wedge Telegram.
+const DEFAULT_TURN_TEARDOWN_GRACE_MS = 10_000;
 const CONFLICT_BACKOFF_MS = 65_000;   // Telegram releases getUpdates lock in ~30-60s; 65s gives safe margin
 const CONFLICT_EXIT_THRESHOLD = 5;    // 5 consecutive 409s (~5 min) = genuine second consumer, not launchd race
 // Ceiling on the error detail copied into a synthesis-failure log line.
@@ -660,6 +665,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   const pollIntervalMs = options.pollIntervalMs ?? 2000;
   const typingIntervalMs = options.typingIntervalMs ?? DEFAULT_TYPING_INTERVAL_MS;
   const turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
+  const turnTeardownGraceMs = options.turnTeardownGraceMs ?? DEFAULT_TURN_TEARDOWN_GRACE_MS;
   const tickerGraceMs = options.tickerGraceMs ?? DEFAULT_TICKER_GRACE_MS;
   const tickerJitterMinMs = options.tickerJitterMinMs ?? DEFAULT_TICKER_JITTER_MIN_MS;
   const tickerJitterMaxMs = options.tickerJitterMaxMs ?? DEFAULT_TICKER_JITTER_MAX_MS;
@@ -691,6 +697,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   let stopped = false;
   let currentAbort: AbortController | undefined;
   let draining = false;
+  let sessionResetEpoch = 0;
   let backoffMs = 1000;
   const MAX_BACKOFF_MS = 30_000;
 
@@ -704,6 +711,11 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   let pendingAbortNotice = false;
   let lastHeartbeatMs = 0;
   let heartbeatWriteFailing = false;
+
+  function rotateSession(): void {
+    sessionResetEpoch++;
+    resetSession();
+  }
 
   function writeHeartbeat(): void {
     try {
@@ -793,7 +805,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     const text = (msg.text ?? "").trim();
 
     if (text === "/reset") {
-      resetSession();
+      rotateSession();
       // A fresh session holds none of the aborted turn's residue, so there is
       // nothing left to explain — carrying the note across would assert an
       // abort into a context that has no trace of one.
@@ -961,6 +973,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     try {
       while (fifo.length > 0) {
         const { text, voice } = fifo.shift()!;
+        const sessionResetEpochAtTurnStart = sessionResetEpoch;
         // Abort inoculation: consumed here so it applies to exactly one turn —
         // the one immediately after the abort. Left sticky it would assert an
         // abort that didn't happen, which is a ghost of its own.
@@ -1094,6 +1107,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         // queue with no error ever surfacing. Abort it and move on, so the FIFO
         // keeps draining and Gary hears why instead of silence.
         let timedOut = false;
+        let sessionRotatedAfterTimeout = false;
         let turnErrored = false;
         let watchdog: ReturnType<typeof setTimeout> | undefined;
         // Race the turn against the deadline rather than only aborting it.
@@ -1110,21 +1124,54 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
           }, turnTimeoutMs);
         });
         try {
-          await Promise.race([
-            runTurn(input, (line, kind) => {
-              if (kind === "text") {
-                buffer.push(line);
-                // The ticker's event is the most recent of a tool line OR
-                // the first line of the latest completed text block — a
-                // text-only turn must still show live ticker progress, not
-                // a frozen placeholder from before the first text block.
-                latestEvent = line.split("\n")[0]!.trim();
-              } else if (kind === "tool") {
-                latestEvent = line.trim();
-              }
-            }, abortController.signal),
-            deadline,
-          ]);
+          // Keep invocation inside the guarded region: an injected or future
+          // runTurn implementation may throw synchronously before returning a
+          // promise, and that must still clear the watchdog and reach Gary as
+          // a normal turn error.
+          const turnPromise = runTurn(input, (line, kind) => {
+            if (kind === "text") {
+              buffer.push(line);
+              // The ticker's event is the most recent of a tool line OR
+              // the first line of the latest completed text block — a
+              // text-only turn must still show live ticker progress, not
+              // a frozen placeholder from before the first text block.
+              latestEvent = line.split("\n")[0]!.trim();
+            } else if (kind === "tool") {
+              latestEvent = line.trim();
+            }
+          }, abortController.signal);
+          await Promise.race([turnPromise, deadline]);
+
+          if (timedOut) {
+            // The deadline proves only that abort was requested. Claude Code
+            // may still be writing its cancellation record and holding the
+            // resumed session, so keep teardown inside the FIFO boundary.
+            let teardownTimer: ReturnType<typeof setTimeout> | undefined;
+            const teardownSettled = await Promise.race([
+              turnPromise.then(
+                () => true,
+                () => true, // an abort-time rejection is settled teardown too
+              ),
+              new Promise<boolean>((resolve) => {
+                teardownTimer = setTimeout(() => resolve(false), turnTeardownGraceMs);
+              }),
+            ]);
+            clearTimeout(teardownTimer);
+
+            if (!teardownSettled && sessionResetEpoch === sessionResetEpochAtTurnStart) {
+              // Never resume the session still owned by an abandoned query.
+              // An operator /reset received during teardown has already
+              // rotated ownership, so only rotate here while this turn still
+              // owns the epoch it started with. rachel.ts's generation guard
+              // prevents the stale query from reclaiming the persisted pointer
+              // if it emits init later.
+              rotateSession();
+              sessionRotatedAfterTimeout = true;
+              logError(
+                `[telegram-bridge] aborted turn did not settle within ${turnTeardownGraceMs}ms — session reset before draining next message.`,
+              );
+            }
+          }
         } catch (err) {
           turnErrored = true;
           buffer.push(`[Rachel] error: ${err instanceof Error ? err.message : String(err)}`);
@@ -1174,9 +1221,14 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
           // Say it plainly rather than delivering a truncated turn as if it
           // were a complete answer.
           logError(`[telegram-bridge] turn exceeded ${turnTimeoutMs}ms — aborted, draining next message.`);
-          // Inoculate the next turn against this abort's rejection residue.
-          pendingAbortNotice = true;
-          buffer.push(`[Rachel] That turn ran past ${Math.round(turnTimeoutMs / 60000)} minutes and I cut it off. Ask again if you still need it, or say "background it" and I'll run it as a detached loop and ping you when it's done.`);
+          // A rotated session contains none of the old transcript residue, so
+          // carrying the artifact prefix into it would assert a ghost abort.
+          pendingAbortNotice =
+            !sessionRotatedAfterTimeout && sessionResetEpoch === sessionResetEpochAtTurnStart;
+          const rotationNote = sessionRotatedAfterTimeout
+            ? " The old turn did not finish shutting down, so I started a fresh session before continuing."
+            : "";
+          buffer.push(`[Rachel] That turn ran past ${Math.round(turnTimeoutMs / 60000)} minutes and I cut it off.${rotationNote} Ask again if you still need it, or say "background it" and I'll run it as a detached loop and ping you when it's done.`);
         } else if (turnErrored) {
           // A crashed turn is not a completed one — logging it as "completed"
           // would contaminate the duration data the line below exists to collect.

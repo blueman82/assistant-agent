@@ -504,6 +504,37 @@ test("a throwing runTurn still produces a reply containing '[Rachel] error:' and
   assert.equal(heartbeat["turn_in_flight_since"], null, "a thrown turn must not leave turn_in_flight_since stuck (phantom drain-stall)");
 });
 
+test("a synchronous runTurn throw is caught and returned as a Rachel error", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "trigger a synchronous failure"),
+    { ok: true, result: [] },
+  ]);
+  const runTurnStub = (() => {
+    throw new Error("boom - synchronous failure for this test");
+  }) as BridgeRunTurn;
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: runTurnStub,
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  const replyText = calls
+    .filter((call) => call.url.includes("/sendMessage"))
+    .map((call) => String((call.body as Record<string, unknown>)?.["text"] ?? ""));
+  assert.ok(
+    replyText.some((text) => text.includes("[Rachel] error:") && text.includes("synchronous failure")),
+    `expected a user-facing Rachel error for a synchronous throw, got: ${JSON.stringify(replyText)}`,
+  );
+});
+
 test("a runTurn that emits partial text then throws produces a reply containing both the emitted text and '[Rachel] error:'", async () => {
   const { transport, calls } = makeStubTransport([
     messageUpdate(1, "start the migration"),
@@ -2560,6 +2591,208 @@ test("a turn that outruns turnTimeoutMs is aborted, tells Gary, and does not wed
   assert.ok(seen[1]!.endsWith("second"), `expected the queued message to run, got: ${JSON.stringify(seen[1])}`);
 });
 
+test("a timed-out turn keeps the FIFO single-flight until SDK teardown settles within grace", async () => {
+  const { transport } = makeStubTransport([
+    messageUpdate(1, "first"),
+    messageUpdate(2, "second"),
+    { ok: true, result: [] },
+  ]);
+  const events: string[] = [];
+  let releaseFirst!: () => void;
+  let observeAbort!: () => void;
+  const abortObserved = new Promise<void>((resolve) => { observeAbort = resolve; });
+  let resetCalls = 0;
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (input, emit, signal) => {
+      if (input === "first") {
+        events.push("start:first");
+        await new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+          signal.addEventListener("abort", () => {
+            events.push("abort:first");
+            observeAbort();
+          }, { once: true });
+        });
+        return;
+      }
+      events.push("start:second");
+      emit("second reply", "text");
+    },
+    getSessionId: () => "same-session",
+    resetSession: () => { resetCalls++; },
+    pollIntervalMs: 5,
+    turnTimeoutMs: 30,
+    turnTeardownGraceMs: 250,
+  });
+
+  try {
+    await bridge.drainOnce();
+    await bridge.drainOnce();
+    await abortObserved;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    assert.deepEqual(
+      events,
+      ["start:first", "abort:first"],
+      "the queued turn must not start while the aborted SDK turn is still unwinding",
+    );
+
+    releaseFirst();
+    for (let i = 0; i < 100 && !events.includes("start:second"); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(events.includes("start:second"), `expected the queued turn after teardown, got: ${JSON.stringify(events)}`);
+    assert.equal(resetCalls, 0, "a turn that tears down within grace must retain its session");
+  } finally {
+    releaseFirst?.();
+    await bridge.stop();
+  }
+});
+
+test("/reset during timeout teardown keeps the replacement session free of abort residue", async () => {
+  const { transport } = makeStubTransport([
+    messageUpdate(1, "first"),
+    messageUpdate(2, "/reset"),
+    messageUpdate(3, "fresh"),
+    { ok: true, result: [] },
+  ]);
+  const seen: string[] = [];
+  let releaseFirst!: () => void;
+  let observeAbort!: () => void;
+  const abortObserved = new Promise<void>((resolve) => { observeAbort = resolve; });
+  let resetCalls = 0;
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (input, emit, signal) => {
+      seen.push(input);
+      if (input === "first") {
+        await new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+          signal.addEventListener("abort", observeAbort, { once: true });
+        });
+        return;
+      }
+      emit("fresh reply", "text");
+    },
+    getSessionId: () => "session",
+    resetSession: () => { resetCalls++; },
+    pollIntervalMs: 5,
+    turnTimeoutMs: 30,
+    turnTeardownGraceMs: 250,
+  });
+
+  try {
+    await bridge.drainOnce();
+    await abortObserved;
+    await bridge.drainOnce(); // /reset while the old SDK turn is unwinding
+    await bridge.drainOnce(); // queue the first message for the new session
+    releaseFirst();
+    for (let i = 0; i < 100 && seen.length < 2; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    assert.equal(resetCalls, 1, "the explicit /reset should be the only session rotation");
+    assert.deepEqual(seen, ["first", "fresh"], "timeout completion must not re-seed abort residue after /reset");
+  } finally {
+    releaseFirst?.();
+    await bridge.stop();
+  }
+});
+
+test("/reset during teardown makes grace-expiry rotation idempotent", async () => {
+  const { transport } = makeStubTransport([
+    messageUpdate(1, "hung"),
+    messageUpdate(2, "/reset"),
+    messageUpdate(3, "fresh"),
+    { ok: true, result: [] },
+  ]);
+  const seen: string[] = [];
+  let observeAbort!: () => void;
+  const abortObserved = new Promise<void>((resolve) => { observeAbort = resolve; });
+  let resetCalls = 0;
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (input, emit, signal) => {
+      seen.push(input);
+      if (input === "hung") {
+        signal.addEventListener("abort", observeAbort, { once: true });
+        await new Promise<void>(() => {});
+        return;
+      }
+      emit("fresh reply", "text");
+    },
+    getSessionId: () => "session",
+    resetSession: () => { resetCalls++; },
+    pollIntervalMs: 5,
+    turnTimeoutMs: 30,
+    turnTeardownGraceMs: 40,
+  });
+
+  await bridge.drainOnce();
+  await abortObserved;
+  await bridge.drainOnce(); // explicit /reset owns the rotation
+  await bridge.drainOnce(); // queue fresh work while teardown grace continues
+  for (let i = 0; i < 100 && seen.length < 2; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  await bridge.stop();
+
+  assert.equal(resetCalls, 1, "grace expiry must not rotate again after an explicit /reset");
+  assert.deepEqual(seen, ["hung", "fresh"], "the explicitly reset session must remain fresh and unprefixed");
+});
+
+test("teardown grace expiry rotates the session before queued work starts", async () => {
+  const { transport } = makeStubTransport([
+    messageUpdate(1, "hung"),
+    messageUpdate(2, "after"),
+    { ok: true, result: [] },
+  ]);
+  const events: string[] = [];
+  const seen: string[] = [];
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (input, emit, signal) => {
+      seen.push(input);
+      if (input === "hung") {
+        events.push("start:hung");
+        signal.addEventListener("abort", () => events.push("abort:hung"), { once: true });
+        await new Promise<void>(() => {});
+        return;
+      }
+      events.push("start:after");
+      emit("after reply", "text");
+    },
+    getSessionId: () => "old-session",
+    resetSession: () => { events.push("reset"); },
+    pollIntervalMs: 5,
+    turnTimeoutMs: 30,
+    turnTeardownGraceMs: 40,
+  });
+
+  await bridge.drainOnce();
+  await bridge.drainOnce();
+  for (let i = 0; i < 100 && !events.includes("start:after"); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  await bridge.stop();
+
+  assert.deepEqual(
+    events.slice(0, 4),
+    ["start:hung", "abort:hung", "reset", "start:after"],
+    `expected teardown grace then session rotation before queued work, got: ${JSON.stringify(events)}`,
+  );
+  assert.equal(seen[1], "after", "a rotated session must not receive an abort-residue prefix from the old session");
+});
+
 test("a timed-out turn does not log 'turn completed in <ms>ms'", async () => {
   // The mutual exclusion between "timed out" and "completed" is currently
   // held by code structure alone (which branch of the if/else runs) — with
@@ -2630,6 +2863,7 @@ test("a turn that IGNORES its abort signal still does not wedge the queue", asyn
     resetSession: () => {},
     pollIntervalMs: 5,
     turnTimeoutMs: 30,
+    turnTeardownGraceMs: 30,
   });
 
   await bridge.drainOnce();
@@ -5148,7 +5382,7 @@ test("ticker: terminal edit on a turn that times out reads 'timed out', not 'don
 
   const runTurnStub: BridgeRunTurn = async (_input, emit) => {
     emit("  [Bash] npm test", "tool");
-    await new Promise((r) => setTimeout(r, 60_000));
+    await new Promise<void>(() => {});
   };
 
   // turnTimeoutMs is what the terminal text reports (the configured
@@ -5166,6 +5400,7 @@ test("ticker: terminal edit on a turn that times out reads 'timed out', not 'don
     typingIntervalMs: 100000,
     tickerGraceMs: 10,
     turnTimeoutMs,
+    turnTeardownGraceMs: 30,
   });
 
   await bridge.drainOnce();
