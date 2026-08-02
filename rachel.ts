@@ -155,6 +155,10 @@ const memoryGateHook = createMemoryGateHook(auditLogPath);
 // concurrent-resume hazard documented there never arises.
 // ---------------------------------------------------------------------------
 let sessionId: string | undefined;
+// Ownership epoch for async SDK streams. resetSession() rotates the epoch so
+// an abandoned pre-reset turn cannot later emit system/init and resurrect its
+// stale session in memory or in the bridge persistence file.
+let sessionGeneration = 0;
 let turnCount = 0;
 
 export function getSessionId(): string | undefined {
@@ -174,6 +178,7 @@ export function hydratePersistedSession(): void {
 }
 
 export function resetSession(): void {
+  sessionGeneration++;
   sessionId = undefined;
   const path = process.env["RACHEL_SESSION_FILE"];
   if (path) {
@@ -208,6 +213,7 @@ export async function runTurn(
   queryFn: typeof query = query,
 ): Promise<void> {
   turnCount++;
+  const ownedSessionGeneration = sessionGeneration;
 
   const abortController = new AbortController();
   signal.addEventListener("abort", () => abortController.abort(), { once: true });
@@ -280,7 +286,7 @@ export async function runTurn(
     for await (const msg of stream as AsyncIterable<SDKMessage>) {
       if (msg.type === "system" && (msg as Record<string, unknown>)["subtype"] === "init") {
         const raw = msg as Record<string, unknown>;
-        if (typeof raw["session_id"] === "string") {
+        if (typeof raw["session_id"] === "string" && ownedSessionGeneration === sessionGeneration) {
           sessionId = raw["session_id"];
           const sessionFilePath = process.env["RACHEL_SESSION_FILE"];
           if (sessionFilePath) {

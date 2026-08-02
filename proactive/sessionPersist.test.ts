@@ -183,6 +183,42 @@ test("REGRESSION: RACHEL_SESSION_FILE set — resetSession clears the persisted 
   assert.equal(getSessionId(), undefined, "a fresh process must not resurrect the session /reset just cleared");
 });
 
+test("REGRESSION: a stale pre-reset turn cannot overwrite the replacement session when its init arrives late", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "rachel-test-session-"));
+  const sessionFile = join(dir, "bridge-session.json");
+  process.env["RACHEL_SESSION_FILE"] = sessionFile;
+  const { runTurn, resetSession, getSessionId } = await import("../rachel.ts");
+
+  let releaseOld!: () => void;
+  const oldGate = new Promise<void>((resolve) => { releaseOld = resolve; });
+  const oldQueryFn: Parameters<typeof runTurn>[3] = ((_params) => {
+    async function* generate(): AsyncGenerator<SDKMessage, void> {
+      await oldGate;
+      yield initMessage("stale-old-session");
+    }
+    return generate();
+  }) as Parameters<typeof runTurn>[3];
+  const oldTurn = runTurn("old turn", () => {}, new AbortController().signal, oldQueryFn);
+
+  // Rotate ownership while the old stream is still alive, then establish a
+  // replacement session before the abandoned stream finally emits init.
+  await Promise.resolve();
+  resetSession();
+  const newQueryFn: Parameters<typeof runTurn>[3] = ((_params) => {
+    async function* generate(): AsyncGenerator<SDKMessage, void> {
+      yield initMessage("replacement-session");
+    }
+    return generate();
+  }) as Parameters<typeof runTurn>[3];
+  await runTurn("new turn", () => {}, new AbortController().signal, newQueryFn);
+
+  releaseOld();
+  await oldTurn;
+
+  assert.equal(getSessionId(), "replacement-session", "late init from the abandoned turn must not reclaim in-memory ownership");
+  assert.equal(readSession(sessionFile), "replacement-session", "late init from the abandoned turn must not overwrite the persisted pointer");
+});
+
 test("WIRING: RACHEL_SESSION_FILE set — hydratePersistedSession reads a previously written session on startup", async () => {
   const dir = mkdtempSync(join(tmpdir(), "rachel-test-session-"));
   const sessionFile = join(dir, "bridge-session.json");
