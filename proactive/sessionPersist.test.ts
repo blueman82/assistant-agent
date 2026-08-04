@@ -1,10 +1,4 @@
-// Env-safety header — matches memoryIndex.test.ts's header exactly and for
-// the same reason: the WIRING tests below import the REAL runTurn/
-// resetSession from rachel.ts, and importing rachel.ts runs its module-scope
-// side effects once (loadTelegramConfig(), createQueueApprovalSurface(),
-// createSendGateHook()). Without these redirects, a test run here could
-// touch the operator's real queue/audit files or a live Telegram token.
-// This block MUST stay ahead of every import in this file.
+// Keep rachel.ts's module-scope surfaces away from the operator's real files.
 process.env["RACHEL_TELEGRAM_TOKEN"] = "000000000:FAKE-TEST-TOKEN";
 process.env["RACHEL_TELEGRAM_CHAT_ID"] = "1";
 process.env["RACHEL_GATE_TIMEOUT_MS"] = "200";
@@ -18,285 +12,415 @@ process.env["RACHEL_QUEUE_DIR"] = testQueueDir;
 process.env["RACHEL_AUDIT_LOG_PATH"] = joinEarly(testQueueDir, "audit.jsonl");
 process.env["RACHEL_MEMORY_PATH"] = joinEarly(testQueueDir, "memory", "MEMORY.md");
 
-// Defense-in-depth, same reasoning as memoryIndex.test.ts: every WIRING test
-// here injects its own fake queryFn rather than relying on global fetch.
 globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
-  throw new Error(`Unexpected real fetch() call in sessionPersist.test.ts — all transports must be stubbed. Called with: ${String(args[0])}`);
+  throw new Error(`Unexpected real fetch() call in sessionPersist.test.ts: ${String(args[0])}`);
 }) as typeof fetch;
 
-import { test, beforeEach } from "node:test";
+import { beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { readSession, writeSession, clearSession } from "./sessionPersist.ts";
+import type { SDKMessage, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
+import {
+  clearSession,
+  readSession,
+  writeSession,
+  type PersistedSession,
+} from "./sessionPersist.ts";
+import type { SessionRecoveryDeps } from "../rachel.ts";
 
-test("readSession returns undefined when the file does not exist (ENOENT)", () => {
-  const dir = mkdtempSync(join(tmpdir(), "rachel-test-session-"));
-  const path = join(dir, "does-not-exist.json");
-  assert.equal(readSession(path), undefined);
-});
+function tempSessionPath(): string {
+  return join(mkdtempSync(join(tmpdir(), "rachel-test-session-")), "bridge-session.json");
+}
 
-test("writeSession writes the session id atomically (readable back via readSession)", () => {
-  const dir = mkdtempSync(join(tmpdir(), "rachel-test-session-"));
-  const path = join(dir, "bridge-session.json");
-  writeSession(path, "session-abc-123");
-  assert.equal(readSession(path), "session-abc-123");
-  // No leftover temp file from the atomic write.
-  assert.ok(!existsSync(`${path}.tmp-${process.pid}`));
-});
-
-test("writeSession creates parent directories that do not yet exist", () => {
-  const dir = mkdtempSync(join(tmpdir(), "rachel-test-session-"));
-  const path = join(dir, "nested", "sub", "bridge-session.json");
-  writeSession(path, "session-xyz");
-  assert.equal(readSession(path), "session-xyz");
-});
-
-test("clearSession removes an existing session file", () => {
-  const dir = mkdtempSync(join(tmpdir(), "rachel-test-session-"));
-  const path = join(dir, "bridge-session.json");
-  writeSession(path, "session-to-clear");
-  assert.ok(existsSync(path));
-  clearSession(path);
-  assert.ok(!existsSync(path));
-  assert.equal(readSession(path), undefined);
-});
-
-test("clearSession on an absent file is a clean no-op, not a throw", () => {
-  const dir = mkdtempSync(join(tmpdir(), "rachel-test-session-"));
-  const path = join(dir, "does-not-exist.json");
-  assert.doesNotThrow(() => clearSession(path));
-});
-
-test("readSession throws loud, naming the path, on a non-ENOENT read failure", () => {
-  // Point the "file" path at a directory, not a file — readFileSync throws
-  // EISDIR, matching proactive/push.ts's readJson and memoryIndex.ts's
-  // composeSystemPrompt: only ENOENT is the absent-is-clean-start case.
-  const dirAsFile = mkdtempSync(join(tmpdir(), "rachel-test-session-"));
-  assert.throws(
-    () => readSession(dirAsFile),
-    (err: unknown) => err instanceof Error && err.message.includes(dirAsFile),
-  );
-});
-
-test("readSession throws loud on corrupt JSON, naming the path", () => {
-  const dir = mkdtempSync(join(tmpdir(), "rachel-test-session-"));
-  const path = join(dir, "bridge-session.json");
-  writeFileSync(path, "not valid json{{{");
-  assert.throws(
-    () => readSession(path),
-    (err: unknown) => err instanceof Error && err.message.includes(path),
-  );
-});
-
-test("writeSession stores JSON with a schema_version, matching the repo's store-file idiom", () => {
-  const dir = mkdtempSync(join(tmpdir(), "rachel-test-session-"));
-  const path = join(dir, "bridge-session.json");
-  writeSession(path, "session-shape-check");
-  const raw = JSON.parse(readFileSync(path, "utf8"));
-  assert.equal(raw.schema_version, 1);
-  assert.equal(raw.session_id, "session-shape-check");
-});
-
-// ---------------------------------------------------------------------------
-// WIRING — rachel.ts's use of the RACHEL_SESSION_FILE seam. Unset must be a
-// total no-op (byte-for-byte today's behaviour for the CLI and all 8
-// headless one-shots); set must persist on every session-id capture and
-// clear on /reset. These import the REAL runTurn/resetSession/
-// hydratePersistedSession from rachel.ts via a fake queryFn, matching
-// memoryIndex.test.ts's WIRING test harness.
-// ---------------------------------------------------------------------------
-
-// Yields a single init message reporting `sessionId`, letting these tests
-// exercise runTurn's real session-capture branch without hitting the
-// network — matching memoryIndex.test.ts's WIRING test harness pattern.
 function initMessage(sessionId: string): SDKMessage {
   return { type: "system", subtype: "init", session_id: sessionId } as unknown as SDKMessage;
 }
 
-// rachel.ts's sessionId is module-scoped and shared across every test in
-// this file (ESM caches the module on first dynamic import). Reset it
-// before each WIRING test so tests are order-independent — critically,
-// with RACHEL_SESSION_FILE UNSET at reset time, since resetSession() itself
-// unlinks the persisted file when the seam IS set; resetting after a test
-// has pointed the seam at a freshly-written fixture would delete it.
+function assistantMessage(sessionId: string, uuid: string, aborted = false): SDKMessage {
+  return {
+    type: "assistant",
+    session_id: sessionId,
+    uuid,
+    parent_tool_use_id: null,
+    ...(aborted ? { aborted: true } : {}),
+    message: { role: "assistant", content: [{ type: "text", text: "reply" }] },
+  } as unknown as SDKMessage;
+}
+
+function resultMessage(sessionId: string, subtype: "success" | "error_during_execution"): SDKMessage {
+  return {
+    type: "result",
+    subtype,
+    session_id: sessionId,
+    uuid: `result-${subtype}`,
+    num_turns: 1,
+    total_cost_usd: 0,
+  } as unknown as SDKMessage;
+}
+
+function queryMessages(...messages: SDKMessage[]) {
+  return ((_params: unknown) => {
+    async function* generate(): AsyncGenerator<SDKMessage, void> {
+      yield* messages;
+    }
+    return generate();
+  }) as Parameters<(typeof import("../rachel.ts"))["runTurn"]>[3];
+}
+
+function forkDeps(options: {
+  forkedSessionId?: string;
+  remappedCheckpointId?: string;
+  onFork?: (sessionId: string, checkpointId: string) => Promise<void> | void;
+  fail?: Error;
+} = {}): SessionRecoveryDeps & { calls: Array<{ sessionId: string; checkpointId: string }> } {
+  const calls: Array<{ sessionId: string; checkpointId: string }> = [];
+  return {
+    calls,
+    async forkSession(sessionId, forkOptions) {
+      calls.push({ sessionId, checkpointId: forkOptions.upToMessageId });
+      await options.onFork?.(sessionId, forkOptions.upToMessageId);
+      if (options.fail) throw options.fail;
+      return { sessionId: options.forkedSessionId ?? "forked-session" };
+    },
+    async getSessionMessages(sessionId) {
+      return [{
+        type: "assistant",
+        uuid: options.remappedCheckpointId ?? "remapped-checkpoint",
+        session_id: sessionId,
+        message: {},
+        parent_tool_use_id: null,
+        parent_agent_id: null,
+      } satisfies SessionMessage];
+    },
+  };
+}
+
+async function hydrateActive(path: string, state: PersistedSession): Promise<void> {
+  writeSession(path, state);
+  process.env["RACHEL_SESSION_FILE"] = path;
+  const { hydratePersistedSession } = await import("../rachel.ts");
+  assert.equal(await hydratePersistedSession(), "active");
+}
+
 beforeEach(async () => {
   delete process.env["RACHEL_SESSION_FILE"];
   const { resetSession } = await import("../rachel.ts");
   resetSession();
 });
 
-test("WIRING: RACHEL_SESSION_FILE unset — runTurn never writes a session file", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "rachel-test-session-"));
-  const sessionFile = join(dir, "bridge-session.json");
-  // Seam stays unset (beforeEach already cleared it).
+test("readSession treats only ENOENT as an absent session", () => {
+  const missing = tempSessionPath();
+  assert.equal(readSession(missing), undefined);
+
+  const directory = mkdtempSync(join(tmpdir(), "rachel-test-session-dir-"));
+  assert.throws(() => readSession(directory), (error: unknown) =>
+    error instanceof Error && error.message.includes(directory));
+});
+
+test("schema v1 is read backward-compatibly as active without a checkpoint", () => {
+  const path = tempSessionPath();
+  writeFileSync(path, JSON.stringify({ schema_version: 1, session_id: "legacy-session" }));
+  assert.deepEqual(readSession(path), { sessionId: "legacy-session", state: "active" });
+});
+
+test("schema v2 active and tainted records round trip", () => {
+  const path = tempSessionPath();
+  const active: PersistedSession = {
+    sessionId: "active-session",
+    lastCompletedAssistantMessageId: "checkpoint-a",
+    state: "active",
+  };
+  writeSession(path, active);
+  assert.deepEqual(readSession(path), active);
+
+  const tainted: PersistedSession = {
+    sessionId: "tainted-session",
+    lastCompletedAssistantMessageId: "checkpoint-b",
+    state: "tainted",
+    abortReason: "shutdown",
+  };
+  writeSession(path, tainted);
+  assert.deepEqual(readSession(path), tainted);
+});
+
+test("writeSession atomically stores session ownership, checkpoint, and state", () => {
+  const path = tempSessionPath();
+  writeSession(path, {
+    sessionId: "session-shape",
+    lastCompletedAssistantMessageId: "checkpoint-shape",
+    state: "tainted",
+    abortReason: "deadline",
+  });
+  assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), {
+    schema_version: 2,
+    session_id: "session-shape",
+    last_completed_assistant_message_id: "checkpoint-shape",
+    state: "tainted",
+    abort_reason: "deadline",
+  });
+  assert.deepEqual(readdirSync(join(path, "..")), ["bridge-session.json"]);
+});
+
+test("writeSession creates parent directories and clearSession is idempotent", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "rachel-test-session-")), "nested", "bridge-session.json");
+  writeSession(path, { sessionId: "nested-session", state: "active" });
+  assert.ok(existsSync(path));
+  clearSession(path);
+  assert.equal(readSession(path), undefined);
+  assert.doesNotThrow(() => clearSession(path));
+});
+
+test("corrupt and schema-invalid files fail loudly", () => {
+  const invalidValues = [
+    "not json",
+    JSON.stringify([]),
+    JSON.stringify({ schema_version: 99, session_id: "x" }),
+    JSON.stringify({ schema_version: 1, session_id: "" }),
+    JSON.stringify({
+      schema_version: 2,
+      session_id: "x",
+      last_completed_assistant_message_id: "",
+      state: "active",
+      abort_reason: null,
+    }),
+    JSON.stringify({
+      schema_version: 2,
+      session_id: "x",
+      last_completed_assistant_message_id: null,
+      state: "active",
+      abort_reason: "stop",
+    }),
+    JSON.stringify({
+      schema_version: 2,
+      session_id: "x",
+      last_completed_assistant_message_id: null,
+      state: "tainted",
+      abort_reason: "other",
+    }),
+  ];
+  for (const value of invalidValues) {
+    const path = tempSessionPath();
+    writeFileSync(path, value);
+    assert.throws(() => readSession(path), (error: unknown) =>
+      error instanceof Error && error.message.includes(path));
+  }
+});
+
+test("a successful turn commits only the latest non-aborted assistant checkpoint and migrates v1", async () => {
+  const path = tempSessionPath();
+  writeFileSync(path, JSON.stringify({ schema_version: 1, session_id: "legacy-session" }));
+  process.env["RACHEL_SESSION_FILE"] = path;
+  const { hydratePersistedSession, runTurn } = await import("../rachel.ts");
+  assert.equal(await hydratePersistedSession(), "active");
+
+  const outcome = await runTurn("hello", () => {}, new AbortController().signal, queryMessages(
+    initMessage("legacy-session"),
+    assistantMessage("legacy-session", "assistant-one"),
+    assistantMessage("legacy-session", "assistant-aborted", true),
+    assistantMessage("legacy-session", "assistant-two"),
+    resultMessage("legacy-session", "success"),
+  ));
+  assert.deepEqual(outcome, { status: "completed" });
+  assert.deepEqual(readSession(path), {
+    sessionId: "legacy-session",
+    lastCompletedAssistantMessageId: "assistant-two",
+    state: "active",
+  });
+  assert.equal(JSON.parse(readFileSync(path, "utf8")).schema_version, 2);
+});
+
+test("error results and aborted assistant frames never advance the checkpoint", async () => {
+  const path = tempSessionPath();
+  await hydrateActive(path, {
+    sessionId: "source-session",
+    lastCompletedAssistantMessageId: "checkpoint-old",
+    state: "active",
+  });
   const { runTurn } = await import("../rachel.ts");
-  const fakeQueryFn: Parameters<typeof runTurn>[3] = ((_params) => {
-    async function* generate(): AsyncGenerator<SDKMessage, void> {
-      yield initMessage("fake-session-unset");
-    }
-    return generate();
-  }) as Parameters<typeof runTurn>[3];
-  await runTurn("hello", () => {}, new AbortController().signal, fakeQueryFn);
-  assert.ok(!existsSync(sessionFile), "no session file must be written when the seam is unset");
+  await runTurn("error", () => {}, new AbortController().signal, queryMessages(
+    initMessage("source-session"),
+    assistantMessage("source-session", "candidate-on-error"),
+    resultMessage("source-session", "error_during_execution"),
+  ));
+  assert.equal(readSession(path)?.lastCompletedAssistantMessageId, "checkpoint-old");
+
+  await runTurn("aborted frame", () => {}, new AbortController().signal, queryMessages(
+    initMessage("source-session"),
+    assistantMessage("source-session", "aborted-only", true),
+    resultMessage("source-session", "success"),
+  ));
+  assert.equal(readSession(path)?.lastCompletedAssistantMessageId, "checkpoint-old");
 });
 
-test("WIRING: RACHEL_SESSION_FILE set — runTurn persists the captured session id to that path", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "rachel-test-session-"));
-  const sessionFile = join(dir, "bridge-session.json");
-  process.env["RACHEL_SESSION_FILE"] = sessionFile;
+test("an abort taints before SDK cancellation, forks through the clean checkpoint, and persists the remapped checkpoint", async () => {
+  const path = tempSessionPath();
+  await hydrateActive(path, {
+    sessionId: "source-session",
+    lastCompletedAssistantMessageId: "clean-checkpoint",
+    state: "active",
+  });
   const { runTurn } = await import("../rachel.ts");
-  const fakeQueryFn: Parameters<typeof runTurn>[3] = ((_params) => {
+  const externalAbort = new AbortController();
+  let started!: () => void;
+  const didStart = new Promise<void>((resolve) => { started = resolve; });
+  let settle!: () => void;
+  const canSettle = new Promise<void>((resolve) => { settle = resolve; });
+  const queryFn: Parameters<typeof runTurn>[3] = ((params) => {
     async function* generate(): AsyncGenerator<SDKMessage, void> {
-      yield initMessage("fake-session-set");
+      started();
+      await new Promise<void>((resolve) => params.options?.abortController?.signal.addEventListener("abort", () => resolve(), { once: true }));
+      await canSettle;
+      throw new Error("SDK abort");
     }
     return generate();
   }) as Parameters<typeof runTurn>[3];
-  await runTurn("hello", () => {}, new AbortController().signal, fakeQueryFn);
-  assert.equal(readSession(sessionFile), "fake-session-set");
+  const deps = forkDeps({ forkedSessionId: "clean-fork", remappedCheckpointId: "remapped-clean" });
+
+  const turn = runTurn("interrupt me", () => {}, externalAbort.signal, queryFn, deps);
+  await didStart;
+  externalAbort.abort("deadline");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(readSession(path), {
+    sessionId: "source-session",
+    lastCompletedAssistantMessageId: "clean-checkpoint",
+    state: "tainted",
+    abortReason: "deadline",
+  });
+  settle();
+
+  assert.deepEqual(await turn, { status: "aborted", reason: "deadline", recovery: "forked" });
+  assert.deepEqual(deps.calls, [{ sessionId: "source-session", checkpointId: "clean-checkpoint" }]);
+  assert.deepEqual(readSession(path), {
+    sessionId: "clean-fork",
+    lastCompletedAssistantMessageId: "remapped-clean",
+    state: "active",
+  });
 });
 
-test("REGRESSION: RACHEL_SESSION_FILE set — resetSession clears the persisted file so a restart does not resurrect it", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "rachel-test-session-"));
-  const sessionFile = join(dir, "bridge-session.json");
-  process.env["RACHEL_SESSION_FILE"] = sessionFile;
-  const { runTurn, resetSession, hydratePersistedSession, getSessionId } = await import("../rachel.ts");
-
-  // Simulate a turn that captures and persists a session.
-  const fakeQueryFn: Parameters<typeof runTurn>[3] = ((_params) => {
-    async function* generate(): AsyncGenerator<SDKMessage, void> {
-      yield initMessage("session-to-be-reset");
-    }
-    return generate();
-  }) as Parameters<typeof runTurn>[3];
-  await runTurn("hello", () => {}, new AbortController().signal, fakeQueryFn);
-  assert.equal(readSession(sessionFile), "session-to-be-reset", "sanity: session was persisted before reset");
-
-  resetSession();
-  assert.ok(!existsSync(sessionFile), "resetSession must unlink the persisted file, not just clear memory");
-
-  // Simulate the NEXT process starting up: it re-reads the (now absent)
-  // persisted file. It must come back clean, NOT the reset session id.
-  hydratePersistedSession();
-  assert.equal(getSessionId(), undefined, "a fresh process must not resurrect the session /reset just cleared");
+test("missing checkpoints and fork failures fall back to a fresh session", async () => {
+  const { runTurn, getSessionId } = await import("../rachel.ts");
+  for (const scenario of ["missing", "failure"] as const) {
+    const path = tempSessionPath();
+    await hydrateActive(path, {
+      sessionId: `source-${scenario}`,
+      ...(scenario === "failure" ? { lastCompletedAssistantMessageId: "checkpoint" } : {}),
+      state: "active",
+    });
+    const controller = new AbortController();
+    controller.abort("stop");
+    const deps = scenario === "failure" ? forkDeps({ fail: new Error("fork unavailable") }) : forkDeps();
+    const outcome = await runTurn("stop", () => {}, controller.signal, queryMessages(), deps);
+    assert.deepEqual(outcome, { status: "aborted", reason: "stop", recovery: "fresh" });
+    assert.equal(getSessionId(), undefined);
+    assert.equal(readSession(path), undefined);
+  }
 });
 
-test("REGRESSION: a stale pre-reset turn cannot overwrite the replacement session when its init arrives late", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "rachel-test-session-"));
-  const sessionFile = join(dir, "bridge-session.json");
-  process.env["RACHEL_SESSION_FILE"] = sessionFile;
+test("startup recovers a tainted persisted session before it becomes active", async () => {
+  const path = tempSessionPath();
+  writeSession(path, {
+    sessionId: "tainted-source",
+    lastCompletedAssistantMessageId: "source-checkpoint",
+    state: "tainted",
+    abortReason: "shutdown",
+  });
+  process.env["RACHEL_SESSION_FILE"] = path;
+  const deps = forkDeps({ forkedSessionId: "startup-fork", remappedCheckpointId: "startup-remap" });
+  const { hydratePersistedSession, getSessionId } = await import("../rachel.ts");
+  assert.equal(await hydratePersistedSession(deps), "forked");
+  assert.equal(getSessionId(), "startup-fork");
+  assert.deepEqual(readSession(path), {
+    sessionId: "startup-fork",
+    lastCompletedAssistantMessageId: "startup-remap",
+    state: "active",
+  });
+});
+
+test("reset during recovery is authoritative and leaves the superseded fork only in SDK history", async () => {
+  const path = tempSessionPath();
+  await hydrateActive(path, {
+    sessionId: "source-session",
+    lastCompletedAssistantMessageId: "clean-checkpoint",
+    state: "active",
+  });
   const { runTurn, resetSession, getSessionId } = await import("../rachel.ts");
+  let forkStarted!: () => void;
+  const didForkStart = new Promise<void>((resolve) => { forkStarted = resolve; });
+  let releaseFork!: () => void;
+  const forkGate = new Promise<void>((resolve) => { releaseFork = resolve; });
+  const deps = forkDeps({
+    async onFork() {
+      forkStarted();
+      await forkGate;
+    },
+  });
+  const controller = new AbortController();
+  controller.abort("deadline");
+  const turn = runTurn("old turn", () => {}, controller.signal, queryMessages(), deps);
+  await didForkStart;
+  resetSession();
+  releaseFork();
 
+  assert.deepEqual(await turn, { status: "aborted", reason: "deadline", recovery: "superseded" });
+  assert.equal(getSessionId(), undefined);
+  assert.equal(readSession(path), undefined);
+});
+
+test("a late system/init from a reset-superseded turn cannot reclaim session ownership", async () => {
+  const path = tempSessionPath();
+  process.env["RACHEL_SESSION_FILE"] = path;
+  const { runTurn, resetSession, getSessionId } = await import("../rachel.ts");
   let releaseOld!: () => void;
   const oldGate = new Promise<void>((resolve) => { releaseOld = resolve; });
-  const oldQueryFn: Parameters<typeof runTurn>[3] = ((_params) => {
+  const oldQuery: Parameters<typeof runTurn>[3] = ((_params) => {
     async function* generate(): AsyncGenerator<SDKMessage, void> {
       await oldGate;
-      yield initMessage("stale-old-session");
+      yield initMessage("stale-session");
+      yield assistantMessage("stale-session", "stale-checkpoint");
+      yield resultMessage("stale-session", "success");
     }
     return generate();
   }) as Parameters<typeof runTurn>[3];
-  const oldTurn = runTurn("old turn", () => {}, new AbortController().signal, oldQueryFn);
-
-  // Rotate ownership while the old stream is still alive, then establish a
-  // replacement session before the abandoned stream finally emits init.
+  const oldTurn = runTurn("old", () => {}, new AbortController().signal, oldQuery);
   await Promise.resolve();
   resetSession();
-  const newQueryFn: Parameters<typeof runTurn>[3] = ((_params) => {
-    async function* generate(): AsyncGenerator<SDKMessage, void> {
-      yield initMessage("replacement-session");
-    }
-    return generate();
-  }) as Parameters<typeof runTurn>[3];
-  await runTurn("new turn", () => {}, new AbortController().signal, newQueryFn);
-
+  await runTurn("new", () => {}, new AbortController().signal, queryMessages(
+    initMessage("replacement-session"),
+    assistantMessage("replacement-session", "replacement-checkpoint"),
+    resultMessage("replacement-session", "success"),
+  ));
   releaseOld();
   await oldTurn;
 
-  assert.equal(getSessionId(), "replacement-session", "late init from the abandoned turn must not reclaim in-memory ownership");
-  assert.equal(readSession(sessionFile), "replacement-session", "late init from the abandoned turn must not overwrite the persisted pointer");
+  assert.equal(getSessionId(), "replacement-session");
+  assert.deepEqual(readSession(path), {
+    sessionId: "replacement-session",
+    lastCompletedAssistantMessageId: "replacement-checkpoint",
+    state: "active",
+  });
 });
 
-test("WIRING: RACHEL_SESSION_FILE set — hydratePersistedSession reads a previously written session on startup", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "rachel-test-session-"));
-  const sessionFile = join(dir, "bridge-session.json");
-  writeSession(sessionFile, "session-from-previous-process");
-  process.env["RACHEL_SESSION_FILE"] = sessionFile;
-  const { hydratePersistedSession, getSessionId } = await import("../rachel.ts");
-  hydratePersistedSession();
-  assert.equal(getSessionId(), "session-from-previous-process");
-});
-
-test("WIRING: RACHEL_SESSION_FILE set but file absent — hydratePersistedSession starts clean, does not throw", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "rachel-test-session-"));
-  const sessionFile = join(dir, "does-not-exist.json");
-  process.env["RACHEL_SESSION_FILE"] = sessionFile;
-  const { hydratePersistedSession, getSessionId } = await import("../rachel.ts");
-  assert.doesNotThrow(() => hydratePersistedSession());
-  assert.equal(getSessionId(), undefined);
-});
-
-// ---------------------------------------------------------------------------
-// REGRESSION: second-writer hole. rachel.ts documents RACHEL_SESSION_FILE as
-// "exactly one writer" (the bridge), but the bridge's plist sets no
-// RACHEL_ALLOWED_TOOLS, so bridge turns run with unrestricted Bash. Any
-// Bash-spawned child (e.g. a nested `bin/rachel "..."` one-shot, an
-// established pattern per prompts/system.md) inherits RACHEL_SESSION_FILE
-// via ordinary process env inheritance unless runTurn's options.env strips
-// it from the SDK subprocess environment. Without a strip, that child
-// captures its own session id and silently clobbers the bridge's live
-// session pointer — the next bridge restart resumes the wrong session.
-// ---------------------------------------------------------------------------
-
-test("REGRESSION: RACHEL_SESSION_FILE set — runTurn strips it from the SDK subprocess env, preserving other inherited vars", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "rachel-test-session-"));
-  const sessionFile = join(dir, "bridge-session.json");
-  process.env["RACHEL_SESSION_FILE"] = sessionFile;
+test("RACHEL_SESSION_FILE is stripped only from the SDK child environment", async () => {
+  const path = tempSessionPath();
+  process.env["RACHEL_SESSION_FILE"] = path;
   const { runTurn } = await import("../rachel.ts");
-
-  let capturedEnv: Record<string, string | undefined> | undefined;
-  const fakeQueryFn: Parameters<typeof runTurn>[3] = ((params) => {
-    capturedEnv = params.options?.env;
-    async function* generate(): AsyncGenerator<SDKMessage, void> {
-      yield initMessage("fake-session-strip-check");
-    }
-    return generate();
+  let childEnv: Record<string, string | undefined> | undefined;
+  const withSeam: Parameters<typeof runTurn>[3] = ((params) => {
+    childEnv = params.options?.env;
+    return queryMessages()!(params);
   }) as Parameters<typeof runTurn>[3];
+  await runTurn("hello", () => {}, new AbortController().signal, withSeam);
+  assert.equal(childEnv?.["RACHEL_SESSION_FILE"], undefined);
+  assert.equal(childEnv?.["PATH"], process.env["PATH"]);
 
-  await runTurn("hello", () => {}, new AbortController().signal, fakeQueryFn);
-
-  assert.ok(capturedEnv, "options.env must be set on the query() call when the seam is active");
-  assert.equal(
-    capturedEnv!["RACHEL_SESSION_FILE"],
-    undefined,
-    "RACHEL_SESSION_FILE must not reach the SDK subprocess (and anything it spawns via Bash)",
-  );
-  // Guards against a naive fix that nukes options.env wholesale instead of
-  // stripping one key — that would pass the assertion above while breaking
-  // every tool execution in production (Bash losing PATH/HOME).
-  assert.equal(
-    capturedEnv!["PATH"],
-    process.env["PATH"],
-    "other inherited env vars (PATH) must still reach the SDK subprocess",
-  );
-});
-
-test("WIRING: RACHEL_SESSION_FILE unset — runTurn does not set options.env at all (byte-for-byte today's CLI/one-shot behaviour)", async () => {
   delete process.env["RACHEL_SESSION_FILE"];
-  const { runTurn } = await import("../rachel.ts");
-
-  let capturedEnv: Record<string, string | undefined> | undefined;
-  const fakeQueryFn: Parameters<typeof runTurn>[3] = ((params) => {
-    capturedEnv = params.options?.env;
-    async function* generate(): AsyncGenerator<SDKMessage, void> {
-      yield initMessage("fake-session-no-seam");
-    }
-    return generate();
+  childEnv = { sentinel: "not-called" };
+  const withoutSeam: Parameters<typeof runTurn>[3] = ((params) => {
+    childEnv = params.options?.env;
+    return queryMessages()!(params);
   }) as Parameters<typeof runTurn>[3];
-
-  await runTurn("hello", () => {}, new AbortController().signal, fakeQueryFn);
-
-  assert.equal(capturedEnv, undefined, "options.env must stay unset when the seam is inactive, so the SDK keeps managing subprocess env itself");
+  await runTurn("hello", () => {}, new AbortController().signal, withoutSeam);
+  assert.equal(childEnv, undefined);
 });

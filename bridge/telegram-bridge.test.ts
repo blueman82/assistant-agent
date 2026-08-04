@@ -595,7 +595,7 @@ test("/reset clears the session id so the next dispatched turn calls query() wit
   assert.equal(resetCalled, true);
 });
 
-test("/stop aborts an in-flight turn via the AbortController passed to runTurn", async () => {
+test("/stop aborts an in-flight turn with the stop reason", async () => {
   const { transport, calls } = makeStubTransport([
     messageUpdate(1, "long running task"),
     messageUpdate(2, "/stop"),
@@ -603,10 +603,12 @@ test("/stop aborts an in-flight turn via the AbortController passed to runTurn",
   ]);
 
   let sawAbort = false;
+  let abortReason: unknown;
   const runTurnStub: BridgeRunTurn = (_input, _emit, signal) =>
     new Promise<void>((resolve) => {
       signal.addEventListener("abort", () => {
         sawAbort = true;
+        abortReason = signal.reason;
         resolve();
       });
       // Never resolves on its own — only the abort settles it, simulating a
@@ -630,14 +632,11 @@ test("/stop aborts an in-flight turn via the AbortController passed to runTurn",
   await bridge.stop();
 
   assert.equal(sawAbort, true, "expected the in-flight turn's AbortSignal to have fired");
+  assert.equal(abortReason, "stop");
   void calls;
 });
 
-test("/stop inoculates the next turn against ghost-rejection residue exactly like a deadline abort", async () => {
-  // /stop aborts the same in-flight tool call a deadline timeout would,
-  // producing the identical SDK rejection-residue string ("the user doesn't
-  // want to proceed with this tool use") — so the next turn's input must
-  // carry the same abort-artifact prefix the deadline path applies.
+test("/stop recovers the interrupted turn and dispatches the next input unprefixed", async () => {
   const { transport } = makeStubTransport([
     messageUpdate(1, "long running task"),
     messageUpdate(2, "/stop"),
@@ -682,8 +681,7 @@ test("/stop inoculates the next turn against ghost-rejection residue exactly lik
 
   assert.equal(seen.length, 2);
   assert.equal(seen[0], "long running task");
-  assert.notEqual(seen[1], "follow up", "the follow-up input should carry the abort-artifact prefix, not arrive unprefixed");
-  assert.ok(seen[1]!.endsWith("follow up"), `expected the queued message to still run, got: ${JSON.stringify(seen[1])}`);
+  assert.equal(seen[1], "follow up", "checkpoint recovery removes abort residue, so the next input must be byte-for-byte unchanged");
 });
 
 test("a callback_query is routed to handleCallbackQuery immediately, not queued behind pending chat turns", async () => {
@@ -2583,12 +2581,88 @@ test("a turn that outruns turnTimeoutMs is aborted, tells Gary, and does not wed
   assert.ok(texts.some((t) => t.includes("cut it off")), `expected a timeout notice, got: ${JSON.stringify(texts)}`);
   // ...with the escalation ramp offering the background-it path.
   assert.ok(texts.some((t) => t.includes("background it")), `expected the notice to offer backgrounding, got: ${JSON.stringify(texts)}`);
-  // ...and the queue kept draining instead of wedging behind it. The second
-  // turn's input additionally carries the abort-artifact prefix (RCA item 6),
-  // so match on the operator's own message rather than exact equality.
+  // ...and the queue kept draining instead of wedging behind it, with the
+  // operator's next request passed through unchanged after rollback.
   assert.equal(seen.length, 2);
   assert.equal(seen[0], "first");
-  assert.ok(seen[1]!.endsWith("second"), `expected the queued message to run, got: ${JSON.stringify(seen[1])}`);
+  assert.equal(seen[1], "second", `expected the queued message to run unchanged, got: ${JSON.stringify(seen[1])}`);
+});
+
+test("deadline replies distinguish checkpoint restoration from a fresh fallback and discard partial output", async () => {
+  for (const scenario of [
+    { recovery: "forked" as const, expected: /restored the conversation through the last completed turn/i },
+    { recovery: "fresh" as const, expected: /started a fresh session/i },
+  ]) {
+    const { transport, calls } = makeStubTransport([
+      messageUpdate(1, `timeout-${scenario.recovery}`),
+      { ok: true, result: [] },
+    ]);
+    const bridge = createBridge({
+      ...basePushOpts(),
+      config: { token: "t", chatId: "12345", transport },
+      runTurn: async (_input, emit, signal) => {
+        emit("partial answer that must be discarded", "text");
+        await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+        return { status: "aborted", reason: "deadline", recovery: scenario.recovery } as const;
+      },
+      getSessionId: () => "source-session",
+      resetSession: () => {},
+      pollIntervalMs: 5,
+      turnTimeoutMs: 20,
+      turnTeardownGraceMs: 100,
+    });
+
+    await bridge.drainOnce();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await bridge.stop();
+
+    const texts = calls
+      .filter((call) => call.url.includes("/sendMessage"))
+      .map((call) => String((call.body as Record<string, unknown>)?.["text"] ?? ""));
+    const timeoutReply = texts.find((text) => text.includes("cut it off"));
+    assert.ok(timeoutReply, `expected timeout reply for ${scenario.recovery}: ${JSON.stringify(texts)}`);
+    assert.match(timeoutReply, scenario.expected);
+    assert.match(timeoutReply, /Files and tool actions .* were not rolled back/i);
+    assert.doesNotMatch(timeoutReply, /partial answer that must be discarded/);
+  }
+});
+
+test("graceful stop aborts with shutdown and waits for settled recovery", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "long running task"),
+    { ok: true, result: [] },
+  ]);
+  const events: string[] = [];
+  let resetCalls = 0;
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (_input, emit, signal) => {
+      emit("partial shutdown output", "text");
+      await new Promise<void>((resolve) => signal.addEventListener("abort", () => {
+        events.push(`abort:${String(signal.reason)}`);
+        resolve();
+      }, { once: true }));
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      events.push("recovered");
+      return { status: "aborted", reason: "shutdown", recovery: "forked" } as const;
+    },
+    getSessionId: () => "source-session",
+    resetSession: () => { resetCalls++; },
+    pollIntervalMs: 5,
+    turnTeardownGraceMs: 100,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await bridge.stop();
+
+  assert.deepEqual(events, ["abort:shutdown", "recovered"]);
+  assert.equal(resetCalls, 0, "shutdown recovery owns the persisted taint and must not be replaced by a bridge reset");
+  const sentTexts = calls
+    .filter((call) => call.url.includes("/sendMessage"))
+    .map((call) => String((call.body as Record<string, unknown>)?.["text"] ?? ""));
+  assert.ok(!sentTexts.includes("partial shutdown output"), "partial output from the discarded shutdown turn must not be replayed");
 });
 
 test("a timed-out turn keeps the FIFO single-flight until SDK teardown settles within grace", async () => {
@@ -2873,11 +2947,9 @@ test("a turn that IGNORES its abort signal still does not wedge the queue", asyn
   }
   await bridge.stop();
 
-  // The second input additionally carries the abort-artifact prefix (RCA item
-  // 6), so match on the operator's own message rather than exact equality.
   assert.equal(seen.length, 2, "the abandoned turn must not block the next message");
   assert.equal(seen[0], "hung");
-  assert.ok(seen[1]!.endsWith("after"), `expected the queued message to run, got: ${JSON.stringify(seen[1])}`);
+  assert.equal(seen[1], "after", `expected the queued message to run unchanged, got: ${JSON.stringify(seen[1])}`);
   const texts = calls
     .filter((c) => c.url.includes("/sendMessage"))
     .map((c) => String((c.body as Record<string, unknown>)?.["text"] ?? ""));
@@ -3003,16 +3075,10 @@ test("a turn that throws does not log 'turn completed in <ms>ms'", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// RCA 2026-07-23 ghost-rejection hardening — items 6, 8, 9.
+// Abort recovery plus RCA 2026-07-23 observability hardening — items 8, 9.
 // ---------------------------------------------------------------------------
 
-test("RCA item 6: after a deadline abort the NEXT turn's input is prefixed with an artifact note", async () => {
-  // Mechanism A in the RCA: when the 10-minute deadline aborts a turn, the
-  // harness injects "The user doesn't want to proceed with this tool use"
-  // for the in-flight tool call. On the following turn that residue is in
-  // session context and reads as a real refusal by the operator. Seeding the
-  // next turn's INPUT (not just the user-facing buffer, which the timedOut
-  // branch already handles) is what stops that misreading.
+test("checkpoint recovery sends the next post-deadline input unprefixed", async () => {
   const { transport } = makeStubTransport([
     messageUpdate(1, "hung"),
     messageUpdate(2, "what happened?"),
@@ -3046,30 +3112,14 @@ test("RCA item 6: after a deadline abort the NEXT turn's input is prefixed with 
   await bridge.stop();
 
   assert.equal(seen.length, 2, `expected both turns to run, got: ${JSON.stringify(seen)}`);
-  // The aborted turn itself is NOT prefixed — nothing preceded it.
   assert.equal(seen[0], "hung");
-  // The next turn is, and the operator's own words survive intact after it.
-  assert.ok(
-    seen[1]!.includes("aborted by the bridge"),
-    `expected the next turn's input to carry an abort-artifact note, got: ${JSON.stringify(seen[1])}`,
-  );
-  assert.ok(
-    seen[1]!.endsWith("what happened?"),
-    `expected the operator's message to be preserved verbatim at the end, got: ${JSON.stringify(seen[1])}`,
-  );
+  assert.equal(seen[1], "what happened?");
 });
 
-test("RCA item 6: the abort-artifact note warns that the artifact can recur on later, unrelated tool calls in the same turn", async () => {
-  // Live incident: within ONE next turn, 4 separate tool calls (2 Agent
-  // dispatches, 1 Bash, 1 Write) each independently hit the same
-  // harness-injected denial-shaped string and were wrongly re-diagnosed as 4
-  // fresh real denials. The prefix only warned about what already happened
-  // to the in-flight call — it said nothing about the string resurfacing on
-  // later, unrelated tool calls within that same next turn. The wording must
-  // say so explicitly, not just describe the originating event.
+test("queued post-abort tool-like requests execute unchanged in the recovered session", async () => {
   const { transport } = makeStubTransport([
     messageUpdate(1, "hung"),
-    messageUpdate(2, "what happened?"),
+    messageUpdate(2, "Read package.json; then use Bash, Write, and Agent"),
     { ok: true, result: [] },
   ]);
   const seen: string[] = [];
@@ -3100,24 +3150,10 @@ test("RCA item 6: the abort-artifact note warns that the artifact can recur on l
   await bridge.stop();
 
   assert.equal(seen.length, 2, `expected both turns to run, got: ${JSON.stringify(seen)}`);
-  const note = seen[1]!;
-  assert.ok(
-    /multiple|later|subsequent|other|different|any tool call|each|recur/i.test(note) &&
-      /(tool call|tool use)/i.test(note),
-    `expected the note to warn the artifact can recur on later/other tool calls within the turn, got: ${JSON.stringify(note)}`,
-  );
-  assert.ok(
-    /each (occurrence|time|instance)|do not (re-?diagnose|treat)|not a (fresh|new|separate)|same (known )?(artifact|phenomenon)/i.test(note),
-    `expected the note to say later occurrences aren't fresh/separate denials, got: ${JSON.stringify(note)}`,
-  );
-  // Existing invariants must still hold after the wording change.
-  assert.ok(note.includes("aborted by the bridge"));
-  assert.ok(note.endsWith("what happened?"));
+  assert.equal(seen[1], "Read package.json; then use Bash, Write, and Agent");
 });
 
-test("RCA item 6: the abort-artifact prefix is one-shot — it does not leak into a third turn", async () => {
-  // The note describes the immediately preceding turn. Left sticky it would
-  // assert an abort that did not happen, which is its own ghost.
+test("deadline recovery never injects bridge notes into later turns", async () => {
   const { transport } = makeStubTransport([
     messageUpdate(1, "hung"),
     messageUpdate(2, "second"),
@@ -3153,11 +3189,11 @@ test("RCA item 6: the abort-artifact prefix is one-shot — it does not leak int
   await bridge.stop();
 
   assert.equal(seen.length, 3, `expected three turns, got: ${JSON.stringify(seen)}`);
-  assert.ok(seen[1]!.includes("aborted by the bridge"));
+  assert.equal(seen[1], "second");
   assert.equal(seen[2], "third", "the third turn must be unprefixed — no abort preceded it");
 });
 
-test("RCA item 6: a normally completed turn never prefixes the next one", async () => {
+test("a normally completed turn passes the next input through unchanged", async () => {
   const { transport } = makeStubTransport([
     messageUpdate(1, "first"),
     messageUpdate(2, "second"),
@@ -3183,11 +3219,7 @@ test("RCA item 6: a normally completed turn never prefixes the next one", async 
   assert.deepEqual(seen, ["first", "second"]);
 });
 
-test("RCA item 6: /reset clears a pending abort notice — a fresh session has no residue to explain", async () => {
-  // The flag lives in createBridge's closure, so it outlives the SDK session
-  // that /reset clears. Left set, the next turn would assert an abort into a
-  // context holding none of its residue — the same false attribution item 6
-  // exists to prevent, just pointing the other way.
+test("/reset during abort recovery leaves the replacement session's next input unchanged", async () => {
   const { transport } = makeStubTransport([
     messageUpdate(1, "hung"),
     messageUpdate(2, "/reset"),
@@ -3232,7 +3264,7 @@ test("RCA item 6: /reset clears a pending abort notice — a fresh session has n
   // seen are the aborted one and the post-reset one.
   assert.equal(seen.length, 2, `expected two turns, got: ${JSON.stringify(seen)}`);
   assert.equal(seen[0], "hung");
-  assert.equal(seen[1], "fresh start", "a post-/reset turn must carry no abort-artifact prefix");
+  assert.equal(seen[1], "fresh start", "a post-/reset turn must remain unchanged");
 });
 
 test("RCA item 8: a turn logs its start plus the FIFO depth at that moment", async () => {
@@ -5808,11 +5840,15 @@ test("ticker: jitter cadence stays within the configured [min, max) bounds acros
 
   await bridge.drainOnce();
   await new Promise((resolve) => setTimeout(resolve, 400));
+  // Snapshot before graceful shutdown. stop() now aborts and waits for turn
+  // recovery, whose terminal "stopped" edit is intentionally not governed
+  // by the mid-turn jitter cadence this test measures.
+  const timestampsBeforeStop = [...editAttemptTimestamps];
   await bridge.stop();
 
   // Drop the very first edit (fires immediately at grace expiry by design,
   // not jitter-scheduled) — only edits 2+ are governed by jitteredCadence().
-  const scheduledTimestamps = editAttemptTimestamps.slice(1);
+  const scheduledTimestamps = timestampsBeforeStop.slice(1);
   assert.ok(scheduledTimestamps.length >= 3, `expected several jitter-scheduled edits, got ${scheduledTimestamps.length}`);
   for (let i = 1; i < scheduledTimestamps.length; i++) {
     const gap = scheduledTimestamps[i]! - scheduledTimestamps[i - 1]!;

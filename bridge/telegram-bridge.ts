@@ -12,13 +12,13 @@ import { transcribe, synthesize, convertToOgg } from "./speech.ts";
 import { push, type PushDeps, type Severity } from "../proactive/push.ts";
 import { homedir } from "node:os";
 import type { TelegramApprovalSurface, TelegramCallbackQuery } from "../gate/surfaces/telegram.ts";
-import type { TurnEmit } from "../rachel.ts";
+import type { TurnEmit, TurnOutcome } from "../rachel.ts";
 import { readdirSync, readFileSync, writeFileSync, unlinkSync, statSync, mkdirSync, existsSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { execSync } from "node:child_process";
 import { getModel, getEffort, handleConfigCommand } from "../proactive/modelConfig.ts";
 
-export type BridgeRunTurn = (input: string, emit: TurnEmit, signal: AbortSignal) => Promise<void>;
+export type BridgeRunTurn = (input: string, emit: TurnEmit, signal: AbortSignal) => Promise<void | TurnOutcome>;
 
 export interface WatchdogEntry {
   slug: string;
@@ -153,22 +153,6 @@ const CONFLICT_EXIT_THRESHOLD = 5;    // 5 consecutive 409s (~5 min) = genuine s
 // failure wrote a 9,696-char private reply into the bridge log
 // (RCA 2026-07-23, item 9). Long enough to keep the leading diagnostic.
 const SYNTH_ERROR_LOG_MAX_CHARS = 300;
-
-// Seeded into the NEXT turn's input after a turn is aborted — either by the
-// deadline watchdog or by an operator /stop. The harness injects "The user
-// doesn't want to proceed with this tool use" for the in-flight tool call as
-// an aborted turn dies (RCA 2026-07-23, mechanism A); that residue sits in
-// session context and reads as a real refusal on the following turn even
-// when the abort itself was requested. This tells the model what it is
-// actually looking at. Distinct from the user-facing cutoff notice, which
-// explains the same event to the operator rather than to the model.
-const ABORT_ARTIFACT_PREFIX =
-  "[bridge note] Your previous turn was aborted by the bridge — either the turn deadline or an operator /stop. " +
-  "Any \"The user doesn't want to proceed with this tool use\" or \"[Request interrupted by user for tool use]\" text " +
-  "from that turn is a machine-generated artifact of that abort, not a semantic refusal. Do not attribute it to the operator, " +
-  "and do not apologise for it. This artifact can recur on multiple, later, unrelated tool calls within THIS turn too — " +
-  "each occurrence is the same known artifact resurfacing, not a fresh, separate denial, so do not re-diagnose it every time it appears. " +
-  "The operator's actual message follows.\n\n";
 
 export interface Bridge {
   // Runs one getUpdates cycle (and processes whatever it returns) — the
@@ -706,9 +690,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   // staleness as "poll loop silent", and the 10-minute threshold there
   // clears the legitimate 5x65s backoff window.
   let turnInFlightSince: Date | null = null;   // set while drainFifo has a turn running
-  // Set when the deadline or /stop aborts a turn; consumed by the next
-  // turn's input.
-  let pendingAbortNotice = false;
+  let currentTurnDone: Promise<void> | undefined;
   let lastHeartbeatMs = 0;
   let heartbeatWriteFailing = false;
 
@@ -806,10 +788,6 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
 
     if (text === "/reset") {
       rotateSession();
-      // A fresh session holds none of the aborted turn's residue, so there is
-      // nothing left to explain — carrying the note across would assert an
-      // abort into a context that has no trace of one.
-      pendingAbortNotice = false;
       await reply("Session reset.");
       return;
     }
@@ -831,12 +809,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     }
     if (text === "/stop") {
       if (currentAbort) {
-        currentAbort.abort();
-        // /stop aborts the same in-flight tool call the deadline watchdog
-        // would, producing the identical SDK rejection-residue string —
-        // inoculate the next turn against it exactly as the timeout path
-        // does.
-        pendingAbortNotice = true;
+        currentAbort.abort("stop");
         await reply("Stopped.");
       } else {
         await reply("No turn in flight.");
@@ -971,14 +944,10 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     if (draining) return;
     draining = true;
     try {
-      while (fifo.length > 0) {
+      while (fifo.length > 0 && !stopped) {
         const { text, voice } = fifo.shift()!;
         const sessionResetEpochAtTurnStart = sessionResetEpoch;
-        // Abort inoculation: consumed here so it applies to exactly one turn —
-        // the one immediately after the abort. Left sticky it would assert an
-        // abort that didn't happen, which is a ghost of its own.
-        const input = pendingAbortNotice ? ABORT_ARTIFACT_PREFIX + text : text;
-        pendingAbortNotice = false;
+        const input = text;
         // Turn start, with the backlog still queued behind this one. Before
         // this line only completion/abort were logged, so establishing when a
         // turn began meant cross-referencing SDK session JSONL (RCA
@@ -986,6 +955,8 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         log(`[telegram-bridge] turn started (queue depth ${fifo.length})`);
         const abortController = new AbortController();
         currentAbort = abortController;
+        let resolveCurrentTurnDone!: () => void;
+        currentTurnDone = new Promise<void>((resolve) => { resolveCurrentTurnDone = resolve; });
         turnInFlightSince = nowFn();
         const turnStartedMs = Date.now();
 
@@ -1106,7 +1077,8 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         // and drainFifo is single-flight — so an unbounded turn wedges the whole
         // queue with no error ever surfacing. Abort it and move on, so the FIFO
         // keeps draining and Gary hears why instead of silence.
-        let timedOut = false;
+        let abortReason: "deadline" | "stop" | "shutdown" | undefined;
+        let recovery: "forked" | "fresh" | "superseded" | undefined;
         let sessionRotatedAfterTimeout = false;
         let turnErrored = false;
         let watchdog: ReturnType<typeof setTimeout> | undefined;
@@ -1116,19 +1088,23 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         // would leave the queue wedged exactly as before. Racing guarantees
         // the drain loop proceeds either way; an abandoned turn's late emits
         // land in a buffer nobody reads.
-        const deadline = new Promise<void>((resolve) => {
-          watchdog = setTimeout(() => {
-            timedOut = true;
-            abortController.abort();
+        const abortRequested = new Promise<void>((resolve) => {
+          abortController.signal.addEventListener("abort", () => {
+            const reason = abortController.signal.reason;
+            abortReason = reason === "deadline" || reason === "stop" || reason === "shutdown" ? reason : "stop";
             resolve();
-          }, turnTimeoutMs);
+          }, { once: true });
         });
+        watchdog = setTimeout(() => {
+          abortController.abort("deadline");
+        }, turnTimeoutMs);
         try {
           // Keep invocation inside the guarded region: an injected or future
           // runTurn implementation may throw synchronously before returning a
           // promise, and that must still clear the watchdog and reach Gary as
           // a normal turn error.
-          const turnPromise = runTurn(input, (line, kind) => {
+          let settledOutcome: void | TurnOutcome;
+          const turnPromise = Promise.resolve(runTurn(input, (line, kind) => {
             if (kind === "text") {
               buffer.push(line);
               // The ticker's event is the most recent of a tool line OR
@@ -1139,34 +1115,48 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
             } else if (kind === "tool") {
               latestEvent = line.trim();
             }
-          }, abortController.signal);
-          await Promise.race([turnPromise, deadline]);
+          }, abortController.signal));
+          const winner = await Promise.race([
+            turnPromise.then((outcome) => ({ kind: "turn" as const, outcome })),
+            abortRequested.then(() => ({ kind: "abort" as const })),
+          ]);
 
-          if (timedOut) {
-            // The deadline proves only that abort was requested. Claude Code
+          if (winner.kind === "turn") {
+            settledOutcome = winner.outcome;
+            if (settledOutcome?.status === "aborted") {
+              abortReason = settledOutcome.reason;
+              recovery = settledOutcome.recovery;
+            }
+          }
+
+          if (abortReason) {
+            // The abort proves only that cancellation was requested. The SDK
             // may still be writing its cancellation record and holding the
-            // resumed session, so keep teardown inside the FIFO boundary.
+            // source session, so teardown/recovery stays inside the FIFO's
+            // single-flight boundary.
             let teardownTimer: ReturnType<typeof setTimeout> | undefined;
-            const teardownSettled = await Promise.race([
+            const teardownResult = await Promise.race([
               turnPromise.then(
-                () => true,
-                () => true, // an abort-time rejection is settled teardown too
+                (outcome) => ({ settled: true as const, outcome }),
+                () => ({ settled: true as const, outcome: undefined }),
               ),
-              new Promise<boolean>((resolve) => {
-                teardownTimer = setTimeout(() => resolve(false), turnTeardownGraceMs);
+              new Promise<{ settled: false; outcome: undefined }>((resolve) => {
+                teardownTimer = setTimeout(() => resolve({ settled: false, outcome: undefined }), turnTeardownGraceMs);
               }),
             ]);
             clearTimeout(teardownTimer);
 
-            if (!teardownSettled && sessionResetEpoch === sessionResetEpochAtTurnStart) {
-              // Never resume the session still owned by an abandoned query.
-              // An operator /reset received during teardown has already
-              // rotated ownership, so only rotate here while this turn still
-              // owns the epoch it started with. rachel.ts's generation guard
-              // prevents the stale query from reclaiming the persisted pointer
-              // if it emits init later.
+            if (teardownResult.settled) {
+              settledOutcome = teardownResult.outcome;
+              if (settledOutcome?.status === "aborted") recovery = settledOutcome.recovery;
+            } else if (abortReason !== "shutdown" && sessionResetEpoch === sessionResetEpochAtTurnStart) {
+              // Never resume a session still owned by an abandoned query.
+              // Shutdown deliberately leaves the persisted taint marker for
+              // startup recovery; deadline and /stop retain the fail-safe
+              // fresh-session rotation before queued work can run.
               rotateSession();
               sessionRotatedAfterTimeout = true;
+              recovery = "fresh";
               logError(
                 `[telegram-bridge] aborted turn did not settle within ${turnTeardownGraceMs}ms — session reset before draining next message.`,
               );
@@ -1188,6 +1178,8 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
           clearTimeout(renderTimer);
           currentAbort = undefined;
           turnInFlightSince = null;
+          resolveCurrentTurnDone();
+          currentTurnDone = undefined;
         }
 
         // Terminal ticker edit — fully exception-isolated, must never block,
@@ -1205,11 +1197,13 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
           // timed out reports the fixed deadline in whole minutes only
           // ("timed out at 10m") — it's the configured ceiling, not a
           // measurement, so seconds precision would be misleading.
-          const terminalText = timedOut
+          const terminalText = abortReason === "deadline"
             ? `timed out at ${Math.round(turnTimeoutMs / 60000)}m`
-            : turnErrored
-              ? `failed — ${formatElapsed(Date.now() - turnStartedMs)}`
-              : `done — ${formatElapsed(Date.now() - turnStartedMs)}`;
+            : abortReason === "stop" || abortReason === "shutdown"
+              ? "stopped"
+              : turnErrored
+                ? `failed — ${formatElapsed(Date.now() - turnStartedMs)}`
+                : `done — ${formatElapsed(Date.now() - turnStartedMs)}`;
           try {
             await editMessageText(config, tickerMessageId, terminalText);
           } catch {
@@ -1217,18 +1211,26 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
           }
         }
 
-        if (timedOut) {
+        if (abortReason === "deadline") {
           // Say it plainly rather than delivering a truncated turn as if it
           // were a complete answer.
           logError(`[telegram-bridge] turn exceeded ${turnTimeoutMs}ms — aborted, draining next message.`);
-          // A rotated session contains none of the old transcript residue, so
-          // carrying the artifact prefix into it would assert a ghost abort.
-          pendingAbortNotice =
-            !sessionRotatedAfterTimeout && sessionResetEpoch === sessionResetEpochAtTurnStart;
-          const rotationNote = sessionRotatedAfterTimeout
-            ? " The old turn did not finish shutting down, so I started a fresh session before continuing."
-            : "";
-          buffer.push(`[Rachel] That turn ran past ${Math.round(turnTimeoutMs / 60000)} minutes and I cut it off.${rotationNote} Ask again if you still need it, or say "background it" and I'll run it as a detached loop and ping you when it's done.`);
+          // Partial assistant output belongs to the discarded turn and must
+          // never be presented as a complete answer after rollback.
+          buffer.length = 0;
+          const recoveryNote = recovery === "forked"
+            ? " I restored the conversation through the last completed turn."
+            : recovery === "fresh" || sessionRotatedAfterTimeout
+              ? " I couldn't restore a clean checkpoint, so I started a fresh session before continuing."
+              : recovery === "superseded"
+                ? " The session changed while recovery was finishing, so I'll continue from that replacement session."
+                : "";
+          buffer.push(`[Rachel] That turn ran past ${Math.round(turnTimeoutMs / 60000)} minutes and I cut it off.${recoveryNote} Files and tool actions that completed before the cutoff were not rolled back. Ask again if you still need it, or say "background it" and I'll run it as a detached loop and ping you when it's done.`);
+        } else if (abortReason === "stop" || abortReason === "shutdown") {
+          // /stop is acknowledged immediately by handleMessage. Shutdown has
+          // no reply surface. In both cases discard partial output from the
+          // interrupted turn rather than replaying it after recovery.
+          buffer.length = 0;
         } else if (turnErrored) {
           // A crashed turn is not a completed one — logging it as "completed"
           // would contaminate the duration data the line below exists to collect.
@@ -1240,6 +1242,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         }
 
         const replyText = buffer.join("\n").trim();
+        if (abortReason === "stop" || abortReason === "shutdown") continue;
         if (voice) {
           // A voice-origin turn always answers in voice, whatever the length.
           // Text is the fallback only when synthesis actually fails — never a
@@ -1436,7 +1439,17 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
     async stop() {
       stopped = true;
       if (currentAbort) {
-        currentAbort.abort();
+        currentAbort.abort("shutdown");
+      }
+      if (currentTurnDone) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+          currentTurnDone,
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, turnTeardownGraceMs);
+          }),
+        ]);
+        clearTimeout(timer);
       }
     },
   };
@@ -1455,7 +1468,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // launchd restart when RACHEL_SESSION_FILE is set (bridge/launchd.plist
   // only — see rachel.ts's session-state comment for why this stays a
   // single-writer seam). A no-op when the seam is unset.
-  hydratePersistedSession();
+  await hydratePersistedSession();
 
   const telegramConfig = loadTelegramConfig();
   if (!telegramConfig) {

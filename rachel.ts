@@ -1,6 +1,12 @@
 #!/usr/bin/env -S npx tsx
 
-import { query, type SDKMessage, type ModelUsage } from "@anthropic-ai/claude-agent-sdk";
+import {
+  forkSession,
+  getSessionMessages,
+  query,
+  type SDKMessage,
+  type SessionMessage,
+} from "@anthropic-ai/claude-agent-sdk";
 import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,7 +22,13 @@ import { resolveAllowedTools } from "./proactive/allowedTools.ts";
 import { resolveSystemPromptPath } from "./proactive/systemPrompt.ts";
 import { getModel, getEffort, handleConfigCommand, isHelpFlag, renderHelp, parseArgvConfig } from "./proactive/modelConfig.ts";
 import { composeSystemPrompt, resolveMemoryPath } from "./proactive/memoryIndex.ts";
-import { readSession, writeSession, clearSession } from "./proactive/sessionPersist.ts";
+import {
+  readSession,
+  writeSession,
+  clearSession,
+  type PersistedSession,
+  type SessionAbortReason,
+} from "./proactive/sessionPersist.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -155,6 +167,7 @@ const memoryGateHook = createMemoryGateHook(auditLogPath);
 // concurrent-resume hazard documented there never arises.
 // ---------------------------------------------------------------------------
 let sessionId: string | undefined;
+let lastCompletedAssistantMessageId: string | undefined;
 // Ownership epoch for async SDK streams. resetSession() rotates the epoch so
 // an abandoned pre-reset turn cannot later emit system/init and resurrect its
 // stale session in memory or in the bridge persistence file.
@@ -165,21 +178,109 @@ export function getSessionId(): string | undefined {
   return sessionId;
 }
 
+export type TurnOutcome =
+  | { status: "completed" }
+  | { status: "aborted"; reason: SessionAbortReason; recovery: "forked" | "fresh" | "superseded" };
+
+export interface SessionRecoveryDeps {
+  forkSession(
+    sessionId: string,
+    options: { upToMessageId: string; dir: string },
+  ): Promise<{ sessionId: string }>;
+  getSessionMessages(
+    sessionId: string,
+    options: { dir: string },
+  ): Promise<SessionMessage[]>;
+}
+
+const realSessionRecoveryDeps: SessionRecoveryDeps = { forkSession, getSessionMessages };
+
+function persistSession(state: PersistedSession): void {
+  const path = process.env["RACHEL_SESSION_FILE"];
+  if (path) writeSession(path, state);
+}
+
+function startFreshIfOwned(ownedGeneration: number, reason: string): "fresh" | "superseded" {
+  if (sessionGeneration !== ownedGeneration) return "superseded";
+  sessionGeneration++;
+  sessionId = undefined;
+  lastCompletedAssistantMessageId = undefined;
+  const path = process.env["RACHEL_SESSION_FILE"];
+  if (path) clearSession(path);
+  console.error(`[Rachel] ${reason} — starting a fresh session; the source transcript was retained for audit.`);
+  return "fresh";
+}
+
+async function recoverSessionFromCheckpoint(
+  sourceSessionId: string | undefined,
+  sourceCheckpointId: string | undefined,
+  ownedGeneration: number,
+  deps: SessionRecoveryDeps,
+): Promise<"forked" | "fresh" | "superseded"> {
+  if (sessionGeneration !== ownedGeneration) return "superseded";
+  if (!sourceSessionId || !sourceCheckpointId) {
+    return startFreshIfOwned(ownedGeneration, "Cannot recover the interrupted turn because no clean checkpoint exists");
+  }
+
+  try {
+    const forked = await deps.forkSession(sourceSessionId, {
+      upToMessageId: sourceCheckpointId,
+      dir: process.cwd(),
+    });
+    // /reset may have won while forkSession was copying the transcript. Keep
+    // the now-superseded fork for audit, but never let it reclaim ownership.
+    if (sessionGeneration !== ownedGeneration) return "superseded";
+
+    const messages = await deps.getSessionMessages(forked.sessionId, { dir: process.cwd() });
+    if (sessionGeneration !== ownedGeneration) return "superseded";
+    const remappedCheckpoint = [...messages].reverse().find((message: SessionMessage) => message.type === "assistant")?.uuid;
+    if (!remappedCheckpoint) throw new Error("fork contains no remapped assistant checkpoint");
+
+    sessionId = forked.sessionId;
+    lastCompletedAssistantMessageId = remappedCheckpoint;
+    persistSession({
+      sessionId,
+      lastCompletedAssistantMessageId,
+      state: "active",
+    });
+    return "forked";
+  } catch (err) {
+    return startFreshIfOwned(
+      ownedGeneration,
+      `Checkpoint fork failed (${err instanceof Error ? err.message : String(err)})`,
+    );
+  }
+}
+
 // Reads the persisted session (if the seam is set and a file exists) into
 // module state. Called explicitly by the bridge's CLI guard on startup —
 // never at module load — so importing this module (e.g. from tests, or
 // from the Telegram bridge before it's ready) never has this side effect.
-export function hydratePersistedSession(): void {
+export async function hydratePersistedSession(
+  deps: SessionRecoveryDeps = realSessionRecoveryDeps,
+): Promise<"none" | "active" | "forked" | "fresh" | "superseded"> {
   const path = process.env["RACHEL_SESSION_FILE"];
-  if (!path) {
-    return;
+  if (!path) return "none";
+  const persisted = readSession(path);
+  if (!persisted) {
+    sessionId = undefined;
+    lastCompletedAssistantMessageId = undefined;
+    return "none";
   }
-  sessionId = readSession(path);
+  sessionId = persisted.sessionId;
+  lastCompletedAssistantMessageId = persisted.lastCompletedAssistantMessageId;
+  if (persisted.state === "active") return "active";
+
+  // Rotate immediately so a stale init from work that survived the previous
+  // process generation cannot race the recovered pointer in this process.
+  const recoveryGeneration = ++sessionGeneration;
+  return recoverSessionFromCheckpoint(sessionId, lastCompletedAssistantMessageId, recoveryGeneration, deps);
 }
 
 export function resetSession(): void {
   sessionGeneration++;
   sessionId = undefined;
+  lastCompletedAssistantMessageId = undefined;
   const path = process.env["RACHEL_SESSION_FILE"];
   if (path) {
     clearSession(path);
@@ -211,12 +312,45 @@ export async function runTurn(
   emit: TurnEmit,
   signal: AbortSignal,
   queryFn: typeof query = query,
-): Promise<void> {
+  recoveryDeps: SessionRecoveryDeps = realSessionRecoveryDeps,
+): Promise<TurnOutcome> {
   turnCount++;
   const ownedSessionGeneration = sessionGeneration;
 
   const abortController = new AbortController();
-  signal.addEventListener("abort", () => abortController.abort(), { once: true });
+  let abortReason: SessionAbortReason | undefined;
+  let recoveryGeneration: number | undefined;
+  let sourceSessionAtAbort: string | undefined;
+  let checkpointAtAbort: string | undefined;
+  let latestCleanAssistantMessageId: string | undefined;
+  let sawSuccessfulResult = false;
+
+  const forwardAbort = (): void => {
+    if (abortReason) return;
+    const reason: SessionAbortReason = signal.reason === "deadline" || signal.reason === "shutdown" || signal.reason === "stop"
+      ? signal.reason
+      : "stop";
+    abortReason = reason;
+    sourceSessionAtAbort = sessionId;
+    checkpointAtAbort = lastCompletedAssistantMessageId;
+
+    // Persist the taint before the SDK sees the abort. A signal-triggered
+    // process exit after this point is therefore recoverable on startup.
+    if (ownedSessionGeneration === sessionGeneration) {
+      if (sourceSessionAtAbort) {
+        persistSession({
+          sessionId: sourceSessionAtAbort,
+          lastCompletedAssistantMessageId: checkpointAtAbort,
+          state: "tainted",
+          abortReason: reason,
+        });
+      }
+      recoveryGeneration = ++sessionGeneration;
+    }
+    abortController.abort(abortReason);
+  };
+  signal.addEventListener("abort", forwardAbort, { once: true });
+  if (signal.aborted) forwardAbort();
 
   const options: Parameters<typeof query>[0]["options"] = {
     model: getModel(),
@@ -280,22 +414,21 @@ export async function runTurn(
     ...(sessionId ? { resume: sessionId } : {}),
   };
 
-  const stream = queryFn({ prompt: userInput, options });
-
   try {
+    const stream = queryFn({ prompt: userInput, options });
     for await (const msg of stream as AsyncIterable<SDKMessage>) {
       if (msg.type === "system" && (msg as Record<string, unknown>)["subtype"] === "init") {
         const raw = msg as Record<string, unknown>;
         if (typeof raw["session_id"] === "string" && ownedSessionGeneration === sessionGeneration) {
           sessionId = raw["session_id"];
-          const sessionFilePath = process.env["RACHEL_SESSION_FILE"];
-          if (sessionFilePath) {
-            writeSession(sessionFilePath, sessionId);
-          }
         }
       }
 
       if (msg.type === "assistant") {
+        const raw = msg as unknown as Record<string, unknown>;
+        if (raw["aborted"] !== true && typeof raw["uuid"] === "string") {
+          latestCleanAssistantMessageId = raw["uuid"];
+        }
         for (const block of msg.message.content) {
           if (block.type === "text" && block.text.trim()) {
             emit(block.text, "text");
@@ -313,6 +446,7 @@ export async function runTurn(
       }
 
       if (msg.type === "result") {
+        if (msg.subtype === "success") sawSuccessfulResult = true;
         const cost = msg.total_cost_usd != null ? ` cost=$${msg.total_cost_usd.toFixed(4)}` : "";
         emit(`[Rachel] done turns=${msg.num_turns}${cost}`, "meta");
       }
@@ -323,7 +457,36 @@ export async function runTurn(
     } else {
       throw err;
     }
+  } finally {
+    signal.removeEventListener("abort", forwardAbort);
   }
+
+  if (abortReason) {
+    const recovery = recoveryGeneration === undefined
+      ? "superseded"
+      : await recoverSessionFromCheckpoint(
+          sourceSessionAtAbort,
+          checkpointAtAbort,
+          recoveryGeneration,
+          recoveryDeps,
+        );
+    return { status: "aborted", reason: abortReason, recovery };
+  }
+
+  // A streamed assistant frame is only a candidate checkpoint. Commit it
+  // after the SDK reports a successful result and while this turn still owns
+  // the generation; error results and reset-raced turns never advance it.
+  if (sawSuccessfulResult && sessionId && ownedSessionGeneration === sessionGeneration) {
+    if (latestCleanAssistantMessageId) {
+      lastCompletedAssistantMessageId = latestCleanAssistantMessageId;
+    }
+    persistSession({
+      sessionId,
+      lastCompletedAssistantMessageId,
+      state: "active",
+    });
+  }
+  return { status: "completed" };
 }
 
 // ---------------------------------------------------------------------------
