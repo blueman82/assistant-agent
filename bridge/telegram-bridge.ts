@@ -57,6 +57,10 @@ export interface CreateBridgeOptions {
   telegramSurface?: TelegramApprovalSurface;
   pollIntervalMs?: number;
   typingIntervalMs?: number;
+  // Plain-text messages arriving back-to-back inside this window are one
+  // user turn. Telegram delivers each bubble as a separate update, but the
+  // operator commonly sends an instruction and its URL as two bubbles.
+  messageBurstDebounceMs?: number;
   turnTimeoutMs?: number;
   turnTeardownGraceMs?: number;
   // Injectable for tests — avoids hitting the real filesystem/network.
@@ -136,6 +140,7 @@ function renderTickerLine(elapsedMs: number, latestEvent: string | null): string
 }
 
 const DEFAULT_TYPING_INTERVAL_MS = 5000;
+const DEFAULT_MESSAGE_BURST_DEBOUNCE_MS = 1000;
 // A turn that outruns this is presumed wedged (a hung upstream API call leaves
 // runTurn awaiting forever, with no error to catch). drainFifo is single-flight,
 // so without a deadline one stuck turn blocks every later message indefinitely.
@@ -648,6 +653,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   const sendVoiceFn = options.sendVoiceFn ?? sendVoice;
   const pollIntervalMs = options.pollIntervalMs ?? 2000;
   const typingIntervalMs = options.typingIntervalMs ?? DEFAULT_TYPING_INTERVAL_MS;
+  const messageBurstDebounceMs = options.messageBurstDebounceMs ?? DEFAULT_MESSAGE_BURST_DEBOUNCE_MS;
   const turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
   const turnTeardownGraceMs = options.turnTeardownGraceMs ?? DEFAULT_TURN_TEARDOWN_GRACE_MS;
   const tickerGraceMs = options.tickerGraceMs ?? DEFAULT_TICKER_GRACE_MS;
@@ -676,7 +682,15 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
 
   try { resolvedFs.mkdirSync(watchdogDir, { recursive: true }); } catch { /* already exists */ }
 
-  const fifo: { text: string; voice: boolean }[] = [];
+  interface QueuedTurn {
+    text: string;
+    voice: boolean;
+    mergeable: boolean;
+    enqueuedAtMs: number;
+  }
+  const fifo: QueuedTurn[] = [];
+  let enqueueVersion = 0;
+  let burstDrainTimer: ReturnType<typeof setTimeout> | undefined;
   let offset: number | undefined;
   let stopped = false;
   let currentAbort: AbortController | undefined;
@@ -697,6 +711,24 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   function rotateSession(): void {
     sessionResetEpoch++;
     resetSession();
+  }
+
+  function enqueueTurn(text: string, voice: boolean, mergeable: boolean): void {
+    const enqueuedAtMs = Date.now();
+    const tail = fifo[fifo.length - 1];
+    if (
+      messageBurstDebounceMs > 0 &&
+      mergeable &&
+      tail?.mergeable &&
+      !tail.voice &&
+      enqueuedAtMs - tail.enqueuedAtMs <= messageBurstDebounceMs
+    ) {
+      tail.text = `${tail.text}\n\n${text}`;
+      tail.enqueuedAtMs = enqueuedAtMs;
+    } else {
+      fifo.push({ text, voice, mergeable, enqueuedAtMs });
+    }
+    enqueueVersion++;
   }
 
   function writeHeartbeat(): void {
@@ -811,6 +843,11 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
       if (currentAbort) {
         currentAbort.abort("stop");
         await reply("Stopped.");
+      } else if (fifo.length > 0) {
+        clearTimeout(burstDrainTimer);
+        burstDrainTimer = undefined;
+        fifo.length = 0;
+        await reply("Stopped.");
       } else {
         await reply("No turn in flight.");
       }
@@ -865,7 +902,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
       }
 
       log(`[telegram-bridge] voice received: ${transcript.length} chars`);
-      fifo.push({ text: transcript, voice: true });
+      enqueueTurn(transcript, true, false);
       return;
     }
 
@@ -919,12 +956,12 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
 
       const caption = (msg.caption ?? "").trim();
       const input = caption ? `[${tag}: ${destPath}]\n${caption}` : `[${tag}: ${destPath}]`;
-      fifo.push({ text: input, voice: false });
+      enqueueTurn(input, false, false);
       return;
     }
 
     if (!text) return;
-    fifo.push({ text, voice: false });
+    enqueueTurn(text, false, true);
   }
 
   async function handleCallbackQuery(cb: TelegramCallbackQuery): Promise<void> {
@@ -1106,6 +1143,11 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
           let settledOutcome: void | TurnOutcome;
           const turnPromise = Promise.resolve(runTurn(input, (line, kind) => {
             if (kind === "text") {
+              // Assistant frames before tool calls are progress narration,
+              // not additional final answers. Keep only the latest complete
+              // text frame for Telegram; the ticker still displays live
+              // progress while the turn runs.
+              buffer.length = 0;
               buffer.push(line);
               // The ticker's event is the most recent of a tool line OR
               // the first line of the latest completed text block — a
@@ -1113,6 +1155,10 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
               // a frozen placeholder from before the first text block.
               latestEvent = line.split("\n")[0]!.trim();
             } else if (kind === "tool") {
+              // Any text before a tool call was narration for work that had
+              // not finished yet. Discard it unless a later assistant frame
+              // supplies the actual final response.
+              buffer.length = 0;
               latestEvent = line.trim();
             }
           }, abortController.signal));
@@ -1275,6 +1321,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
   }
 
   async function processUpdates(updates: TelegramUpdate[]): Promise<void> {
+    const enqueueVersionBefore = enqueueVersion;
     for (const update of updates) {
       offset = update.update_id + 1;
       try {
@@ -1297,12 +1344,21 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
         logError(`[telegram-bridge] error handling update ${update.update_id}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
-    // Kick the FIFO drain off without blocking this poll cycle — a
-    // long-running turn (or one waiting on /stop) must never stall getUpdates,
-    // since /stop itself has to arrive via the next poll.
-    void drainFifo().catch((err) => {
-      logError(`[telegram-bridge] drain error: ${err instanceof Error ? err.message : String(err)}`);
-    });
+    if (enqueueVersion !== enqueueVersionBefore) {
+      // Wait briefly for a second Telegram bubble (commonly an instruction
+      // followed by its URL). Resetting the timer on each newly queued or
+      // merged bubble makes the window a true debounce. Commands and
+      // callback queries never enter this path and remain immediate.
+      clearTimeout(burstDrainTimer);
+      const kick = () => {
+        burstDrainTimer = undefined;
+        void drainFifo().catch((err) => {
+          logError(`[telegram-bridge] drain error: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      };
+      if (messageBurstDebounceMs <= 0) kick();
+      else burstDrainTimer = setTimeout(kick, messageBurstDebounceMs);
+    }
   }
 
   async function pollOnce(): Promise<void> {
@@ -1328,13 +1384,17 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
       log,
       logError,
       enqueueTurn: (text) => {
-        fifo.push({ text, voice: false });
+        enqueueTurn(text, false, false);
         // Safe kick: drainFifo is single-flight, so if a turn is already
         // running this no-ops and the RUNNING loop's `while (fifo.length > 0)`
-        // picks the message up when that turn finishes. Nothing is lost.
-        void drainFifo().catch((err) => {
-          logError(`[telegram-bridge] wake drain error: ${err instanceof Error ? err.message : String(err)}`);
-        });
+        // picks the message up when that turn finishes. Do not bypass a
+        // pending user-message burst window; its timer will drain both turns
+        // in order once the instruction/URL pair has had time to coalesce.
+        if (burstDrainTimer === undefined) {
+          void drainFifo().catch((err) => {
+            logError(`[telegram-bridge] wake drain error: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        }
       },
       pushFyi: (eventId, severity, text) => pushAlert("wake", eventId, "fired", severity, text),
     });
@@ -1438,6 +1498,7 @@ export function createBridge(options: CreateBridgeOptions): Bridge {
 
     async stop() {
       stopped = true;
+      clearTimeout(burstDrainTimer);
       if (currentAbort) {
         currentAbort.abort("shutdown");
       }

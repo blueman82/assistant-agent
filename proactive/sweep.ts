@@ -1063,24 +1063,33 @@ export async function checkWikiDebt(d: SweepDeps, pushDeps: Partial<PushDeps>): 
     throw new Error(`wiki-debt: could not resolve the origin repo from '${url.stdout.trim()}'`);
   }
 
-  const list = await d.execFn("gh", ["pr", "list", "--repo", ownerRepo, "--state", "merged", "--json", "number", "--limit", "100"], { timeoutMs: WIKI_DEBT_EXEC_TIMEOUT_MS });
+  // `gh pr list --limit 100` becomes permanently ambiguous once the repo has
+  // 100 merged PRs: the truncated window is full even when the configured
+  // epoch is recent. Page the REST collection completely instead. `--slurp`
+  // returns one outer array containing every response page; closed-but-
+  // unmerged PRs are discarded via merged_at below.
+  const list = await d.execFn("gh", [
+    "api", "--method", "GET", `repos/${ownerRepo}/pulls`,
+    "-f", "state=closed", "-f", "per_page=100", "-f", "sort=created", "-f", "direction=desc",
+    "--paginate", "--slurp",
+  ], { timeoutMs: WIKI_DEBT_EXEC_TIMEOUT_MS });
   if (list.exitCode !== 0) {
-    throw new Error(`wiki-debt: gh pr list exited ${list.exitCode}: ${list.stderr.trim()}`);
+    throw new Error(`wiki-debt: gh api pull pagination exited ${list.exitCode}: ${list.stderr.trim()}`);
   }
   // gh can exit 0 with empty stdout on some failure modes — that would parse
   // as zero merged PRs and silently approve the debt. Fail loud instead.
   if (list.stdout.trim() === "") {
-    throw new Error("wiki-debt: gh pr list returned an empty merged-PR response");
+    throw new Error("wiki-debt: gh api returned an empty pull-request response");
   }
-  const merged = JSON.parse(list.stdout) as Array<{ number: number }>;
-  // gh pr list is newest-first, so a full window truncates the OLDEST merged
-  // PRs — exactly the ones most likely to carry unpaid debt.
-  if (merged.length === 100) {
-    throw new Error("wiki-debt: merged-PR window full — advance wiki_debt_epoch_pr or raise the limit");
-  }
+  const parsed = JSON.parse(list.stdout) as unknown;
+  if (!Array.isArray(parsed)) throw new Error("wiki-debt: gh api response is not an array");
+  const pulls = (parsed.length > 0 && Array.isArray(parsed[0]) ? parsed.flat() : parsed) as Array<{ number?: unknown; merged_at?: unknown }>;
+  const merged = pulls.filter((p) => p.merged_at !== null);
   // Unlike the gate there is no in-flight PR to exclude — the sweep runs
   // between merges, so every merged PR past the epoch is a candidate.
-  const candidates = merged.map((p) => p.number).filter((n) => Number.isInteger(n) && n > epochNum);
+  const candidates = [...new Set(
+    merged.map((p) => p.number).filter((n): n is number => typeof n === "number" && Number.isInteger(n) && n > epochNum),
+  )];
   const uncovered: number[] = [];
   if (candidates.length > 0) {
     // Only the vault's origin/main counts as durable coverage — one fetch,

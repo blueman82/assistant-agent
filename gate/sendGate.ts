@@ -37,11 +37,12 @@ export const GATED_TOOL_NAMES: readonly string[] = [
   "mcp__claude_ai_Google_Calendar__respond_to_event",
 ];
 
-// Internal deny timeout — strictly shorter than any matcher-level `timeout`
-// we'd configure, and load-bearing regardless of matcher timeout: a spike
-// proved the SDK does not cut hooks off itself on either throw or
-// matcher-timeout-exceeded, so this race is the only actual enforcement of
-// fail-closed-on-timeout. Separately, an executable spike (2026-07-23)
+// Internal deny timeout — strictly shorter than the matcher-level timeout in
+// rachel.ts and load-bearing regardless of SDK behavior. On installed SDK
+// 0.3.216 a late matcher now fails closed, while a thrown hook is still
+// swallowed and fail-open; both behaviors are version-dependent. Keeping
+// this explicit deny race makes the security decision deterministic.
+// Separately, an executable spike (2026-07-23)
 // confirmed the SDK invokes every PreToolUse callback in a matcher's hooks
 // array regardless of position — no short-circuit on an earlier deny — and a
 // deny from ANY callback, at any position, wins. That's what makes stacking
@@ -76,9 +77,9 @@ export function createSendGateHook(
   internalDenyTimeoutMs: number = INTERNAL_DENY_TIMEOUT_MS,
 ): HookCallback {
   return async (input) => {
-    // Belt-and-braces per the spike: the SDK does not fail-closed on a
-    // throwing or slow hook, so every path below must itself resolve to deny
-    // on any exception, and the timeout race is the caller's own enforcement.
+    // Belt-and-braces per the spike: a throwing hook is still fail-open, so
+    // every path below must itself resolve to deny on any exception; the
+    // timeout race keeps enforcement independent of SDK matcher semantics.
     try {
       if (input.hook_event_name !== "PreToolUse") {
         return {};

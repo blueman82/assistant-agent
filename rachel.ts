@@ -4,6 +4,7 @@ import {
   forkSession,
   getSessionMessages,
   query,
+  type HookCallback,
   type SDKMessage,
   type SessionMessage,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -81,6 +82,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 // startup banner below read the getters, not a captured value.
 const DEFAULT_MAX_TURNS = 200;
 const MAX_TURNS = parseInt(process.env["RACHEL_MAX_TURNS"] ?? String(DEFAULT_MAX_TURNS), 10);
+// The SDK default is effectively unbounded, so one wedged MCP call can
+// otherwise consume the bridge's entire ten-minute emergency turn budget.
+// Read per turn and preserve an explicit operator override.
+export const DEFAULT_MCP_TOOL_TIMEOUT_MS = 90_000;
+const DEFAULT_HOOK_TIMEOUT_SECONDS = 70;
 
 // Generic tracked prompt vs the operator's own local override — resolution
 // order and rationale live in proactive/systemPrompt.ts.
@@ -150,6 +156,28 @@ const sendGateHook = gateTimeoutMs !== undefined
 
 const askUserQuestionHook = createAskUserQuestionHook();
 const memoryGateHook = createMemoryGateHook(auditLogPath);
+
+// Redacted lifecycle telemetry: tool name/id/status/duration only. Inputs,
+// outputs, and raw failure strings may contain private mail, messages, or
+// document content and are deliberately never logged.
+const toolStartTelemetryHook: HookCallback = async (input, toolUseId) => {
+  if (input.hook_event_name === "PreToolUse") {
+    console.error(`[${new Date().toISOString()}] [Rachel] tool started name=${input.tool_name} id=${toolUseId ?? input.tool_use_id}`);
+  }
+  return {};
+};
+const toolSuccessTelemetryHook: HookCallback = async (input, toolUseId) => {
+  if (input.hook_event_name === "PostToolUse") {
+    console.error(`[${new Date().toISOString()}] [Rachel] tool completed name=${input.tool_name} id=${toolUseId ?? input.tool_use_id} duration_ms=${input.duration_ms ?? "unknown"}`);
+  }
+  return {};
+};
+const toolFailureTelemetryHook: HookCallback = async (input, toolUseId) => {
+  if (input.hook_event_name === "PostToolUseFailure") {
+    console.error(`[${new Date().toISOString()}] [Rachel] tool failed name=${input.tool_name} id=${toolUseId ?? input.tool_use_id} duration_ms=${input.duration_ms ?? "unknown"}`);
+  }
+  return {};
+};
 
 // ---------------------------------------------------------------------------
 // Session state — module-scoped so it persists across turns within a
@@ -352,6 +380,10 @@ export async function runTurn(
   signal.addEventListener("abort", forwardAbort, { once: true });
   if (signal.aborted) forwardAbort();
 
+  const childEnv = { ...process.env };
+  delete childEnv["RACHEL_SESSION_FILE"];
+  childEnv["MCP_TOOL_TIMEOUT"] = process.env["MCP_TOOL_TIMEOUT"] ?? String(DEFAULT_MCP_TOOL_TIMEOUT_MS);
+
   const options: Parameters<typeof query>[0]["options"] = {
     model: getModel(),
     effort: getEffort(),
@@ -371,8 +403,17 @@ export async function runTurn(
           // so this is set defensively to match every tool call. The gate
           // itself filters by tool_name/command internally.
           matcher: ".*",
-          hooks: [sendGateHook, askUserQuestionHook, memoryGateHook],
+          hooks: [sendGateHook, askUserQuestionHook, memoryGateHook, toolStartTelemetryHook],
+          // Strictly longer than sendGateHook's internal 60-second deny
+          // timer. Installed SDK 0.3.216 fails closed when this expires.
+          timeout: DEFAULT_HOOK_TIMEOUT_SECONDS,
         },
+      ],
+      PostToolUse: [
+        { matcher: ".*", hooks: [toolSuccessTelemetryHook], timeout: 5 },
+      ],
+      PostToolUseFailure: [
+        { matcher: ".*", hooks: [toolFailureTelemetryHook], timeout: 5 },
       ],
     },
     agent: "rachel",
@@ -398,19 +439,10 @@ export async function runTurn(
     // clobber the bridge's live session pointer. sdk.d.ts's Options.env
     // REPLACES the subprocess env entirely rather than merging, so this
     // spreads process.env and deletes only the one key — everything else
-    // (PATH, HOME, etc.) still reaches the SDK subprocess unchanged. Only
-    // set when the seam is active: the CLI and all headless one-shots (seam
-    // unset) must leave options.env untouched, so the SDK keeps managing
-    // subprocess env exactly as it does today.
-    ...(process.env["RACHEL_SESSION_FILE"]
-      ? {
-          env: (() => {
-            const childEnv = { ...process.env };
-            delete childEnv["RACHEL_SESSION_FILE"];
-            return childEnv;
-          })(),
-        }
-      : {}),
+    // (PATH, HOME, etc.) still reaches the SDK subprocess unchanged. The
+    // same child environment installs a bounded MCP tool timeout for every
+    // Rachel surface.
+    env: childEnv,
     ...(sessionId ? { resume: sessionId } : {}),
   };
 
@@ -429,10 +461,20 @@ export async function runTurn(
         if (raw["aborted"] !== true && typeof raw["uuid"] === "string") {
           latestCleanAssistantMessageId = raw["uuid"];
         }
+        // Preserve adjacent text blocks as one frame without reordering them
+        // around tool_use blocks. Telegram can then discard narration before
+        // a tool while retaining a multi-block final answer after it.
+        let textParts: string[] = [];
+        const flushTextFrame = (): void => {
+          if (textParts.length > 0) emit(textParts.join("\n"), "text");
+          textParts = [];
+        };
         for (const block of msg.message.content) {
-          if (block.type === "text" && block.text.trim()) {
-            emit(block.text, "text");
+          if (block.type === "text") {
+            const text = block.text.trim();
+            if (text) textParts.push(text);
           } else if (block.type === "tool_use") {
+            flushTextFrame();
             const input = block.input as Record<string, unknown>;
             const summary =
               block.name === "Bash"
@@ -443,6 +485,7 @@ export async function runTurn(
             emit(`  [${block.name}] ${summary}`, "tool");
           }
         }
+        flushTextFrame();
       }
 
       if (msg.type === "result") {

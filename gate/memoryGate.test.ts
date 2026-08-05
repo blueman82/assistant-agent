@@ -488,7 +488,8 @@ test("Write of a .md file OUTSIDE the memory dir with bad frontmatter -> schema 
 
 // --- SO-8: drive the real FEATURE end to end, not just the callback in
 // isolation. This proves memoryGateHook is actually wired into runTurn's
-// options.hooks.PreToolUse array (3rd position) and that setting
+// options.hooks.PreToolUse array (3rd position; redacted telemetry is 4th)
+// and that setting
 // RACHEL_UNTRUSTED_CONTENT on a real turn actually denies a memory write —
 // not just that the standalone callback returns the right shape.
 test("WIRING+SAFETY: a real turn with RACHEL_UNTRUSTED_CONTENT set denies a memory-dir Write via the wired hook", async () => {
@@ -518,7 +519,7 @@ test("WIRING+SAFETY: a real turn with RACHEL_UNTRUSTED_CONTENT set denies a memo
     const preToolUseHooks = capturedOptions?.hooks?.["PreToolUse"];
     assert.ok(preToolUseHooks && preToolUseHooks.length > 0, "options.hooks.PreToolUse must be present");
     const wiredHooks = preToolUseHooks![0]!.hooks;
-    assert.equal(wiredHooks.length, 3, "expected 3 PreToolUse hooks after this PR's addition (sendGate, askUserQuestion, memoryGate)");
+    assert.equal(wiredHooks.length, 4, "expected 3 security hooks plus redacted tool-start telemetry");
     const memoryHook = wiredHooks[2]!;
 
     const result = await memoryHook(

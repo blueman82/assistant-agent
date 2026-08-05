@@ -39,7 +39,7 @@ import assert from "node:assert/strict";
 import { createBridge, type BridgeRunTurn, defaultFsFn } from "./telegram-bridge.ts";
 import { GATED_TOOL_NAMES } from "../gate/sendGate.ts";
 import { getModel, getEffort, setModel, setEffort, VALID_MODELS as VALID_MODELS_FOR_TEST, VALID_EFFORTS as VALID_EFFORTS_FOR_TEST } from "../proactive/modelConfig.ts";
-import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { HookCallback, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
 // Stub Telegram transport: scripts a fixed sequence of getUpdates responses
 // (by call count), answers every other method with ok:true, and records all
@@ -80,6 +80,9 @@ function basePushOpts() {
     pushBaseDir: join(dir, "proactive"),
     heartbeatPath: join(dir, "bridge-heartbeat.json"),
     nowFn: DAYTIME,
+    // Existing tests exercise the turn loop, not production burst timing.
+    // Individual debounce tests opt into a real non-zero window below.
+    messageBurstDebounceMs: 0,
   };
 }
 
@@ -230,8 +233,10 @@ test("runTurn classifies its own emitted lines correctly: assistant text -> 'tex
         type: "assistant",
         message: {
           content: [
-            { type: "text", text: "Renamed the invoice draft as requested." },
+            { type: "text", text: "I'll inspect the draft first." },
             { type: "tool_use", name: "Read", input: { file_path: "/tmp/kind-classification-fixture.txt" } },
+            { type: "text", text: "Renamed the invoice draft as requested." },
+            { type: "text", text: "The original remains archived." },
           ],
         },
       } as unknown as SDKMessage;
@@ -253,13 +258,62 @@ test("runTurn classifies its own emitted lines correctly: assistant text -> 'tex
     fakeQueryFn,
   );
 
-  assert.equal(recorded.length, 3, `expected exactly 3 emits, got: ${JSON.stringify(recorded)}`);
+  assert.equal(recorded.length, 4, `expected exactly 4 emits, got: ${JSON.stringify(recorded)}`);
   assert.equal(recorded[0]!.kind, "text");
-  assert.equal(recorded[0]!.line, "Renamed the invoice draft as requested.");
+  assert.equal(recorded[0]!.line, "I'll inspect the draft first.");
   assert.equal(recorded[1]!.kind, "tool");
   assert.match(recorded[1]!.line, /Read/);
-  assert.equal(recorded[2]!.kind, "meta");
-  assert.match(recorded[2]!.line, /done turns=/);
+  assert.equal(recorded[2]!.kind, "text");
+  assert.equal(recorded[2]!.line, "Renamed the invoice draft as requested.\nThe original remains archived.");
+  assert.equal(recorded[3]!.kind, "meta");
+  assert.match(recorded[3]!.line, /done turns=/);
+});
+
+test("runTurn bounds every hook matcher and emits redacted tool lifecycle telemetry", async () => {
+  const { runTurn: realRunTurn } = await import("../rachel.ts");
+  type Matcher = { timeout?: number; hooks: HookCallback[] };
+  let capturedHooks: Record<string, Matcher[]> | undefined;
+  const fakeQueryFn: Parameters<typeof realRunTurn>[3] = ((params) => {
+    capturedHooks = params.options?.hooks as Record<string, Matcher[]> | undefined;
+    async function* generate(): AsyncGenerator<SDKMessage, void> {
+      yield { type: "result", subtype: "success", num_turns: 1 } as unknown as SDKMessage;
+    }
+    return generate();
+  }) as Parameters<typeof realRunTurn>[3];
+
+  await realRunTurn("probe hooks", () => {}, new AbortController().signal, fakeQueryFn);
+  assert.equal(capturedHooks?.["PreToolUse"]?.[0]?.timeout, 70);
+  assert.equal(capturedHooks?.["PostToolUse"]?.[0]?.timeout, 5);
+  assert.equal(capturedHooks?.["PostToolUseFailure"]?.[0]?.timeout, 5);
+
+  const lines: string[] = [];
+  const originalConsoleError = console.error;
+  console.error = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+  try {
+    const signal = new AbortController().signal;
+    const preTelemetry = capturedHooks!["PreToolUse"]![0]!.hooks.at(-1)!;
+    await preTelemetry({
+      hook_event_name: "PreToolUse", session_id: "s", transcript_path: "/tmp/t", cwd: "/tmp",
+      tool_name: "mcp__claude-in-chrome__navigate", tool_input: { secret: "do-not-log" }, tool_use_id: "tool-1",
+    }, "tool-1", { signal });
+    await capturedHooks!["PostToolUse"]![0]!.hooks[0]!({
+      hook_event_name: "PostToolUse", session_id: "s", transcript_path: "/tmp/t", cwd: "/tmp",
+      tool_name: "mcp__claude-in-chrome__navigate", tool_input: { secret: "do-not-log" },
+      tool_response: { private: "do-not-log" }, tool_use_id: "tool-1", duration_ms: 123,
+    }, "tool-1", { signal });
+    await capturedHooks!["PostToolUseFailure"]![0]!.hooks[0]!({
+      hook_event_name: "PostToolUseFailure", session_id: "s", transcript_path: "/tmp/t", cwd: "/tmp",
+      tool_name: "WebFetch", tool_input: { url: "private" }, tool_use_id: "tool-2",
+      error: "private failure body", duration_ms: 456,
+    }, "tool-2", { signal });
+  } finally {
+    console.error = originalConsoleError;
+  }
+
+  assert.ok(lines.some((line) => line.includes("tool started") && line.includes("mcp__claude-in-chrome__navigate")));
+  assert.ok(lines.some((line) => line.includes("tool completed") && line.includes("duration_ms=123")));
+  assert.ok(lines.some((line) => line.includes("tool failed") && line.includes("duration_ms=456")));
+  assert.ok(!lines.some((line) => line.includes("do-not-log") || line.includes("private failure")), `sensitive payload leaked: ${JSON.stringify(lines)}`);
 });
 
 test("runTurn's query options consume the RACHEL_ALLOWED_TOOLS seam: set env narrows allowedTools, unset env yields the frozen 17-entry default list", async () => {
@@ -414,8 +468,8 @@ test("a turn emitting text, tool, and meta lines sends only the text lines to Te
   ]);
 
   const runTurnStub: BridgeRunTurn = async (_input, emit) => {
-    emit("Report generated for Q3.", "text");
     emit("  [Bash] generate-report.sh", "tool");
+    emit("Report generated for Q3.", "text");
     emit("[Rachel] done turns=1 cost=$0.0120", "meta");
   };
 
@@ -438,6 +492,129 @@ test("a turn emitting text, tool, and meta lines sends only the text lines to Te
   assert.equal(sentText, "Report generated for Q3.");
   assert.doesNotMatch(String(sentText), /\[Bash\]/);
   assert.doesNotMatch(String(sentText), /\[Rachel\] done/);
+});
+
+test("Telegram sends only the final assistant text frame, not pre-tool narration", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "ingest the link"),
+    { ok: true, result: [] },
+  ]);
+
+  const bridge = createBridge({
+    ...basePushOpts(),
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (_input, emit) => {
+      emit("I'll try the normal fetch first.", "text");
+      emit("  [WebFetch] https://x.com/example", "tool");
+      emit("Ingested the article into the wiki.", "text");
+    },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  const sentTexts = calls
+    .filter((c) => c.url.includes("/sendMessage"))
+    .map((c) => String((c.body as Record<string, unknown>)["text"] ?? ""));
+  assert.ok(sentTexts.includes("Ingested the article into the wiki."));
+  assert.ok(!sentTexts.some((text) => text.includes("normal fetch")), `pre-tool narration leaked: ${JSON.stringify(sentTexts)}`);
+});
+
+test("adjacent plain-text bubbles inside the burst window become one turn", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "Read and ingest this content"),
+    messageUpdate(2, "https://x.com/example/status/123"),
+    { ok: true, result: [] },
+  ]);
+  const seen: string[] = [];
+  const bridge = createBridge({
+    ...basePushOpts(),
+    messageBurstDebounceMs: 30,
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (input, emit) => {
+      seen.push(input);
+      emit("done", "text");
+    },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  await bridge.stop();
+
+  assert.deepEqual(seen, ["Read and ingest this content\n\nhttps://x.com/example/status/123"]);
+  const replies = calls.filter((c) => c.url.includes("/sendMessage") && (c.body as Record<string, unknown>)["text"] === "done");
+  assert.equal(replies.length, 1);
+});
+
+test("queued text bubbles outside the burst window remain separate turns", async () => {
+  const { transport } = makeStubTransport([
+    messageUpdate(1, "long task"),
+    messageUpdate(2, "second request"),
+    messageUpdate(3, "third request"),
+    { ok: true, result: [] },
+  ]);
+  const seen: string[] = [];
+  let releaseFirst!: () => void;
+  const firstBlocked = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const bridge = createBridge({
+    ...basePushOpts(),
+    messageBurstDebounceMs: 20,
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async (input, emit) => {
+      seen.push(input);
+      if (input === "long task") await firstBlocked;
+      emit("done", "text");
+    },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  releaseFirst();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await bridge.stop();
+
+  assert.deepEqual(seen, ["long task", "second request", "third request"]);
+});
+
+test("/stop during the burst window cancels the queued turn before it starts", async () => {
+  const { transport, calls } = makeStubTransport([
+    messageUpdate(1, "do not start this"),
+    messageUpdate(2, "/stop"),
+    { ok: true, result: [] },
+  ]);
+  let runCount = 0;
+  const bridge = createBridge({
+    ...basePushOpts(),
+    messageBurstDebounceMs: 50,
+    config: { token: "t", chatId: "12345", transport },
+    runTurn: async () => { runCount++; },
+    getSessionId: () => undefined,
+    resetSession: () => {},
+    pollIntervalMs: 5,
+  });
+
+  await bridge.drainOnce();
+  await bridge.drainOnce();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  await bridge.stop();
+
+  assert.equal(runCount, 0);
+  assert.ok(calls.some((c) => c.url.includes("/sendMessage") && (c.body as Record<string, unknown>)["text"] === "Stopped."));
 });
 
 test("a turn emitting only tool and meta lines (no text) falls back to '(no output)', not an empty send", async () => {

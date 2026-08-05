@@ -402,7 +402,7 @@ test("a late system/init from a reset-superseded turn cannot reclaim session own
   });
 });
 
-test("RACHEL_SESSION_FILE is stripped only from the SDK child environment", async () => {
+test("the SDK child environment strips RACHEL_SESSION_FILE and always bounds MCP tools", async () => {
   const path = tempSessionPath();
   process.env["RACHEL_SESSION_FILE"] = path;
   const { runTurn } = await import("../rachel.ts");
@@ -414,13 +414,20 @@ test("RACHEL_SESSION_FILE is stripped only from the SDK child environment", asyn
   await runTurn("hello", () => {}, new AbortController().signal, withSeam);
   assert.equal(childEnv?.["RACHEL_SESSION_FILE"], undefined);
   assert.equal(childEnv?.["PATH"], process.env["PATH"]);
+  assert.equal(childEnv?.["MCP_TOOL_TIMEOUT"], "90000");
 
   delete process.env["RACHEL_SESSION_FILE"];
-  childEnv = { sentinel: "not-called" };
+  childEnv = undefined;
   const withoutSeam: Parameters<typeof runTurn>[3] = ((params) => {
     childEnv = params.options?.env;
     return queryMessages()!(params);
   }) as Parameters<typeof runTurn>[3];
   await runTurn("hello", () => {}, new AbortController().signal, withoutSeam);
-  assert.equal(childEnv, undefined);
+  assert.equal(childEnv?.["RACHEL_SESSION_FILE"], undefined);
+  assert.equal(childEnv?.["MCP_TOOL_TIMEOUT"], "90000");
+
+  process.env["MCP_TOOL_TIMEOUT"] = "45000";
+  await runTurn("hello", () => {}, new AbortController().signal, withoutSeam);
+  assert.equal(childEnv?.["MCP_TOOL_TIMEOUT"], "45000", "an explicit operator timeout is preserved");
+  delete process.env["MCP_TOOL_TIMEOUT"];
 });

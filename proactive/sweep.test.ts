@@ -2018,8 +2018,14 @@ test("bootstrap exit 5 after bootout is retried once before giving up", async ()
 
 const WIKI_CFG_PATH = join("/repo", ".claude", "workflow.config.yaml");
 const WIKI_CFG = "wiki_debt_epoch_pr: 80\nwiki_path: /vault\n";
-// gh pr list is newest-first; 90 and 84 are past the epoch (80), 79 is not.
-const GH_MERGED = JSON.stringify([{ number: 90 }, { number: 84 }, { number: 79 }]);
+// gh api --paginate --slurp returns pages. 90 and 84 are merged and past
+// the epoch (80); 79 is pre-epoch; 91 is closed without merge and ignored.
+const GH_MERGED = JSON.stringify([[
+  { number: 91, merged_at: null },
+  { number: 90, merged_at: "2026-08-01T00:00:00Z" },
+  { number: 84, merged_at: "2026-07-01T00:00:00Z" },
+  { number: 79, merged_at: "2026-06-01T00:00:00Z" },
+]]);
 
 function wikiHarness(opts: {
   cfg?: string;
@@ -2189,7 +2195,7 @@ test("config values are stripped awk-style: inline comment before quotes, then s
   assert.equal(grep!.args[1], "/vault", "quoted wiki_path resolved to the bare vault path");
 });
 
-test("gh pr list failure is a wiki-debt family error, never a false all-clear", async () => {
+test("gh pull pagination failure is a wiki-debt family error, never a false all-clear", async () => {
   const h = wikiHarness({ ghExit: 1 });
   const results = await sweepTick(h.deps);
   assert.equal(results["wiki-debt"], "failed");
@@ -2197,7 +2203,7 @@ test("gh pr list failure is a wiki-debt family error, never a false all-clear", 
   // The child's stderr must reach the surfaced error — an exit code alone
   // ("gh pr list exited 1") is undiagnosable from a tick log.
   assert.ok(
-    h.logs.some((l) => l.includes("wiki-debt error") && l.includes("gh pr list") && l.includes("gh boom")),
+    h.logs.some((l) => l.includes("wiki-debt error") && l.includes("gh api pull pagination") && l.includes("gh boom")),
     `error carries the child's stderr: ${h.logs.join(" | ")}`,
   );
 });
@@ -2209,12 +2215,14 @@ test("gh exit 0 with empty stdout is a family error (gh can fail silently)", asy
   assert.equal(h.pushes.filter((p) => p.family === "wiki-debt").length, 0);
 });
 
-test("a full 100-PR merged window is a family error (oldest debt would be truncated)", async () => {
-  const full = JSON.stringify(Array.from({ length: 100 }, (_, i) => ({ number: 200 - i })));
-  const h = wikiHarness({ ghStdout: full });
+test("more than 100 merged PRs are paginated without a permanent full-window failure", async () => {
+  const page1 = Array.from({ length: 100 }, (_, i) => ({ number: 200 - i, merged_at: "2026-08-01T00:00:00Z" }));
+  const page2 = Array.from({ length: 20 }, (_, i) => ({ number: 100 - i, merged_at: "2026-07-01T00:00:00Z" }));
+  const h = wikiHarness({ ghStdout: JSON.stringify([page1, page2]), logGrepExit: 0 });
   const results = await sweepTick(h.deps);
-  assert.equal(results["wiki-debt"], "failed");
+  assert.equal(results["wiki-debt"], "ok");
   assert.equal(h.pushes.filter((p) => p.family === "wiki-debt").length, 0);
+  assert.ok(h.logs.some((l) => l.includes("scanned 120 candidate")), `all pages were scanned: ${h.logs.join(" | ")}`);
 });
 
 test("vault fetch failure is a family error with no push", async () => {
