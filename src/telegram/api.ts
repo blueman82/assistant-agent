@@ -35,7 +35,9 @@ export function createTelegramApi(config: TelegramConfig, fetchFn: typeof fetch 
     const parsed = await response.json().catch(() => undefined) as ApiResponse | undefined;
     if (!response.ok || !parsed?.ok) {
       const status = parsed?.error_code ?? response.status;
-      throw new TelegramApiError(`Telegram ${method} failed: ${parsed?.description ?? `HTTP ${response.status}`}`, status);
+      const retryAfterSeconds = parsed?.parameters?.retry_after;
+      const retryAfterMs = typeof retryAfterSeconds === "number" ? retryAfterSeconds * 1_000 : undefined;
+      throw new TelegramApiError(`Telegram ${method} failed: ${parsed?.description ?? `HTTP ${response.status}`}`, status, retryAfterMs);
     }
     return parsed.result;
   }
