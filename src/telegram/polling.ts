@@ -51,7 +51,7 @@ export function createPoller(
         const kind = classify(error);
         if (kind === "fatal") throw error;
         if (stopped) return undefined;
-        await sleep(backoffFor(kind), abort.signal);
+        await sleep(backoffFor(kind, error), abort.signal);
         if (stopped) return undefined;
       }
     }
