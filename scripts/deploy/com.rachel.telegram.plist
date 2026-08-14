@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.rachel.telegram
+
+  Keeps src/telegram/main.ts (the Telegram composition root) running as a
+  long-lived polling loop, restarted automatically by launchd on crash or
+  login. This is a fresh, minimal job definition — the previous Telegram
+  launchd integration (com.rachel.telegram-bridge, targeting the deleted
+  bridge/telegram-bridge.ts runtime) is retired and unrelated; do not confuse
+  the two labels or reuse old launchd state.
+
+  Why a wrapper script instead of inline EnvironmentVariables:
+  RACHEL_TELEGRAM_TOKEN and RACHEL_TELEGRAM_CHAT_ID are secrets. Putting them
+  directly in this plist's EnvironmentVariables dict would leave them in
+  plaintext inside ~/Library/LaunchAgents, which is commonly world-readable.
+  Instead, scripts/deploy/run-telegram.sh reads them at launch time from
+  ~/.rachel/telegram.json (mode 600) and execs the real runtime, so no
+  secret ever appears in this file or in `launchctl print`.
+
+  Install:
+    launchctl bootstrap gui/$(id -u) /Users/harrison/Github/assistant-agent/scripts/deploy/com.rachel.telegram.plist
+
+  Uninstall:
+    launchctl bootout gui/$(id -u)/com.rachel.telegram
+
+  Logs:
+    ~/.rachel/telegram.log (stdout and stderr combined)
+
+  ThrottleInterval is set to 15s, not the 0/default. src/telegram/main.ts now
+  has its own in-process retry-with-backoff for Telegram 409/429/5xx
+  responses, so launchd no longer needs a long throttle purely to survive
+  poller-overlap conflicts on restart. 15s still bounds how fast launchd
+  will crash-loop this job against Telegram's API if something is
+  persistently broken (e.g. bad credentials), without making a routine
+  restart feel sluggish.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.rachel.telegram</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/harrison/Github/assistant-agent/scripts/deploy/run-telegram.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/harrison/Github/assistant-agent</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>ThrottleInterval</key>
+  <integer>15</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/harrison/.rachel/telegram.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/harrison/.rachel/telegram.log</string>
+</dict>
+</plist>
