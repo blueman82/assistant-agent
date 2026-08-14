@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { runCliInput } from "./main.ts";
+import { providerFromCli, runCliInput } from "./main.ts";
 import { resetCliSession, stopCliSession } from "./commands.ts";
+
+test("CLI provider argument overrides the environment, while no argument requires it", () => {
+  assert.equal(providerFromCli(["codex"], { RACHEL_PROVIDER: "claude" }), "codex");
+  assert.equal(providerFromCli([], { RACHEL_PROVIDER: "claude" }), "claude");
+  assert.throws(() => providerFromCli([]), /must be set/);
+});
 
 test("CLI reset invalidates the session and confirms it", async () => {
   let reset = false;

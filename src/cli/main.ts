@@ -1,6 +1,6 @@
 import { createInterface } from "node:readline";
 import { AgentError, type TurnEvent } from "../core/contracts.ts";
-import { providerFromEnvironment } from "../providers/selection.ts";
+import { providerFromEnvironment, type ProviderName } from "../providers/selection.ts";
 import { createProviderRuntime } from "../providers/runtime.ts";
 import { resetCliSession, stopCliSession } from "./commands.ts";
 
@@ -56,8 +56,19 @@ export async function runCliInput(
   await done;
 }
 
-export async function runCli(env: NodeJS.ProcessEnv = process.env): Promise<void> {
-  const provider = providerFromEnvironment(env);
+export function providerFromCli(
+  args: readonly string[] = process.argv.slice(2),
+  env: NodeJS.ProcessEnv = process.env,
+): ProviderName {
+  const [provider] = args;
+  return providerFromEnvironment(provider ? { ...env, RACHEL_PROVIDER: provider } : env);
+}
+
+export async function runCli(
+  env: NodeJS.ProcessEnv = process.env,
+  args: readonly string[] = process.argv.slice(2),
+): Promise<void> {
+  const provider = providerFromCli(args, env);
   const runtime = createProviderRuntime(provider);
   const status = await runtime.checkAvailability();
   if (!status.authenticated) throw new AgentError("authentication_unavailable", status.message ?? `${provider} OAuth is unavailable`);
