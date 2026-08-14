@@ -1,77 +1,104 @@
-# Assistant Agent
+# Rachel
 
-Gary's personal AI assistant, Rachel, built on the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk). It runs as a single long-lived CLI agent that manages email, calendar, and tasks.
+Rachel is a local, provider-neutral personal assistant. The host chooses the
+runtime explicitly with `RACHEL_PROVIDER=claude` or `RACHEL_PROVIDER=codex`.
+The host runtimes own OAuth login and session handling; Rachel does not read
+API keys. Claude and Codex adapters translate each host runtime into the same
+turn, tool, approval, and reply contracts.
 
-## Quick start
+## Architecture
+
+- The CLI composition root is [`rachel.ts`](./rachel.ts). [`bin/rachel`](./bin/rachel)
+  is its location-independent launcher.
+- The Telegram composition root is [`bridge/telegram-bridge.ts`](./bridge/telegram-bridge.ts).
+  It is an independent front end and shares contracts with the CLI; it does
+  not run the CLI REPL.
+- The supervisor is separate from request handling. It observes runtime,
+  watchdog, wake, and alert events, then applies deduplication, quiet hours,
+  and interrupt-budget policy before delivery.
+- Telegram media and speech are adapters: media is downloaded to local
+  storage; local speech provides transcription and synthesis; failed voice
+  synthesis falls back to text.
+
+The current checkout's executable roots remain `rachel.ts` and
+`bridge/telegram-bridge.ts`; the provider/core adapter boundary is the
+composition contract for the provider-neutral implementation. The checked-in
+root still contains the legacy Claude runtime, so `RACHEL_PROVIDER=codex` is
+documented as the new contract but is not a verified Codex run in this
+checkout.
+
+## Security and approvals
+
+Host authentication is OAuth-only. Credentials stay in the host runtime or
+local configuration and are not committed here. Outward actions are protected
+by the send gate: the canonical tool input is hash-bound to a one-shot
+approval, approvals are consumed, denials fail closed, and attempts are
+audited. Terminal, Telegram, and queue approval surfaces resolve the same gate.
+Browser-driven sends remain an audit-only residual and must not be treated as
+equivalent to a gated MCP send.
+
+## Setup and commands
 
 ```bash
 npm install
-npx tsx rachel.ts
+RACHEL_PROVIDER=claude ./bin/rachel
+RACHEL_PROVIDER=codex ./bin/rachel "check my tasks"
 ```
 
-Type a request at the `You:` prompt. Or pass one as an argument for a one-shot:
+Interactive commands:
 
-```bash
-npx tsx rachel.ts "check my email"
-```
-
-No API key is needed — the agent uses the local Claude Code OAuth session.
-
-## What it does
-
-| Area | How |
-|------|-----|
-| **Email** | Gmail (`gjharrison01@gmail.com`) via MCP |
-| **Calendar** | Google Calendar via MCP |
-| **Tasks** | Markdown files in `tasks/` (`YYYY-MM-DD-slug.md`) |
-
-Rachel confirms before any outward action — sending email or changing the calendar.
-
-## How it's built
-
-The project is deliberately small and splits into two parts:
-
-- **`rachel.ts`** — the plumbing. A REPL wrapping the Agent SDK's `query()`: it loads the system prompt, defines one inline agent, streams output, and loops.
-- **`prompts/system.md`** — the brain. All of Rachel's behaviour — tool routing, capabilities, ground rules — lives here. Change behaviour by editing this file, not the TypeScript.
-
-See [`CLAUDE.md`](./CLAUDE.md) for the full architecture notes.
-
-## Project layout
-
-```
-rachel.ts           # CLI entry point (the plumbing)
-prompts/system.md   # system prompt (the behaviour)
-bridge/             # Telegram bridge (second front-end) + notify.ts
-gate/               # send-approval gate (PreToolUse hook + approval surfaces)
-proactive/          # proactive layer: push.ts alert chokepoint, sweep.ts launchd tick, allowedTools.ts
-scripts/            # install.sh (launchd deploy) + speech/ (local STT/TTS venv setup + transcribe/synthesize)
-tasks/              # task files (YYYY-MM-DD-slug.md)
-```
-
-## Commands
-
-```bash
-npx tsx rachel.ts           # run interactively
-npm start                   # alias for the above
-npm run bridge              # tsx bridge/telegram-bridge.ts (Telegram front-end)
-npm run typecheck           # tsc --noEmit
-npm test                    # gate/bridge/proactive/scripts test suites + hook conventions test
-```
-
-### At the `You:` prompt
-
-| Input | Effect |
-|-------|--------|
+| Command | Effect |
+|---|---|
 | `/reset` | Start a fresh session |
-| `/model [name]` | No arg: report current model + valid options. Arg: switch model, takes effect next turn |
-| `/effort [level]` | No arg: report current effort + valid options. Arg: switch effort, takes effect next turn |
-| `/exit` or `/quit` | Exit |
-| `q` (mid-turn) | Abort the current turn |
+| `/model [name]` | Show or change the model |
+| `/effort [level]` | Show or change reasoning effort |
+| `/exit`, `/quit` | Exit |
+| `q` | Abort the current turn |
 
-## Configuration
+Other entrypoints:
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `RACHEL_MODEL` | `claude-sonnet-5` | Model to run at boot — a `/model` command overrides it for the running process only |
-| `RACHEL_MAX_TURNS` | `200` | Max agent turns per request |
-| `RACHEL_ALLOWED_TOOLS` | unset (full list) | Narrow headless one-shots to a subset of the default tools (remove-only) |
+```bash
+npm start                         # CLI composition root
+npm run bridge                    # Telegram composition root
+npm run architecture-check       # verify the rewrite layout and import boundaries
+RACHEL_PROVIDER=claude ./bin/rachel --help
+```
+
+Launchd templates are under [`bridge/launchd.plist`](./bridge/launchd.plist)
+and [`launchd/`](./launchd/). Replace `__REPO_PATH__`, set the provider in the
+job environment, and validate before loading:
+
+```bash
+for f in bridge/launchd.plist launchd/*.plist; do plutil -lint "$f"; done
+RACHEL_PROVIDER=claude ./bin/rachel --help
+git diff --check
+```
+
+For the full test and type checks:
+
+```bash
+npm run typecheck
+npm test
+```
+
+## Layout
+
+```
+rachel.ts             CLI composition root
+bridge/               Telegram composition root and transport adapters
+gate/                 approval, audit, and memory enforcement
+src/media/            media storage and Telegram media adapters
+src/speech/           local speech adapters and text fallback
+src/supervisor/       events, liveness, watchdog, and delivery policy
+src/core/             transport-free contracts and policy
+src/providers/        external-service adapters
+proactive/            scheduled work and notification chokepoint
+launchd/              launchd templates for local scheduled jobs
+prompts/system.md     behavioural policy
+tasks/                Markdown task inputs
+```
+
+The architecture checker is repository-owned and fail-closed: it requires all
+six rewrite modules, explicit `.ts` relative imports, and the dependency
+direction. It scans production files only; tests are intentionally free to
+compose modules across boundaries.
