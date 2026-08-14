@@ -27,6 +27,19 @@ Authentication and session details belong to the selected host provider.
 - `src/supervisor/` contains liveness and delivery policy.
 
 Keep dependencies flowing through these roots. Do not add legacy runtime roots,
-bridge/gate/proactive implementations, compatibility wrappers, or launchd
-integration. Keep production files within the limits enforced by
-`npm run architecture-check`.
+bridge/gate/proactive implementations, or compatibility wrappers. Keep
+production files within the limits enforced by `npm run architecture-check`.
+
+## Deployment
+
+`src/telegram/main.ts` runs long-lived under launchd as `com.rachel.telegram`,
+defined in `scripts/deploy/com.rachel.telegram.plist`. The plist points at
+`scripts/deploy/run-telegram.sh`, which reads `RACHEL_TELEGRAM_TOKEN` and
+`RACHEL_TELEGRAM_CHAT_ID` from `~/.rachel/telegram.json` at launch time and
+execs the runtime — secrets never live in the plist itself. Logs go to
+`~/.rachel/telegram.log`.
+
+```bash
+launchctl bootstrap gui/$(id -u) /Users/harrison/Github/assistant-agent/scripts/deploy/com.rachel.telegram.plist
+launchctl bootout gui/$(id -u)/com.rachel.telegram
+```
