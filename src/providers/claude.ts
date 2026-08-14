@@ -82,7 +82,12 @@ class ClaudeSession implements AgentSession {
   }
 
   async reset(): Promise<void> { this.active?.close(); this.controller?.abort(); this.providerSessionId = undefined; }
-  async stop(reason: StopReason = "user"): Promise<void> { this.active?.close(); this.controller?.abort(reason); }
+  async stop(reason: StopReason = "user"): Promise<boolean> {
+    const active = this.controller !== undefined;
+    this.active?.close();
+    this.controller?.abort(reason);
+    return active;
+  }
 }
 
 export class ClaudeRuntime implements ProviderRuntime {

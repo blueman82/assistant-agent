@@ -45,7 +45,11 @@ class CodexSession implements AgentSession {
   }
 
   async reset(): Promise<void> { this.controller?.abort("reset"); }
-  async stop(reason: StopReason = "user"): Promise<void> { this.controller?.abort(reason); }
+  async stop(reason: StopReason = "user"): Promise<boolean> {
+    const active = this.controller !== undefined;
+    this.controller?.abort(reason);
+    return active;
+  }
 }
 
 export class CodexRuntime implements ProviderRuntime {

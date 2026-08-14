@@ -2,7 +2,7 @@ import { createInterface } from "node:readline";
 import { AgentError, type TurnEvent } from "../core/contracts.ts";
 import { providerFromEnvironment } from "../providers/selection.ts";
 import { createProviderRuntime } from "../providers/runtime.ts";
-import { resetCliSession } from "./commands.ts";
+import { resetCliSession, stopCliSession } from "./commands.ts";
 
 function printEvent(event: TurnEvent): void {
   if (event.type === "text") process.stdout.write(`${event.text}\n`);
@@ -25,7 +25,7 @@ export async function runCli(env: NodeJS.ProcessEnv = process.env): Promise<void
       const text = line.trim();
       if (!text) continue;
       if (text === "/reset") { await resetCliSession(session); continue; }
-      if (text === "/stop") { await session.stop("user"); continue; }
+      if (text === "/stop") { await stopCliSession(session); continue; }
       for await (const event of session.run({ text })) printEvent(event);
     }
   } finally {

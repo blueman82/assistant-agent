@@ -67,7 +67,7 @@ export interface AgentSession {
   readonly id: SessionId;
   run(input: AgentInput): AsyncIterable<TurnEvent>;
   reset(): Promise<void>;
-  stop(reason?: StopReason): Promise<void>;
+  stop(reason?: StopReason): Promise<boolean>;
 }
 
 export interface AgentRuntime {
