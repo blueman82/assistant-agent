@@ -102,6 +102,49 @@ test("a worker error (e.g. turn() throwing) is surfaced as a visible reply", asy
   assert.match(replies[0]!, /provider exploded/);
 });
 
+test("a worker error is logged server-side via stderr, not just replied to the user", async () => {
+  const api = stubApi();
+  const runtime = createTelegramRuntime(
+    { token: "t", chatId: "1" },
+    async () => { throw new Error("provider exploded"); },
+    { api },
+  );
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  const written: string[] = [];
+  process.stderr.write = ((chunk: string) => { written.push(String(chunk)); return true; }) as typeof process.stderr.write;
+  try {
+    runtime.queue.add({ message_id: 1, chat: { id: 1 }, text: "hi" });
+    await waitUntilIdle(runtime.queue);
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+  assert.ok(written.some((line) => line.includes("provider exploded")), "expected the real error to be logged to stderr");
+});
+
+test("a message from a mismatched chat ID is dropped and logged without its text", async () => {
+  const turns: string[] = [];
+  const api = stubApi();
+  api.getUpdates = async () => [
+    { update_id: 1, message: { message_id: 1, chat: { id: 999 }, text: "secret payload" } },
+  ];
+  const runtime = createTelegramRuntime(
+    { token: "t", chatId: "1" },
+    async (text) => { turns.push(text); },
+    { api },
+  );
+  const originalWrite = process.stdout.write.bind(process.stdout);
+  const written: string[] = [];
+  process.stdout.write = ((chunk: string) => { written.push(String(chunk)); return true; }) as typeof process.stdout.write;
+  try {
+    await runtime.poller.pollOnce();
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  assert.deepEqual(turns, []);
+  assert.ok(written.some((line) => line.includes("message dropped") && line.includes("999")), "expected the drop to be logged with the mismatched chat ID");
+  assert.ok(!written.some((line) => line.includes("secret payload")), "message text must not be logged");
+});
+
 test("text-triggered turn replies immediately per event, never buffered (regression)", async () => {
   const replies: string[] = [];
   const api = stubApi();

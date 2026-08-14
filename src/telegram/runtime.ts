@@ -24,6 +24,58 @@ export interface RuntimeOptions {
   onCallback?: (query: TelegramCallbackQuery) => Promise<void>;
 }
 
+async function handleMessage(
+  message: TelegramMessage,
+  api: TelegramApi,
+  config: TelegramConfig,
+  turn: (input: string, reply: (text: string) => Promise<void>) => Promise<void>,
+  reply: (text: string) => Promise<void>,
+  options: RuntimeOptions,
+): Promise<void> {
+  if (message.text) {
+    process.stdout.write(`${new Date().toISOString()} message received kind=text\n`);
+    return await turn(message.text, reply);
+  }
+  if (!options.mediaDirectory) {
+    process.stdout.write(`${new Date().toISOString()} message received kind=other\n`);
+    return;
+  }
+  const media = await downloadMedia(api, message, options.mediaDirectory);
+  if (!media) {
+    process.stdout.write(`${new Date().toISOString()} message received kind=other\n`);
+    return;
+  }
+  if (media.kind !== "voice") {
+    process.stdout.write(`${new Date().toISOString()} message received kind=${media.kind}\n`);
+    return await turn(media.text, reply);
+  }
+  process.stdout.write(`${new Date().toISOString()} message received kind=voice\n`);
+  if (!options.transcriber) return await reply("Voice notes aren't supported right now.");
+  let transcript: string;
+  try {
+    transcript = await options.transcriber.transcribe(media.path);
+    process.stdout.write(`${new Date().toISOString()} transcription outcome=success\n`);
+  } catch {
+    process.stdout.write(`${new Date().toISOString()} transcription outcome=failure\n`);
+    return await reply("Sorry, I couldn't transcribe that voice note. Please try again or send it as text.");
+  }
+  const buffered = createBufferingReplyRenderer();
+  try {
+    await turn(transcript, buffered.reply);
+  } finally {
+    const text = buffered.getBuffered();
+    let outcome = "none";
+    if (text.trim() && options.synthesizer) {
+      await flushVoiceReply(text, api, config.chatId, { synthesizer: options.synthesizer, encode: options.encodeAudio });
+      outcome = "voice";
+    } else if (text.trim()) {
+      await reply(text);
+      outcome = "text";
+    }
+    process.stdout.write(`${new Date().toISOString()} reply flush outcome=${outcome}\n`);
+  }
+}
+
 export function createTelegramRuntime(
   config: TelegramConfig,
   turn: (input: string, reply: (text: string) => Promise<void>) => Promise<void>,
@@ -32,37 +84,21 @@ export function createTelegramRuntime(
   const api = options.api ?? createTelegramApi(config);
   const reply = createReplyRenderer(api, config.chatId);
   const queue = createSingleFlightQueue<TelegramMessage>(
-    async (message) => {
-      if (message.text) return await turn(message.text, reply);
-      if (!options.mediaDirectory) return;
-      const media = await downloadMedia(api, message, options.mediaDirectory);
-      if (!media) return;
-      if (media.kind !== "voice") return await turn(media.text, reply);
-      if (!options.transcriber) return await reply("Voice notes aren't supported right now.");
-      let transcript: string;
-      try {
-        transcript = await options.transcriber.transcribe(media.path);
-      } catch {
-        return await reply("Sorry, I couldn't transcribe that voice note. Please try again or send it as text.");
-      }
-      const buffered = createBufferingReplyRenderer();
-      try {
-        await turn(transcript, buffered.reply);
-      } finally {
-        const text = buffered.getBuffered();
-        if (text.trim() && options.synthesizer) {
-          await flushVoiceReply(text, api, config.chatId, { synthesizer: options.synthesizer, encode: options.encodeAudio });
-        } else if (text.trim()) {
-          await reply(text);
-        }
-      }
+    (message) => handleMessage(message, api, config, turn, reply, options),
+    (error) => {
+      process.stderr.write(`${new Date().toISOString()} message handling error: ${error instanceof Error ? error.message : String(error)}\n`);
+      void reply(`Something went wrong handling that message: ${error instanceof Error ? error.message : String(error)}`);
     },
-    (error) => { void reply(`Something went wrong handling that message: ${error instanceof Error ? error.message : String(error)}`); },
   );
   const poller = createPoller(api, async (event) => {
     const routed = routeUpdate(event.update);
     if (routed?.kind === "callback") return await options.onCallback?.(routed.callback);
-    if (routed?.kind === "message" && String(routed.message.chat.id) === config.chatId) queue.add(routed.message);
+    if (routed?.kind !== "message") return;
+    if (String(routed.message.chat.id) !== config.chatId) {
+      process.stdout.write(`${new Date().toISOString()} message dropped chat_id=${routed.message.chat.id}\n`);
+      return;
+    }
+    queue.add(routed.message);
   });
   return { api, poller, queue, stop: () => poller.stop() };
 }

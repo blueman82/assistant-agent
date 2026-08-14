@@ -49,7 +49,12 @@ export function createPoller(
         return await api.getUpdates(offset);
       } catch (error) {
         const kind = classify(error);
-        if (kind === "fatal") throw error;
+        const message = error instanceof Error ? error.message : String(error);
+        if (kind === "fatal") {
+          process.stderr.write(`${new Date().toISOString()} poll failed kind=fatal: ${message}\n`);
+          throw error;
+        }
+        process.stderr.write(`${new Date().toISOString()} poll retry kind=${kind}: ${message}\n`);
         if (stopped) return undefined;
         await sleep(backoffFor(kind, error), abort.signal);
         if (stopped) return undefined;
