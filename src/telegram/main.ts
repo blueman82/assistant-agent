@@ -1,7 +1,9 @@
+import { tmpdir } from "node:os";
 import { createApprovalPolicy } from "../core/approval.ts";
 import { AgentError, type ApprovalRequest, type TurnEvent } from "../core/contracts.ts";
 import { providerFromEnvironment } from "../providers/selection.ts";
 import { createProviderRuntime } from "../providers/runtime.ts";
+import { LocalSpeech } from "../speech/local.ts";
 import { createTelegramApi } from "./api.ts";
 import { createApprovalTransport } from "./approval.ts";
 import { createTelegramRuntime } from "./runtime.ts";
@@ -50,6 +52,8 @@ export async function runTelegram(env: NodeJS.ProcessEnv = process.env): Promise
     for await (const event of session.run({ text })) await replyFor(event, reply, approvalContext);
   }, {
     api,
+    mediaDirectory: tmpdir(),
+    transcriber: new LocalSpeech(),
     onCallback: async (query) => {
       const result = await transport.callback(query);
       if (!result) return;
