@@ -167,10 +167,11 @@ test("text-triggered turn replies immediately per event, never buffered (regress
 
 test("plain-text turn completion is logged with a reply flush line", async () => {
   const api = stubApi();
+  let turnCalls = 0;
   const runtime = createTelegramRuntime(
     { token: "t", chatId: "1" },
-    async (_text, reply) => { await reply("hello back"); },
-    { api },
+    async (_text, reply) => { turnCalls++; await reply("hello back"); },
+    { api, mediaDirectory: "/tmp" },
   );
   const originalWrite = process.stdout.write.bind(process.stdout);
   const written: string[] = [];
@@ -182,6 +183,8 @@ test("plain-text turn completion is logged with a reply flush line", async () =>
     process.stdout.write = originalWrite;
   }
   assert.ok(written.some((line) => line.includes("reply flush outcome=text")), "expected a reply flush completion line for the plain-text path");
+  assert.ok(!written.some((line) => line.includes("kind=other")), "text messages must not fall through to the media/kind=other branch");
+  assert.equal(turnCalls, 1, "turn should be called exactly once for a plain-text message");
 });
 
 test("memory commands are handled before the provider turn", async () => {
