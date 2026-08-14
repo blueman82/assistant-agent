@@ -102,6 +102,25 @@ test("a worker error (e.g. turn() throwing) is surfaced as a visible reply", asy
   assert.match(replies[0]!, /provider exploded/);
 });
 
+test("a worker error is logged server-side via stderr, not just replied to the user", async () => {
+  const api = stubApi();
+  const runtime = createTelegramRuntime(
+    { token: "t", chatId: "1" },
+    async () => { throw new Error("provider exploded"); },
+    { api },
+  );
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  const written: string[] = [];
+  process.stderr.write = ((chunk: string) => { written.push(String(chunk)); return true; }) as typeof process.stderr.write;
+  try {
+    runtime.queue.add({ message_id: 1, chat: { id: 1 }, text: "hi" });
+    await waitUntilIdle(runtime.queue);
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+  assert.ok(written.some((line) => line.includes("provider exploded")), "expected the real error to be logged to stderr");
+});
+
 test("text-triggered turn replies immediately per event, never buffered (regression)", async () => {
   const replies: string[] = [];
   const api = stubApi();

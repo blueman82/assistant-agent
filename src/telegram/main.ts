@@ -66,6 +66,7 @@ export async function runTelegram(env: NodeJS.ProcessEnv = process.env): Promise
     },
   });
   process.once("SIGINT", telegram.stop);
+  process.stdout.write(`${new Date().toISOString()} Telegram runtime started\n`);
   try { while (true) await telegram.poller.pollOnce(); }
   finally { telegram.stop(); await session.stop("shutdown"); process.removeListener("SIGINT", telegram.stop); }
 }
