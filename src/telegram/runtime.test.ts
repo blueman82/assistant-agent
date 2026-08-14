@@ -121,6 +121,30 @@ test("a worker error is logged server-side via stderr, not just replied to the u
   assert.ok(written.some((line) => line.includes("provider exploded")), "expected the real error to be logged to stderr");
 });
 
+test("a message from a mismatched chat ID is dropped and logged without its text", async () => {
+  const turns: string[] = [];
+  const api = stubApi();
+  api.getUpdates = async () => [
+    { update_id: 1, message: { message_id: 1, chat: { id: 999 }, text: "secret payload" } },
+  ];
+  const runtime = createTelegramRuntime(
+    { token: "t", chatId: "1" },
+    async (text) => { turns.push(text); },
+    { api },
+  );
+  const originalWrite = process.stdout.write.bind(process.stdout);
+  const written: string[] = [];
+  process.stdout.write = ((chunk: string) => { written.push(String(chunk)); return true; }) as typeof process.stdout.write;
+  try {
+    await runtime.poller.pollOnce();
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  assert.deepEqual(turns, []);
+  assert.ok(written.some((line) => line.includes("message dropped") && line.includes("999")), "expected the drop to be logged with the mismatched chat ID");
+  assert.ok(!written.some((line) => line.includes("secret payload")), "message text must not be logged");
+});
+
 test("text-triggered turn replies immediately per event, never buffered (regression)", async () => {
   const replies: string[] = [];
   const api = stubApi();

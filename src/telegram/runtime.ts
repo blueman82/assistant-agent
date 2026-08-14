@@ -93,7 +93,12 @@ export function createTelegramRuntime(
   const poller = createPoller(api, async (event) => {
     const routed = routeUpdate(event.update);
     if (routed?.kind === "callback") return await options.onCallback?.(routed.callback);
-    if (routed?.kind === "message" && String(routed.message.chat.id) === config.chatId) queue.add(routed.message);
+    if (routed?.kind !== "message") return;
+    if (String(routed.message.chat.id) !== config.chatId) {
+      process.stdout.write(`${new Date().toISOString()} message dropped chat_id=${routed.message.chat.id}\n`);
+      return;
+    }
+    queue.add(routed.message);
   });
   return { api, poller, queue, stop: () => poller.stop() };
 }
