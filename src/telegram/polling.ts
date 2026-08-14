@@ -27,10 +27,12 @@ function backoffFor(kind: FailureKind): number {
 export function createPoller(
   api: TelegramApi,
   onEvent: (event: TelegramEvent) => Promise<void>,
-  sleep: (ms: number) => Promise<void> = (ms) => sleepTimer(ms),
+  sleep: (ms: number, signal: AbortSignal) => Promise<void> = (ms, signal) =>
+    sleepTimer(ms, undefined, { signal }).catch(() => undefined),
 ): Poller {
   let offset: number | undefined;
   let stopped = false;
+  const abort = new AbortController();
   async function fetchUpdates(): Promise<unknown[] | undefined> {
     while (true) {
       try {
@@ -39,7 +41,7 @@ export function createPoller(
         const kind = classify(error);
         if (kind === "fatal") throw error;
         if (stopped) return undefined;
-        await sleep(backoffFor(kind));
+        await sleep(backoffFor(kind), abort.signal);
         if (stopped) return undefined;
       }
     }
@@ -57,6 +59,6 @@ export function createPoller(
       }
       return offset;
     },
-    stop() { stopped = true; },
+    stop() { stopped = true; abort.abort(); },
   };
 }
