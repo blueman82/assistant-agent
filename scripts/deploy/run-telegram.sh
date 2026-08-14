@@ -7,6 +7,11 @@
 # foreground check.
 set -euo pipefail
 
+# launchd jobs get no user PATH by default; node lives here (verified via
+# `command -v node` -> /opt/homebrew/bin/node on this machine). Must be set
+# before the first `node -e` call below, not just before the final exec.
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+
 REPO_DIR="/Users/harrison/Github/assistant-agent"
 CREDENTIALS_FILE="$HOME/.rachel/telegram.json"
 
@@ -40,10 +45,6 @@ fi
 export RACHEL_TELEGRAM_TOKEN="$TOKEN"
 export RACHEL_TELEGRAM_CHAT_ID="$CHAT_ID"
 export RACHEL_PROVIDER="${RACHEL_PROVIDER:-claude}"
-
-# launchd jobs get no user PATH by default; node lives here (verified via
-# `command -v node` -> /opt/homebrew/bin/node on this machine).
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
 cd "$REPO_DIR"
 exec node_modules/.bin/tsx src/telegram/main.ts
