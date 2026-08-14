@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { AgentError, type AgentInput, type AgentSession, type SessionOptions, type StopReason, type TurnEvent } from "../core/contracts.ts";
 import type { Codex, Thread, ThreadEvent } from "@openai/codex-sdk";
 import type { ProviderRuntime, ProviderRuntimeStatus } from "./types.ts";
+import { stopReasonFromAbort } from "./stop-reason.ts";
 
 export interface CodexRuntimeOptions { readonly cwd?: string; readonly model?: string; readonly resumeThreadId?: string }
 type CodexModule = typeof import("@openai/codex-sdk");
@@ -29,7 +30,7 @@ class CodexSession implements AgentSession {
       const stream = await this.thread.runStreamed(input.text, { signal: controller.signal });
       for await (const event of stream.events) yield* this.normalize(event, turnId);
     } catch (error) {
-      if (controller.signal.aborted) yield { type: "stopped", sessionId: this.id, turnId, reason: "user" };
+      if (controller.signal.aborted) yield { type: "stopped", sessionId: this.id, turnId, reason: stopReasonFromAbort(controller.signal.reason) };
       else yield { type: "error", sessionId: this.id, turnId, error: error instanceof AgentError ? error : eventError(error instanceof Error ? error.message : String(error)) };
     } finally { this.controller = undefined; }
   }
@@ -44,7 +45,7 @@ class CodexSession implements AgentSession {
   }
 
   async reset(): Promise<void> { this.controller?.abort("reset"); }
-  async stop(_reason: StopReason = "user"): Promise<void> { this.controller?.abort("stop"); }
+  async stop(reason: StopReason = "user"): Promise<void> { this.controller?.abort(reason); }
 }
 
 export class CodexRuntime implements ProviderRuntime {

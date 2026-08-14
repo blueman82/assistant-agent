@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { query, startup, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { AgentError, type AgentInput, type AgentSession, type SessionOptions, type StopReason, type TurnEvent, type Usage } from "../core/contracts.ts";
 import type { ProviderRuntime, ProviderRuntimeStatus } from "./types.ts";
+import { stopReasonFromAbort } from "./stop-reason.ts";
 
 export interface ClaudeRuntimeOptions {
   readonly cwd?: string;
@@ -72,8 +73,7 @@ class ClaudeSession implements AgentSession {
         }
       }
     } catch (error) {
-      const stopped = controller.signal.aborted;
-      if (stopped) yield { type: "stopped", sessionId: this.id, turnId, reason: "user" };
+      if (controller.signal.aborted) yield { type: "stopped", sessionId: this.id, turnId, reason: stopReasonFromAbort(controller.signal.reason) };
       else yield { type: "error", sessionId: this.id, turnId, error: errorFrom(error) };
     } finally {
       this.active = undefined;
