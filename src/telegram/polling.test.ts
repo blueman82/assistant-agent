@@ -61,6 +61,88 @@ test("HTTP 409 conflict uses a longer backoff than a generic 5xx", async () => {
   assert.ok(calls[0] > 5_000, "409 backoff should exceed the generic transient backoff");
 });
 
+test("HTTP 429 with a retry_after value backs off using that exact server-supplied delay", async () => {
+  let attempts = 0;
+  const api = stubApi(async () => {
+    attempts++;
+    if (attempts < 2) {
+      throw new TelegramApiError("Telegram getUpdates failed: Too Many Requests", 429, 8_000);
+    }
+    return [];
+  });
+  const { sleep, calls } = recordingSleep();
+  const poller = createPoller(api, async () => {}, sleep);
+  await poller.pollOnce();
+  assert.equal(attempts, 2);
+  assert.deepEqual(calls, [8_000]);
+});
+
+test("HTTP 429 without a retry_after value falls back to the default transient backoff", async () => {
+  let attempts = 0;
+  const api = stubApi(async () => {
+    attempts++;
+    if (attempts < 2) {
+      throw new TelegramApiError("Telegram getUpdates failed: Too Many Requests", 429);
+    }
+    return [];
+  });
+  const { sleep, calls } = recordingSleep();
+  const poller = createPoller(api, async () => {}, sleep);
+  await poller.pollOnce();
+  assert.equal(attempts, 2);
+  assert.deepEqual(calls, [5_000]);
+});
+
+test("HTTP 429 with a malformed (zero/negative/absurd) retry_after falls back to the default backoff", async () => {
+  const cases = [0, -5_000, 999_999_999];
+  for (const retryAfterMs of cases) {
+    let attempts = 0;
+    const api = stubApi(async () => {
+      attempts++;
+      if (attempts < 2) {
+        throw new TelegramApiError("Telegram getUpdates failed: Too Many Requests", 429, retryAfterMs);
+      }
+      return [];
+    });
+    const { sleep, calls } = recordingSleep();
+    const poller = createPoller(api, async () => {}, sleep);
+    await poller.pollOnce();
+    assert.equal(attempts, 2);
+    assert.deepEqual(calls, [5_000], `retryAfterMs=${retryAfterMs} should fall back to the default backoff`);
+  }
+});
+
+test("HTTP 401 (non-429 client error) is still fatal and propagates immediately without retrying", async () => {
+  let attempts = 0;
+  const api = stubApi(async () => {
+    attempts++;
+    throw new TelegramApiError("Telegram getUpdates failed: Unauthorized", 401);
+  });
+  const { sleep, calls } = recordingSleep();
+  const poller = createPoller(api, async () => {}, sleep);
+  await assert.rejects(() => poller.pollOnce(), /Unauthorized/);
+  assert.equal(attempts, 1);
+  assert.equal(calls.length, 0);
+});
+
+test("stop() during a 429 backoff wait prevents further retries", async () => {
+  let attempts = 0;
+  const api = stubApi(async () => {
+    attempts++;
+    throw new TelegramApiError("Telegram getUpdates failed: Too Many Requests", 429, 8_000);
+  });
+  let sleepCalls = 0;
+  const sleep = async (_ms: number) => {
+    sleepCalls++;
+    poller.stop();
+  };
+  const poller = createPoller(api, async () => {}, sleep);
+  const offset = await poller.pollOnce();
+  assert.equal(offset, undefined);
+  assert.equal(sleepCalls, 1);
+  assert.equal(attempts, 1, "must not retry again after stop() is called mid-429-backoff");
+});
+
 test("non-transient error propagates immediately without retrying", async () => {
   let attempts = 0;
   const api = stubApi(async () => {
