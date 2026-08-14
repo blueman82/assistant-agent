@@ -8,6 +8,7 @@ test("approval callback resolves the matching transport request", async () => {
     async call(method, body) { calls.push([method, body]); return {}; },
     async getUpdates() { return []; },
     async download() {},
+    async sendVoice() {},
   }, "7");
   const pending = transport.request("a".repeat(64), "send it");
   await new Promise<void>((resolve) => setImmediate(resolve));

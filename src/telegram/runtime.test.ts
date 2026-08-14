@@ -10,6 +10,7 @@ function stubApi(): TelegramApi {
     async call() { return {}; },
     async getUpdates() { return []; },
     async download() {},
+    async sendVoice() {},
   };
 }
 
@@ -99,4 +100,125 @@ test("a worker error (e.g. turn() throwing) is surfaced as a visible reply", asy
   assert.equal(replies.length, 1);
   assert.match(replies[0]!, /Something went wrong/);
   assert.match(replies[0]!, /provider exploded/);
+});
+
+test("text-triggered turn replies immediately per event, never buffered (regression)", async () => {
+  const replies: string[] = [];
+  const api = stubApi();
+  api.call = async (method, body) => {
+    if (method === "sendMessage") replies.push((body as { text: string }).text);
+    return {};
+  };
+  const sent: string[] = [];
+  api.sendVoice = async (_chatId, filePath) => { sent.push(filePath); };
+  const runtime = createTelegramRuntime(
+    { token: "t", chatId: "1" },
+    async (_text, reply) => { await reply("first"); await reply("second"); },
+    { api, mediaDirectory: "/tmp", synthesizer: { async synthesize() {} } },
+  );
+  runtime.queue.add({ message_id: 1, chat: { id: 1 }, text: "hi" });
+  await waitUntilIdle(runtime.queue);
+  assert.deepEqual(replies, ["first", "second"]);
+  assert.deepEqual(sent, []);
+});
+
+test("voice-in with a synthesizer sends a voice note built from all buffered replies, joined with newlines", async () => {
+  const sent: Array<{ chatId: string; filePath: string }> = [];
+  const api = stubApi();
+  api.sendVoice = async (chatId, filePath) => { sent.push({ chatId, filePath }); };
+  const synthesizedText: string[] = [];
+  const runtime = createTelegramRuntime(
+    { token: "t", chatId: "1" },
+    async (_text, reply) => { await reply("first chunk"); await reply("second chunk"); },
+    {
+      api,
+      mediaDirectory: "/tmp",
+      transcriber: { async transcribe() { return "hello from voice"; } },
+      synthesizer: { async synthesize(text) { synthesizedText.push(text); } },
+      encodeAudio: async () => {},
+    },
+  );
+  runtime.queue.add(voiceMessage());
+  await waitUntilIdle(runtime.queue);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]!.chatId, "1");
+  assert.deepEqual(synthesizedText, ["first chunk\nsecond chunk"]);
+});
+
+test("voice-in when turn throws after one buffered reply still flushes the buffered content and the generic error reply", async () => {
+  const replies: string[] = [];
+  const api = stubApi();
+  api.call = async (method, body) => {
+    if (method === "sendMessage") replies.push((body as { text: string }).text);
+    return {};
+  };
+  const sent: string[] = [];
+  api.sendVoice = async () => { sent.push("voice"); };
+  const runtime = createTelegramRuntime(
+    { token: "t", chatId: "1" },
+    async (_text, reply) => { await reply("partial answer"); throw new Error("provider exploded"); },
+    {
+      api,
+      mediaDirectory: "/tmp",
+      transcriber: { async transcribe() { return "hello from voice"; } },
+      synthesizer: { async synthesize() {} },
+      encodeAudio: async () => {},
+    },
+  );
+  runtime.queue.add(voiceMessage());
+  await waitUntilIdle(runtime.queue);
+  assert.deepEqual(sent, ["voice"]);
+  assert.equal(replies.length, 1);
+  assert.match(replies[0]!, /Something went wrong/);
+  assert.match(replies[0]!, /provider exploded/);
+});
+
+test("voice-in with zero buffered replies sends neither voice nor text", async () => {
+  const replies: string[] = [];
+  const api = stubApi();
+  api.call = async (method, body) => {
+    if (method === "sendMessage") replies.push((body as { text: string }).text);
+    return {};
+  };
+  const sent: string[] = [];
+  api.sendVoice = async () => { sent.push("voice"); };
+  const runtime = createTelegramRuntime(
+    { token: "t", chatId: "1" },
+    async () => {},
+    {
+      api,
+      mediaDirectory: "/tmp",
+      transcriber: { async transcribe() { return "hello from voice"; } },
+      synthesizer: { async synthesize() {} },
+      encodeAudio: async () => {},
+    },
+  );
+  runtime.queue.add(voiceMessage());
+  await waitUntilIdle(runtime.queue);
+  assert.deepEqual(sent, []);
+  assert.deepEqual(replies, []);
+});
+
+test("voice-in without a synthesizer configured falls back to a plain text reply", async () => {
+  const replies: string[] = [];
+  const api = stubApi();
+  api.call = async (method, body) => {
+    if (method === "sendMessage") replies.push((body as { text: string }).text);
+    return {};
+  };
+  const sent: string[] = [];
+  api.sendVoice = async () => { sent.push("voice"); };
+  const runtime = createTelegramRuntime(
+    { token: "t", chatId: "1" },
+    async (_text, reply) => { await reply("plain text answer"); },
+    {
+      api,
+      mediaDirectory: "/tmp",
+      transcriber: { async transcribe() { return "hello from voice"; } },
+    },
+  );
+  runtime.queue.add(voiceMessage());
+  await waitUntilIdle(runtime.queue);
+  assert.deepEqual(sent, []);
+  assert.deepEqual(replies, ["plain text answer"]);
 });

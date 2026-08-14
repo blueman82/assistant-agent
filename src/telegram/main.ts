@@ -48,12 +48,14 @@ export async function runTelegram(env: NodeJS.ProcessEnv = process.env): Promise
   const transport = createApprovalTransport(api, config.chatId);
   const approvalContext = { approval, transport, pending };
   const session = await runtime.startSession({ approvalPolicy: approval });
+  const speech = new LocalSpeech();
   const telegram = createTelegramRuntime(config, async (text, reply) => {
     for await (const event of session.run({ text })) await replyFor(event, reply, approvalContext);
   }, {
     api,
     mediaDirectory: tmpdir(),
-    transcriber: new LocalSpeech(),
+    transcriber: speech,
+    synthesizer: speech,
     onCallback: async (query) => {
       const result = await transport.callback(query);
       if (!result) return;

@@ -9,6 +9,7 @@ function stubApi(getUpdates: TelegramApi["getUpdates"]): TelegramApi {
     async call() { return {}; },
     getUpdates,
     async download() {},
+    async sendVoice() {},
   };
 }
 
