@@ -92,6 +92,20 @@ test("stop() during backoff prevents further retries", async () => {
   assert.equal(attempts, 1, "must not retry again after stop() is called mid-backoff");
 });
 
+test("stop() aborts the signal passed to an in-flight backoff wait", async () => {
+  const api = stubApi(async () => {
+    throw new TelegramApiError("Telegram getUpdates failed: Conflict", 409);
+  });
+  let observedSignal: AbortSignal | undefined;
+  const sleep = async (_ms: number, signal: AbortSignal) => {
+    observedSignal = signal;
+    poller.stop();
+  };
+  const poller = createPoller(api, async () => {}, sleep);
+  await poller.pollOnce();
+  assert.ok(observedSignal?.aborted, "stop() must abort the signal handed to the injected sleep");
+});
+
 test("stopped poller returns immediately without calling the API", async () => {
   let attempts = 0;
   const api = stubApi(async () => { attempts++; return []; });
