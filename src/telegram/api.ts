@@ -8,14 +8,22 @@ export interface TelegramApi {
 
 export class TelegramApiError extends Error {
   readonly status: number;
-  constructor(message: string, status: number) {
+  readonly retryAfterMs?: number;
+  constructor(message: string, status: number, retryAfterMs?: number) {
     super(message);
     this.name = "TelegramApiError";
     this.status = status;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
-interface ApiResponse { ok: boolean; result?: unknown; description?: string; error_code?: number }
+interface ApiResponse {
+  ok: boolean;
+  result?: unknown;
+  description?: string;
+  error_code?: number;
+  parameters?: { retry_after?: number };
+}
 
 export function createTelegramApi(config: TelegramConfig, fetchFn: typeof fetch = fetch): TelegramApi {
   const base = `https://api.telegram.org/bot${config.token}`;
