@@ -24,3 +24,36 @@ test("a 409 conflict response surfaces its error_code from the JSON body", async
     return true;
   });
 });
+
+test("a 429 rate-limit response surfaces retry_after converted from seconds to milliseconds", async () => {
+  const fetchFn = (async () => new Response(
+    JSON.stringify({
+      ok: false,
+      error_code: 429,
+      description: "Too Many Requests: retry after 5",
+      parameters: { retry_after: 5 },
+    }),
+    { status: 429 },
+  )) as typeof fetch;
+  const api = createTelegramApi({ token: "t", chatId: "1" }, fetchFn);
+  await assert.rejects(() => api.getUpdates(), (error: unknown) => {
+    assert.ok(error instanceof TelegramApiError);
+    assert.equal(error.status, 429);
+    assert.equal(error.retryAfterMs, 5_000);
+    return true;
+  });
+});
+
+test("a 429 rate-limit response without parameters leaves retryAfterMs undefined", async () => {
+  const fetchFn = (async () => new Response(
+    JSON.stringify({ ok: false, error_code: 429, description: "Too Many Requests" }),
+    { status: 429 },
+  )) as typeof fetch;
+  const api = createTelegramApi({ token: "t", chatId: "1" }, fetchFn);
+  await assert.rejects(() => api.getUpdates(), (error: unknown) => {
+    assert.ok(error instanceof TelegramApiError);
+    assert.equal(error.status, 429);
+    assert.equal(error.retryAfterMs, undefined);
+    return true;
+  });
+});
