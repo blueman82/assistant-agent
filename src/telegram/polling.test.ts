@@ -28,7 +28,7 @@ test("network error retries and eventually succeeds", async () => {
   const poller = createPoller(api, async () => {}, sleep);
   const offset = await poller.pollOnce();
   assert.equal(attempts, 3);
-  assert.equal(calls.length, 2);
+  assert.deepEqual(calls, [5_000, 5_000]);
   assert.equal(offset, undefined);
 });
 
