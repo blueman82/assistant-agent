@@ -2,7 +2,10 @@ import type { TelegramApi } from "./api.ts";
 import type { TelegramCallbackQuery } from "./types.ts";
 
 export type Approval = "approve" | "deny";
-export interface ApprovalTransport { request(hash: string, text: string): Promise<Approval>; callback(query: TelegramCallbackQuery): Promise<boolean> }
+export interface ApprovalTransport {
+  request(hash: string, text: string): Promise<Approval>;
+  callback(query: TelegramCallbackQuery): Promise<{ hash: string; decision: Approval } | false>;
+}
 
 export function createApprovalTransport(api: TelegramApi, chatId: string): ApprovalTransport {
   const pending = new Map<string, (decision: Approval) => void>();
@@ -22,8 +25,7 @@ export function createApprovalTransport(api: TelegramApi, chatId: string): Appro
       if (!allowed || !resolve) return false;
       pending.delete(key!);
       resolve(decision as Approval);
-      return true;
+      return { hash: key!, decision: decision as Approval };
     },
   };
 }
-
