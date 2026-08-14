@@ -53,7 +53,9 @@ class CodexSession implements AgentSession {
 }
 
 export class CodexRuntime implements ProviderRuntime {
-  constructor(private readonly options: CodexRuntimeOptions = {}) {}
+  private readonly options: CodexRuntimeOptions;
+
+  constructor(options: CodexRuntimeOptions = {}) { this.options = options; }
 
   async checkAvailability(): Promise<ProviderRuntimeStatus> {
     try { await loadCodex(); return { provider: "codex", authenticated: true }; }

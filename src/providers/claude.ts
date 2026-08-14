@@ -40,11 +40,13 @@ function usage(value: SDKMessage): Usage | undefined {
 
 class ClaudeSession implements AgentSession {
   readonly id = randomUUID();
+  private readonly options: ClaudeRuntimeOptions;
   private active?: ReturnType<typeof query>;
   private controller?: AbortController;
   private providerSessionId?: string;
 
-  constructor(private readonly options: ClaudeRuntimeOptions, resumeSessionId?: string) {
+  constructor(options: ClaudeRuntimeOptions, resumeSessionId?: string) {
+    this.options = options;
     this.providerSessionId = resumeSessionId;
   }
 
@@ -91,7 +93,9 @@ class ClaudeSession implements AgentSession {
 }
 
 export class ClaudeRuntime implements ProviderRuntime {
-  constructor(private readonly options: ClaudeRuntimeOptions = {}) {}
+  private readonly options: ClaudeRuntimeOptions;
+
+  constructor(options: ClaudeRuntimeOptions = {}) { this.options = options; }
 
   async checkAvailability(): Promise<ProviderRuntimeStatus> {
     try {
