@@ -12,7 +12,7 @@ function stubApi(getUpdates: TelegramApi["getUpdates"]): TelegramApi {
   };
 }
 
-function recordingSleep(): { sleep: (ms: number) => Promise<void>; calls: number[] } {
+function recordingSleep(): { sleep: (ms: number, signal: AbortSignal) => Promise<void>; calls: number[] } {
   const calls: number[] = [];
   return { sleep: async (ms: number) => { calls.push(ms); }, calls };
 }
