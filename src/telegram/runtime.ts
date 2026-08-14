@@ -56,7 +56,7 @@ async function handleMessage(
   reply: (text: string) => Promise<void>,
   options: RuntimeOptions,
 ): Promise<void> {
-  if (message.text) { await handleTextMessage(message.text, turn, reply, options); }
+  if (message.text) return await handleTextMessage(message.text, turn, reply, options);
   if (!options.mediaDirectory) {
     process.stdout.write(`${new Date().toISOString()} message received kind=other\n`);
     return;
