@@ -47,8 +47,7 @@ async function handleMessage(
       if (response) return await reply(response);
     }
     await turn(message.text, reply);
-    process.stdout.write(`${new Date().toISOString()} reply flush outcome=text\n`);
-    return;
+    return process.stdout.write(`${new Date().toISOString()} reply flush outcome=text\n`) && undefined;
   }
   if (!options.mediaDirectory) {
     process.stdout.write(`${new Date().toISOString()} message received kind=other\n`);
