@@ -7,26 +7,29 @@
 # foreground check.
 set -euo pipefail
 
-# launchd jobs get no user PATH by default; node lives here (verified via
-# `command -v node` -> /opt/homebrew/bin/node on this machine). Must be set
-# before the first `node -e` call below, not just before the final exec.
+# launchd jobs get no user PATH by default. The installer supplies the runtime
+# path; manual launches may use the caller's PATH.
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
-REPO_DIR="/Users/harrison/Github/assistant-agent"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+NODE_BIN="${RACHEL_NODE_BIN:-$(command -v node || true)}"
 CREDENTIALS_FILE="$HOME/.rachel/telegram.json"
+
+[ -x "$NODE_BIN" ] || { echo "run-telegram.sh: node executable not found; set RACHEL_NODE_BIN" >&2; exit 1; }
 
 if [ ! -f "$CREDENTIALS_FILE" ]; then
   echo "run-telegram.sh: credentials file not found at $CREDENTIALS_FILE" >&2
   exit 1
 fi
 
-TOKEN=$(node -e '
+TOKEN=$("$NODE_BIN" -e '
   const fs = require("fs");
   const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
   process.stdout.write(typeof data.token === "string" ? data.token : "");
 ' "$CREDENTIALS_FILE")
 
-CHAT_ID=$(node -e '
+CHAT_ID=$("$NODE_BIN" -e '
   const fs = require("fs");
   const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
   process.stdout.write(typeof data.chatId === "string" ? data.chatId : "");
@@ -47,4 +50,4 @@ export RACHEL_TELEGRAM_CHAT_ID="$CHAT_ID"
 export RACHEL_PROVIDER="${RACHEL_PROVIDER:-claude}"
 
 cd "$REPO_DIR"
-exec node_modules/.bin/tsx src/telegram/main.ts
+exec "$NODE_BIN" node_modules/.bin/tsx src/telegram/main.ts

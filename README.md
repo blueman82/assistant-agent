@@ -24,6 +24,11 @@ preserving durable memories; `/remember text` and `/forget text` manage them.
 `bin/rachel` launches `src/cli/main.ts`. Telegram launches
 `src/telegram/main.ts`. Both compose a provider runtime from `src/providers/`.
 
+For launchd deployment, run `scripts/deploy/install-telegram.sh` from the
+repository. It generates the LaunchAgent plist from the template using the
+current repository, home, and Node paths; no machine-specific path is stored
+in the repository.
+
 ## Layout
 
 ```
