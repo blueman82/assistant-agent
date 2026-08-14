@@ -6,7 +6,24 @@ export interface TelegramApi {
   download(fileId: string, destination: string): Promise<void>;
 }
 
-interface ApiResponse { ok: boolean; result?: unknown; description?: string }
+export class TelegramApiError extends Error {
+  readonly status: number;
+  readonly retryAfterMs?: number;
+  constructor(message: string, status: number, retryAfterMs?: number) {
+    super(message);
+    this.name = "TelegramApiError";
+    this.status = status;
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+interface ApiResponse {
+  ok: boolean;
+  result?: unknown;
+  description?: string;
+  error_code?: number;
+  parameters?: { retry_after?: number };
+}
 
 export function createTelegramApi(config: TelegramConfig, fetchFn: typeof fetch = fetch): TelegramApi {
   const base = `https://api.telegram.org/bot${config.token}`;
@@ -15,8 +32,13 @@ export function createTelegramApi(config: TelegramConfig, fetchFn: typeof fetch 
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify(body), signal: AbortSignal.timeout(config.requestTimeoutMs ?? 45_000),
     });
-    const parsed = await response.json() as ApiResponse;
-    if (!response.ok || !parsed.ok) throw new Error(`Telegram ${method} failed: ${parsed.description ?? "unknown error"}`);
+    const parsed = await response.json().catch(() => undefined) as ApiResponse | undefined;
+    if (!response.ok || !parsed?.ok) {
+      const status = parsed?.error_code ?? response.status;
+      const retryAfterSeconds = parsed?.parameters?.retry_after;
+      const retryAfterMs = typeof retryAfterSeconds === "number" ? retryAfterSeconds * 1_000 : undefined;
+      throw new TelegramApiError(`Telegram ${method} failed: ${parsed?.description ?? `HTTP ${response.status}`}`, status, retryAfterMs);
+    }
     return parsed.result;
   }
   return {
