@@ -40,6 +40,6 @@ execs the runtime — secrets never live in the plist itself. Logs go to
 `~/.rachel/telegram.log`.
 
 ```bash
-launchctl bootstrap gui/$(id -u) scripts/deploy/com.rachel.telegram.plist
+launchctl bootstrap gui/$(id -u) /Users/harrison/Github/assistant-agent/scripts/deploy/com.rachel.telegram.plist
 launchctl bootout gui/$(id -u)/com.rachel.telegram
 ```
