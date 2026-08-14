@@ -27,6 +27,27 @@ export interface RuntimeOptions {
   commandContext?: Pick<CommandContext, "reset" | "stop" | "status">;
 }
 
+async function handleTextMessage(
+  text: string,
+  turn: (input: string, reply: (text: string) => Promise<void>) => Promise<void>,
+  reply: (text: string) => Promise<void>,
+  options: RuntimeOptions,
+): Promise<void> {
+  process.stdout.write(`${new Date().toISOString()} message received kind=text\n`);
+  const command = parseCommand(text);
+  if (command && ["remember", "forget", "reset"].includes(command.command)) {
+    const response = await handleCommand(text, {
+      reset: options.commandContext?.reset ?? (() => {}),
+      stop: options.commandContext?.stop ?? (() => false),
+      status: options.commandContext?.status ?? (() => ""),
+      memory: options.memory,
+    });
+    if (response) return await reply(response);
+  }
+  await turn(text, reply);
+  process.stdout.write(`${new Date().toISOString()} reply flush outcome=text\n`);
+}
+
 async function handleMessage(
   message: TelegramMessage,
   api: TelegramApi,
@@ -35,19 +56,7 @@ async function handleMessage(
   reply: (text: string) => Promise<void>,
   options: RuntimeOptions,
 ): Promise<void> {
-  if (message.text) {
-    process.stdout.write(`${new Date().toISOString()} message received kind=text\n`); const command = parseCommand(message.text);
-    if (command && ["remember", "forget", "reset"].includes(command.command)) {
-      const response = await handleCommand(message.text, {
-        reset: options.commandContext?.reset ?? (() => {}),
-        stop: options.commandContext?.stop ?? (() => false),
-        status: options.commandContext?.status ?? (() => ""),
-        memory: options.memory,
-      });
-      if (response) return await reply(response);
-    }
-    return await turn(message.text, reply);
-  }
+  if (message.text) return await handleTextMessage(message.text, turn, reply, options);
   if (!options.mediaDirectory) {
     process.stdout.write(`${new Date().toISOString()} message received kind=other\n`);
     return;
