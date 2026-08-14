@@ -6,7 +6,16 @@ export interface TelegramApi {
   download(fileId: string, destination: string): Promise<void>;
 }
 
-interface ApiResponse { ok: boolean; result?: unknown; description?: string }
+export class TelegramApiError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "TelegramApiError";
+    this.status = status;
+  }
+}
+
+interface ApiResponse { ok: boolean; result?: unknown; description?: string; error_code?: number }
 
 export function createTelegramApi(config: TelegramConfig, fetchFn: typeof fetch = fetch): TelegramApi {
   const base = `https://api.telegram.org/bot${config.token}`;
@@ -15,8 +24,11 @@ export function createTelegramApi(config: TelegramConfig, fetchFn: typeof fetch 
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify(body), signal: AbortSignal.timeout(config.requestTimeoutMs ?? 45_000),
     });
-    const parsed = await response.json() as ApiResponse;
-    if (!response.ok || !parsed.ok) throw new Error(`Telegram ${method} failed: ${parsed.description ?? "unknown error"}`);
+    const parsed = await response.json().catch(() => undefined) as ApiResponse | undefined;
+    if (!response.ok || !parsed?.ok) {
+      const status = parsed?.error_code ?? response.status;
+      throw new TelegramApiError(`Telegram ${method} failed: ${parsed?.description ?? `HTTP ${response.status}`}`, status);
+    }
     return parsed.result;
   }
   return {
