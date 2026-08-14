@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { query, startup, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { AgentError, type AgentInput, type AgentSession, type SessionOptions, type StopReason, type TurnEvent, type Usage } from "../core/contracts.ts";
+import { AgentError, type AgentSession, type SessionOptions, type StopReason, type TurnEvent, type Usage } from "../core/contracts.ts";
 import type { ProviderRuntime, ProviderRuntimeStatus } from "./types.ts";
 import { stopReasonFromAbort } from "./stop-reason.ts";
+import { providerPrompt, type ProviderInput } from "./context.ts";
 
 export interface ClaudeRuntimeOptions {
   readonly cwd?: string;
   readonly model?: string;
-  readonly resumeSessionId?: string;
 }
 
 function errorFrom(value: unknown, code = "provider_error"): AgentError {
@@ -16,9 +16,10 @@ function errorFrom(value: unknown, code = "provider_error"): AgentError {
   return new AgentError(code, message, /rate|overload|timeout|temporar/i.test(message));
 }
 
-async function promptFor(input: AgentInput): Promise<string | AsyncIterable<SDKUserMessage>> {
-  if (!input.attachments?.length) return input.text;
-  const content: SDKUserMessage["message"]["content"] = [{ type: "text", text: input.text }];
+async function promptFor(input: ProviderInput): Promise<string | AsyncIterable<SDKUserMessage>> {
+  const text = providerPrompt(input);
+  if (!input.attachments?.length) return text;
+  const content: SDKUserMessage["message"]["content"] = [{ type: "text", text }];
   for (const attachment of input.attachments) {
     const data = (await readFile(attachment.path)).toString("base64");
     if (attachment.kind === "image") content.push({ type: "image", source: { type: "base64", media_type: imageMime(attachment.mimeType), data } });
@@ -43,31 +44,24 @@ class ClaudeSession implements AgentSession {
   private readonly options: ClaudeRuntimeOptions;
   private active?: ReturnType<typeof query>;
   private controller?: AbortController;
-  private providerSessionId?: string;
+  constructor(options: ClaudeRuntimeOptions) { this.options = options; }
 
-  constructor(options: ClaudeRuntimeOptions, resumeSessionId?: string) {
-    this.options = options;
-    this.providerSessionId = resumeSessionId;
-  }
-
-  async *run(input: AgentInput): AsyncIterable<TurnEvent> {
+  async *run(input: ProviderInput): AsyncIterable<TurnEvent> {
     const turnId = randomUUID();
     const controller = new AbortController();
     this.controller = controller;
-    const options = { cwd: this.options.cwd, model: this.options.model, resume: this.providerSessionId, abortController: controller };
+    const options = { cwd: this.options.cwd, model: this.options.model, abortController: controller };
     yield { type: "started", sessionId: this.id, turnId };
     try {
       this.active = query({ prompt: await promptFor(input), options });
       for await (const message of this.active) {
         if (message.type === "assistant") {
-          this.providerSessionId = message.session_id;
           for (const block of message.message.content) {
             if (block.type === "text" && block.text) yield { type: "text", sessionId: this.id, turnId, text: block.text };
             if (block.type === "tool_use") yield { type: "tool_call", sessionId: this.id, turnId, request: { toolName: block.name, input: block.input } };
           }
         }
         if (message.type === "result") {
-          this.providerSessionId = message.session_id;
           const currentUsage = usage(message);
           if (currentUsage) yield { type: "usage", sessionId: this.id, turnId, usage: currentUsage };
           if (message.subtype === "success") yield { type: "completed", sessionId: this.id, turnId };
@@ -83,7 +77,7 @@ class ClaudeSession implements AgentSession {
     }
   }
 
-  async reset(): Promise<void> { this.active?.close(); this.controller?.abort(); this.providerSessionId = undefined; }
+  async reset(): Promise<void> { this.active?.close(); this.controller?.abort(); }
   async stop(reason: StopReason = "user"): Promise<boolean> {
     const active = this.controller !== undefined;
     this.active?.close();
@@ -110,7 +104,7 @@ export class ClaudeRuntime implements ProviderRuntime {
   async startSession(options: SessionOptions = {}): Promise<AgentSession> {
     const status = await this.checkAvailability();
     if (!status.authenticated) throw new AgentError("authentication_unavailable", status.message ?? "Claude OAuth is unavailable");
-    const session = new ClaudeSession(this.options, this.options.resumeSessionId);
+    const session = new ClaudeSession(this.options);
     if (options.timeoutMs) setTimeout(() => void session.stop("deadline"), options.timeoutMs).unref();
     return session;
   }

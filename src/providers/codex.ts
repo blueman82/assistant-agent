@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { AgentError, type AgentInput, type AgentSession, type SessionOptions, type StopReason, type TurnEvent } from "../core/contracts.ts";
-import type { Codex, Thread, ThreadEvent } from "@openai/codex-sdk";
+import type { Codex, ThreadEvent } from "@openai/codex-sdk";
 import type { ProviderRuntime, ProviderRuntimeStatus } from "./types.ts";
 import { stopReasonFromAbort } from "./stop-reason.ts";
+import { providerPrompt, type ProviderInput } from "./context.ts";
 
-export interface CodexRuntimeOptions { readonly cwd?: string; readonly model?: string; readonly resumeThreadId?: string }
+export interface CodexRuntimeOptions { readonly cwd?: string; readonly model?: string }
 type CodexModule = typeof import("@openai/codex-sdk");
 
 async function loadCodex(): Promise<CodexModule> {
@@ -17,17 +18,19 @@ function eventError(message: string): AgentError { return new AgentError("provid
 class CodexSession implements AgentSession {
   readonly id = randomUUID();
   private controller?: AbortController;
-  private thread: Thread;
+  private readonly codex: Codex;
+  private readonly options: CodexRuntimeOptions;
 
-  constructor(thread: Thread) { this.thread = thread; }
+  constructor(codex: Codex, options: CodexRuntimeOptions) { this.codex = codex; this.options = options; }
 
-  async *run(input: AgentInput): AsyncIterable<TurnEvent> {
+  async *run(input: ProviderInput): AsyncIterable<TurnEvent> {
     const turnId = randomUUID();
     const controller = new AbortController();
     this.controller = controller;
     yield { type: "started", sessionId: this.id, turnId };
     try {
-      const stream = await this.thread.runStreamed(input.text, { signal: controller.signal });
+      const thread = this.codex.startThread({ workingDirectory: this.options.cwd, model: this.options.model });
+      const stream = await thread.runStreamed(providerPrompt(input), { signal: controller.signal });
       for await (const event of stream.events) yield* this.normalize(event, turnId);
     } catch (error) {
       if (controller.signal.aborted) yield { type: "stopped", sessionId: this.id, turnId, reason: stopReasonFromAbort(controller.signal.reason) };
@@ -65,10 +68,7 @@ export class CodexRuntime implements ProviderRuntime {
   async startSession(_options: SessionOptions = {}): Promise<AgentSession> {
     const { Codex: CodexSdk } = await loadCodex();
     const codex: Codex = new CodexSdk();
-    const thread = this.options.resumeThreadId
-      ? codex.resumeThread(this.options.resumeThreadId, { workingDirectory: this.options.cwd, model: this.options.model })
-      : codex.startThread({ workingDirectory: this.options.cwd, model: this.options.model });
-    return new CodexSession(thread);
+    return new CodexSession(codex, this.options);
   }
 }
 
