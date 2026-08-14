@@ -5,7 +5,10 @@ export interface Queue<T> {
   readonly size: number;
 }
 
-export function createSingleFlightQueue<T>(worker: (item: T) => Promise<void>): Queue<T> {
+export function createSingleFlightQueue<T>(
+  worker: (item: T) => Promise<void>,
+  onError: (error: unknown, item: T) => void = () => {},
+): Queue<T> {
   const items: T[] = [];
   let running = false;
   return {
@@ -13,8 +16,12 @@ export function createSingleFlightQueue<T>(worker: (item: T) => Promise<void>): 
     async drain() {
       if (running) return;
       running = true;
-      try { while (items.length) await worker(items.shift()!); }
-      finally { running = false; }
+      try {
+        while (items.length) {
+          const item = items.shift()!;
+          try { await worker(item); } catch (error) { onError(error, item); }
+        }
+      } finally { running = false; }
     },
     clear() { items.length = 0; },
     get size() { return items.length; },
