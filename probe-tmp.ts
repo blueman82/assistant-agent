@@ -1,14 +1,17 @@
 import { createTelegramRuntime } from "./src/telegram/runtime.ts";
+import type { TelegramApi } from "./src/telegram/api.ts";
 
 const sent: string[] = [];
 let downloadCalled = 0;
-const api = {
-  send: async (_c: string, t: string) => { sent.push(t); },
-  download: async () => { downloadCalled++; },
-  getUpdates: async () => [],
-  sendVoice: async () => {},
-  answerCallbackQuery: async () => {},
-} as never;
+const api: TelegramApi = {
+  async call(method, body) {
+    if (method === "sendMessage") sent.push((body as { text: string }).text);
+    return {};
+  },
+  async getUpdates() { return []; },
+  async download() { downloadCalled++; },
+  async sendVoice() {},
+};
 
 let turnCalls = 0;
 const logs: string[] = [];
@@ -20,7 +23,7 @@ const rt = createTelegramRuntime(
   async (_text: string, reply: (t: string) => Promise<void>) => { turnCalls++; await reply("hello back"); },
   { api, mediaDirectory: "/tmp" },
 );
-rt.queue.add({ message_id: 1, chat: { id: 1 }, text: "hi" } as never);
+rt.queue.add({ message_id: 1, chat: { id: 1 }, text: "hi" });
 await new Promise((r) => setTimeout(r, 300));
 process.stdout.write = realWrite;
 
