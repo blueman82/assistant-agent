@@ -3,6 +3,7 @@ import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const MODULES = ["core", "providers", "cli", "telegram", "media", "speech", "supervisor"] as const;
+const LEGACY_ROOTS = new Set(["bridge", "gate", "launchd", "proactive"]);
 const ALLOWED_IMPORTS: Record<typeof MODULES[number], ReadonlySet<string>> = {
   core: new Set(["core"]),
   providers: new Set(["core", "providers"]),
@@ -15,8 +16,8 @@ const ALLOWED_IMPORTS: Record<typeof MODULES[number], ReadonlySet<string>> = {
 const MAX_FILE_LINES = 400;
 const MAX_FUNCTION_LINES = 60;
 const MAX_PARAMETERS = 4;
-const LEGACY_NAMES = /(?:^|[-_])(rachel|telegram-bridge|bridge|agent|claude-sdk|cli)(?:[-_.]|$)/i;
-const LEGACY_SYMBOLS = /\b(?:Rachel|TelegramBridge|ClaudeAgent|ClaudeAgentSDK)\b/;
+const LEGACY_NAMES = /(?:^|[-_])(rachel|telegram-bridge|bridge|gate|launchd|proactive)(?:[-_.]|$)/i;
+const LEGACY_SYMBOLS = /\b(?:Rachel|TelegramBridge|ClaudeAgent|ClaudeAgentSDK|ProactiveDelivery)\b/;
 
 function mask(source: string): string {
   return source
@@ -101,7 +102,7 @@ export function checkSource(source: string, file: string): string[] {
     && !file.startsWith("src/speech/") && file !== "src/media/telegram-audio.ts") {
     findings.push(`${file}: subprocess usage is limited to speech/media infrastructure`);
   }
-  if (LEGACY_NAMES.test(file.split("/").at(-1) ?? "")) findings.push(`${file}: forbidden legacy filename`);
+  if (file.split("/").some((part) => LEGACY_ROOTS.has(part) || part === "rachel.ts" || LEGACY_NAMES.test(part))) findings.push(`${file}: forbidden legacy filename`);
   findings.push(...importFindings(source, file));
   return findings;
 }
@@ -142,10 +143,12 @@ function productionFiles(directory: string): string[] {
 export function checkArchitecture(root: string): string[] {
   const sourceRoot = join(root, "src");
   if (!existsSync(sourceRoot)) return ["src/: rewrite source tree is missing"];
-  return productionFiles(sourceRoot).flatMap((path) => {
+  const findings = MODULES.flatMap((module) => existsSync(join(sourceRoot, module)) ? [] : [`src/${module}/: production root is missing`]);
+  for (const entry of readdirSync(root)) if (LEGACY_ROOTS.has(entry) || entry === "rachel.ts") findings.push(`${entry}: legacy runtime path is forbidden`);
+  return findings.concat(productionFiles(sourceRoot).flatMap((path) => {
     const file = relative(root, path).split("\\").join("/");
     return checkSource(readFileSync(path, "utf8"), file);
-  });
+  }));
 }
 
 function main(): void {

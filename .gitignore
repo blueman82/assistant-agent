@@ -15,13 +15,6 @@ docs/coderails/plans/
 # one machine; nothing under tasks/ is shared. ONLY the generic example is
 # tracked. Everything else stays local, including anything created later.
 #
-# No exceptions for launchd plists (Gary, 2026-07-26): a plist committed to
-# this repo hardcoded an absolute, operator-identifying local path, and the
-# repo is public — that PR was closed and scrubbed, and the exception that
-# allowed it removed here. The personal task files AND the launchd plists
-# remain runtime dependencies — read by scripts/install.sh, the launchd
-# jobs, and proactive/sweep.ts — so they must exist on disk here. They are
-# simply no longer distributed via git, full stop.
 tasks/*
 !tasks/.gitkeep
 !tasks/EXAMPLE-task.md
@@ -39,15 +32,7 @@ evals/
 .evals/
 workflow.config.yaml
 
-# The operator's own system prompt. prompts/system.md (tracked) is generic and
-# names nobody; this file overrides it when present and never ships.
-# See resolveSystemPromptPath in proactive/systemPrompt.ts for the order.
-prompts/system.local.md
-
-# Rachel's local runtime directory — same category as tasks/ and .claude/
-# above: read at runtime on this one machine, never distributed. Holds the
-# bridge session pointer (RACHEL_SESSION_FILE, set only in bridge/launchd.plist,
-# carrying a live Telegram session id), the service logs, and loop reports.
+# Rachel's local runtime directory.
 .rachel/
 
 # Eval working material scratch space — agents author/edit files here while

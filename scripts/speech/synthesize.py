@@ -2,7 +2,7 @@
 """Thin wrapper: synthesizes speech for the given text with mlx-audio/Kokoro
 and writes a WAV file to the given output path. Voice preset bf_emma
 (British English, female) — matches Rachel's persona. Invoked by
-bridge/speech.ts's synthesize() via execFile.
+src/speech/local.ts's synthesize() via execFile.
 """
 import sys
 from pathlib import Path

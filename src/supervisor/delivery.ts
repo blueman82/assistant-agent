@@ -12,7 +12,7 @@ export interface AlertSender {
   send(alert: Alert): Promise<void>;
 }
 
-export class ProactiveDelivery {
+export class AlertDelivery {
   private budget: InterruptBudget;
   private readonly sender: AlertSender;
   private readonly dedup: AlertDeduplicator;

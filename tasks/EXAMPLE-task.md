@@ -22,8 +22,7 @@ End with the next concrete action.
 
 Task files are **not** date-triggered. Nothing scans this directory on a
 schedule — a file sitting here does nothing until Rachel is pointed at it.
-Anything time-based needs a separate trigger (a launchd job, or a routine
-Rachel schedules herself).
+Anything time-based needs an explicitly configured external trigger.
 
 Personal task files are gitignored — they're local to each machine. Only
 this example and the runtime-dependency files are tracked.
@@ -45,11 +44,4 @@ reads them to know where and how to run.
 
 ### Tracked files in here
 
-These are infrastructure, not personal tasks, and stay in git:
-
-- `*-launchd.plist` — service templates. `scripts/install.sh` stamps
-  `__REPO_PATH__` into these and installs them to `~/Library/LaunchAgents`.
-- `inbox-brief.md` — read at runtime by `com.rachel.inbox-brief`, the
-  coderails dashboard button, and the routing rules in `prompts/system.md`.
-- `proactive-calendar.md` — spawned by `proactive/sweep.ts` and asserted in
-  `proactive/sweep.test.ts`.
+Only this example and `.gitkeep` are tracked. Runtime task files stay local.

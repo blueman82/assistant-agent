@@ -25,3 +25,7 @@ test("production imports respect module boundaries", () => {
   const findings = checkSource('import { send } from "../telegram/send.ts";', "src/core/policy.ts");
   assert.ok(findings.some((finding) => finding.includes("core may not import telegram")));
 });
+
+test("legacy runtime names are rejected", () => {
+  assert.ok(checkSource("export const value = 1;", "src/core/bridge-policy.ts").some((finding) => finding.includes("legacy filename")));
+});

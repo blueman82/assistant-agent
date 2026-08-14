@@ -3,7 +3,7 @@
 the transcript to stdout. English-only model
 (mlx-community/whisper-small.en-mlx) — faster and more accurate than
 multilingual variants for English/Irish speech. Invoked by
-bridge/speech.ts's transcribe() via execFile; stdout is the ONLY contract
+src/speech/local.ts's transcribe() via execFile; stdout is the ONLY contract
 callers rely on (no other output format).
 """
 import sys
