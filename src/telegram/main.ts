@@ -1,6 +1,6 @@
 import { tmpdir } from "node:os";
 import { createApprovalPolicy } from "../core/approval.ts";
-import { AgentError, type ApprovalRequest, type TurnEvent } from "../core/contracts.ts";
+import { AgentError, openRachelMemory, type AgentSession, type ApprovalRequest, type TurnEvent } from "../core/index.ts";
 import { providerFromEnvironment } from "../providers/selection.ts";
 import { createProviderRuntime } from "../providers/runtime.ts";
 import { LocalSpeech } from "../speech/local.ts";
@@ -50,13 +50,22 @@ export async function runTelegram(env: NodeJS.ProcessEnv = process.env, options:
   const pending = new Map<string, ApprovalRequest>();
   const transport = createApprovalTransport(api, config.chatId);
   const approvalContext = { approval, transport, pending };
-  const session = await runtime.startSession({ approvalPolicy: approval });
+  const opened = options.memory ? undefined : await openRachelMemory(env);
+  let session: AgentSession;
+  try {
+    session = await runtime.startSession({ approvalPolicy: approval });
+  } catch (error) {
+    opened?.store.close();
+    throw error;
+  }
+  const memory = options.memory ?? opened?.memory;
   const speech = new LocalSpeech();
   const telegram = createTelegramRuntime(config, async (text, reply) => {
-    for await (const event of session.run({ text })) await replyFor(event, reply, approvalContext);
+    const events = opened ? opened.memory.run(session, { text }) : session.run({ text });
+    for await (const event of events) await replyFor(event, reply, approvalContext);
   }, {
     api,
-    memory: options.memory,
+    memory,
     commandContext: { reset: () => session.reset(), stop: () => false, status: () => "" },
     mediaDirectory: tmpdir(),
     transcriber: speech,
@@ -73,7 +82,7 @@ export async function runTelegram(env: NodeJS.ProcessEnv = process.env, options:
   process.once("SIGINT", telegram.stop);
   process.stdout.write(`${new Date().toISOString()} Telegram runtime started\n`);
   try { while (true) await telegram.poller.pollOnce(); }
-  finally { telegram.stop(); await session.stop("shutdown"); process.removeListener("SIGINT", telegram.stop); }
+  finally { telegram.stop(); await session.stop("shutdown"); opened?.store.close(); process.removeListener("SIGINT", telegram.stop); }
 }
 
 if (process.argv[1]?.endsWith("/src/telegram/main.ts")) {

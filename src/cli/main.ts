@@ -1,5 +1,5 @@
 import { createInterface } from "node:readline";
-import { AgentError, type TurnEvent } from "../core/contracts.ts";
+import { AgentError, openRachelMemory, type AgentSession, type TurnEvent } from "../core/index.ts";
 import { providerFromEnvironment, type ProviderName } from "../providers/selection.ts";
 import { createProviderRuntime } from "../providers/runtime.ts";
 import { handleCliMemoryCommand, resetCliSession, stopCliSession, type CliMemoryService } from "./commands.ts";
@@ -77,17 +77,27 @@ export async function runCli(
   const runtime = createProviderRuntime(provider);
   const status = await runtime.checkAvailability();
   if (!status.authenticated) throw new AgentError("authentication_unavailable", status.message ?? `${provider} OAuth is unavailable`);
-  const session = await runtime.startSession();
+  const opened = options.memory ? undefined : await openRachelMemory(env);
+  let session: AgentSession;
+  try {
+    session = await runtime.startSession();
+  } catch (error) {
+    opened?.store.close();
+    throw error;
+  }
+  const memory = options.memory ?? opened?.memory;
+  const turnSession = opened ? { ...session, run: (input: { text: string }) => opened.memory.run(session, input) } : session;
   const input = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
   const stop = () => void session.stop("shutdown");
   process.once("SIGINT", stop);
   process.stdout.write(`Rachel (${provider}) ready.\n`);
   try {
-    await runCliInput(input, session, printEvent, (text) => process.stdout.write(text), options.memory);
+    await runCliInput(input, turnSession, printEvent, (text) => process.stdout.write(text), memory);
   } finally {
     input.close();
     process.removeListener("SIGINT", stop);
     await session.stop("shutdown");
+    opened?.store.close();
   }
 }
 

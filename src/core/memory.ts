@@ -85,6 +85,10 @@ const migrations = [
     acquired_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL
   )`,
+  `CREATE TABLE conversation_state (
+    conversation_id TEXT PRIMARY KEY,
+    reset_event_id INTEGER NOT NULL DEFAULT 0
+  )`,
 ];
 
 function now(): string {
@@ -127,7 +131,7 @@ export class MemoryStore {
 
   constructor(path = ":memory:") {
     this.#db = new DatabaseSync(path);
-    this.#db.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
+    this.#db.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;");
     this.#migrate();
   }
 
@@ -149,10 +153,26 @@ export class MemoryStore {
 
   listConversationEvents(conversationId: string, limit?: number): ConversationEvent[] {
     const rows = (limit === undefined
-      ? this.#db.prepare("SELECT * FROM conversation_events WHERE conversation_id = ? ORDER BY id")
-      : this.#db.prepare("SELECT * FROM conversation_events WHERE conversation_id = ? ORDER BY id DESC LIMIT ?"))
-      .all(conversationId, ...(limit === undefined ? [] : [limit])) as Row[];
+      ? this.#db.prepare("SELECT * FROM conversation_events WHERE conversation_id = ? AND id > COALESCE((SELECT reset_event_id FROM conversation_state WHERE conversation_id = ?), 0) ORDER BY id")
+      : this.#db.prepare("SELECT * FROM conversation_events WHERE conversation_id = ? AND id > COALESCE((SELECT reset_event_id FROM conversation_state WHERE conversation_id = ?), 0) ORDER BY id DESC LIMIT ?"))
+      .all(conversationId, conversationId, ...(limit === undefined ? [] : [limit])) as Row[];
     return (limit === undefined ? rows : rows.reverse()).map(rowToEvent);
+  }
+
+  clearConversation(conversationId: string): void {
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.#db.prepare("SELECT COALESCE(MAX(id), 0) AS id FROM conversation_events WHERE conversation_id = ?").get(conversationId) as Row;
+      this.#db.prepare(
+        `INSERT INTO conversation_state (conversation_id, reset_event_id) VALUES (?, ?)
+         ON CONFLICT(conversation_id) DO UPDATE SET reset_event_id = excluded.reset_event_id`,
+      ).run(conversationId, Number(row.id));
+      this.#db.prepare("DELETE FROM turn_leases WHERE conversation_id = ?").run(conversationId);
+      this.#db.exec("COMMIT");
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   remember(input: MemoryInput): DurableMemory {
@@ -205,6 +225,7 @@ export class MemoryStore {
   }
 
   searchMemories(query: string, namespace = "default"): DurableMemory[] {
+    // ponytail: indexed LIKE search is enough for one local owner; add FTS/semantic retrieval when memory volume makes recall measurably poor.
     const pattern = `%${query.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
     return (this.#db.prepare(
       `SELECT * FROM memories
