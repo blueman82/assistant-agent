@@ -3,8 +3,8 @@
 # from ~/.rachel/telegram.json rather than embedded in the launchd plist, so
 # the token/chat ID never sit in plaintext inside a commonly-readable
 # ~/Library/LaunchAgents/*.plist. Intended to be invoked by
-# launchd/com.rachel.telegram.plist; can also be run manually for a foreground
-# check.
+# scripts/deploy/com.rachel.telegram.plist; can also be run manually for a
+# foreground check.
 set -euo pipefail
 
 REPO_DIR="/Users/harrison/Github/assistant-agent"
