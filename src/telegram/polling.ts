@@ -8,20 +8,30 @@ export interface Poller {
   stop(): void;
 }
 
-type FailureKind = "conflict" | "server-error" | "network" | "fatal";
+type FailureKind = "conflict" | "server-error" | "network" | "rate-limited" | "fatal";
 
 const CONFLICT_BACKOFF_MS = 60_000;
 const TRANSIENT_BACKOFF_MS = 5_000;
+const MAX_RATE_LIMIT_BACKOFF_MS = 5 * 60_000;
 
 function classify(error: unknown): FailureKind {
   if (!(error instanceof TelegramApiError)) return "network";
   if (error.status === 409) return "conflict";
+  if (error.status === 429) return "rate-limited";
   if (error.status >= 500) return "server-error";
   return "fatal";
 }
 
-function backoffFor(kind: FailureKind): number {
-  return kind === "conflict" ? CONFLICT_BACKOFF_MS : TRANSIENT_BACKOFF_MS;
+function backoffFor(kind: FailureKind, error: unknown): number {
+  if (kind === "conflict") return CONFLICT_BACKOFF_MS;
+  if (kind === "rate-limited") {
+    const retryAfterMs = error instanceof TelegramApiError ? error.retryAfterMs : undefined;
+    if (typeof retryAfterMs === "number" && retryAfterMs > 0 && retryAfterMs <= MAX_RATE_LIMIT_BACKOFF_MS) {
+      return retryAfterMs;
+    }
+    return TRANSIENT_BACKOFF_MS;
+  }
+  return TRANSIENT_BACKOFF_MS;
 }
 
 export function createPoller(
