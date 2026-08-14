@@ -4,10 +4,56 @@ import { providerFromEnvironment } from "../providers/selection.ts";
 import { createProviderRuntime } from "../providers/runtime.ts";
 import { resetCliSession, stopCliSession } from "./commands.ts";
 
+interface CliInput {
+  on(event: "line", listener: (line: string) => void): CliInput;
+  on(event: "close", listener: () => void): CliInput;
+}
+
 function printEvent(event: TurnEvent): void {
   if (event.type === "text") process.stdout.write(`${event.text}\n`);
   if (event.type === "tool_call") process.stdout.write(`[tool: ${event.request.toolName}]\n`);
   if (event.type === "error") process.stderr.write(`Error: ${event.error.message}\n`);
+}
+
+export async function runCliInput(
+  input: CliInput,
+  session: Parameters<typeof stopCliSession>[0] & { run(input: { text: string }): AsyncIterable<TurnEvent>; reset(): Promise<void> },
+  print: (event: TurnEvent) => void = printEvent,
+  write: (text: string) => void = (text) => process.stdout.write(text),
+): Promise<void> {
+  const pending: string[] = [];
+  let active: { cancelled: boolean } | undefined;
+  let closed = false;
+  let finish!: () => void;
+  const done = new Promise<void>((resolve) => { finish = resolve; });
+
+  const drain = async (): Promise<void> => {
+    if (active) return;
+    const text = pending.shift();
+    if (text === undefined) { if (closed) finish(); return; }
+    const turn = { cancelled: false };
+    active = turn;
+    try {
+      if (text === "/reset") await resetCliSession(session, write);
+      else for await (const event of session.run({ text })) if (!turn.cancelled) print(event);
+    } finally {
+      if (active === turn) { active = undefined; void drain(); }
+    }
+  };
+
+  input.on("line", (line) => {
+    const text = line.trim();
+    if (!text) return;
+    if (text === "/stop") {
+      if (active) active.cancelled = true;
+      void stopCliSession(session, write);
+      return;
+    }
+    pending.push(text);
+    void drain();
+  });
+  input.on("close", () => { closed = true; void drain(); });
+  await done;
 }
 
 export async function runCli(env: NodeJS.ProcessEnv = process.env): Promise<void> {
@@ -21,13 +67,7 @@ export async function runCli(env: NodeJS.ProcessEnv = process.env): Promise<void
   process.once("SIGINT", stop);
   process.stdout.write(`Rachel (${provider}) ready.\n`);
   try {
-    for await (const line of input) {
-      const text = line.trim();
-      if (!text) continue;
-      if (text === "/reset") { await resetCliSession(session); continue; }
-      if (text === "/stop") { await stopCliSession(session); continue; }
-      for await (const event of session.run({ text })) printEvent(event);
-    }
+    await runCliInput(input, session);
   } finally {
     input.close();
     process.removeListener("SIGINT", stop);
