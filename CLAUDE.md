@@ -40,6 +40,9 @@ execs the runtime — secrets never live in the plist itself. Logs go to
 `~/.rachel/telegram.log`.
 
 ```bash
-launchctl bootstrap gui/$(id -u) /Users/harrison/Github/assistant-agent/scripts/deploy/com.rachel.telegram.plist
-launchctl bootout gui/$(id -u)/com.rachel.telegram
+scripts/deploy/install-telegram.sh
 ```
+
+Run `scripts/deploy/install-telegram.sh` from the repository instead. It
+generates the user-specific LaunchAgent plist from the template and derives
+the repository, home, and Node paths at install time.

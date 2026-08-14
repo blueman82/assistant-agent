@@ -19,7 +19,7 @@
   secret ever appears in this file or in `launchctl print`.
 
   Install:
-    launchctl bootstrap gui/$(id -u) /Users/harrison/Github/assistant-agent/scripts/deploy/com.rachel.telegram.plist
+    scripts/deploy/install-telegram.sh
 
   Uninstall:
     launchctl bootout gui/$(id -u)/com.rachel.telegram
@@ -42,11 +42,19 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/harrison/Github/assistant-agent/scripts/deploy/run-telegram.sh</string>
+    <string>/usr/bin/env</string>
+    <string>bash</string>
+    <string>-lc</string>
+    <string>exec "$RACHEL_REPO_DIR/scripts/deploy/run-telegram.sh"</string>
   </array>
 
-  <key>WorkingDirectory</key>
-  <string>/Users/harrison/Github/assistant-agent</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>RACHEL_REPO_DIR</key>
+    <string>@RACHEL_REPO_DIR@</string>
+    <key>RACHEL_NODE_BIN</key>
+    <string>@RACHEL_NODE_BIN@</string>
+  </dict>
 
   <key>RunAtLoad</key>
   <true/>
@@ -58,9 +66,9 @@
   <integer>15</integer>
 
   <key>StandardOutPath</key>
-  <string>/Users/harrison/.rachel/telegram.log</string>
+  <string>@RACHEL_HOME@/.rachel/telegram.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/harrison/.rachel/telegram.log</string>
+  <string>@RACHEL_HOME@/.rachel/telegram.log</string>
 </dict>
 </plist>

@@ -2,7 +2,7 @@
 
 ## Wiki location
 
-`/Users/harrison/Github/assistant-agent-wiki/`
+`../assistant-agent-wiki/` (sibling to this repository)
 
 ## Git config (read by wiki-lint/wiki-ingest/wiki-query)
 
@@ -11,7 +11,7 @@ The vault's own config, `assistant-agent-wiki/.claude/workflow.config.yaml`:
 ```yaml
 project: assistant-agent-wiki
 wiki_path: .
-worktree_base: /Users/harrison/Github
+worktree_base: ..
 worktree_script: null
 jira: null
 engineering_principles_paths: null
@@ -27,8 +27,8 @@ This schema is a documented extension of the coderails wiki schema, not a fork o
 ## Three layers
 
 1. **Raw sources** — immutable input. Two locations:
-   - The project codebase at `/Users/harrison/Github/assistant-agent/` — read via normal file tools
-   - Drop zone at `/Users/harrison/Github/assistant-agent-wiki/raw/` — articles, PDFs, notes Gary drops in. Read, never modify.
+   - The project codebase at `.` — read via normal file tools
+   - Drop zone at `../assistant-agent-wiki/raw/` — articles, PDFs, notes Gary drops in. Read, never modify.
 2. **Wiki** — LLM-maintained markdown at the vault path above. Claude owns this entirely.
 3. **Schema** — this file. Defines conventions and workflows.
 
