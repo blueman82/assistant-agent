@@ -1,10 +1,10 @@
 import { createTelegramApi, type TelegramApi } from "./api.ts";
 import { createPoller, type Poller } from "./polling.ts";
 import { createSingleFlightQueue, type Queue } from "./queue.ts";
-import { createReplyRenderer } from "./replies.ts";
+import { createBufferingReplyRenderer, createReplyRenderer, flushVoiceReply } from "./replies.ts";
 import { routeUpdate } from "./validation.ts";
 import { downloadMedia } from "./media.ts";
-import type { Transcriber } from "../speech/types.ts";
+import type { Synthesizer, Transcriber } from "../speech/types.ts";
 import type { TelegramCallbackQuery } from "./types.ts";
 import type { TelegramConfig, TelegramMessage } from "./types.ts";
 
@@ -19,6 +19,8 @@ export interface RuntimeOptions {
   api?: TelegramApi;
   mediaDirectory?: string;
   transcriber?: Transcriber;
+  synthesizer?: Synthesizer;
+  encodeAudio?: (wavPath: string, oggPath: string) => Promise<void>;
   onCallback?: (query: TelegramCallbackQuery) => Promise<void>;
 }
 
@@ -37,11 +39,22 @@ export function createTelegramRuntime(
       if (!media) return;
       if (media.kind !== "voice") return await turn(media.text, reply);
       if (!options.transcriber) return await reply("Voice notes aren't supported right now.");
+      let transcript: string;
       try {
-        const transcript = await options.transcriber.transcribe(media.path);
-        await turn(transcript, reply);
+        transcript = await options.transcriber.transcribe(media.path);
       } catch {
-        await reply("Sorry, I couldn't transcribe that voice note. Please try again or send it as text.");
+        return await reply("Sorry, I couldn't transcribe that voice note. Please try again or send it as text.");
+      }
+      const buffered = createBufferingReplyRenderer();
+      try {
+        await turn(transcript, buffered.reply);
+      } finally {
+        const text = buffered.getBuffered();
+        if (text.trim() && options.synthesizer) {
+          await flushVoiceReply(text, api, config.chatId, { synthesizer: options.synthesizer, encode: options.encodeAudio });
+        } else if (text.trim()) {
+          await reply(text);
+        }
       }
     },
     (error) => { void reply(`Something went wrong handling that message: ${error instanceof Error ? error.message : String(error)}`); },
