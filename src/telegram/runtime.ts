@@ -7,6 +7,7 @@ import { downloadMedia } from "./media.ts";
 import type { Synthesizer, Transcriber } from "../speech/types.ts";
 import type { TelegramCallbackQuery } from "./types.ts";
 import type { TelegramConfig, TelegramMessage } from "./types.ts";
+import { handleCommand, parseCommand, type CommandContext, type TelegramMemoryService } from "./commands.ts";
 
 export interface TelegramRuntime {
   api: TelegramApi;
@@ -22,6 +23,8 @@ export interface RuntimeOptions {
   synthesizer?: Synthesizer;
   encodeAudio?: (wavPath: string, oggPath: string) => Promise<void>;
   onCallback?: (query: TelegramCallbackQuery) => Promise<void>;
+  memory?: TelegramMemoryService;
+  commandContext?: Pick<CommandContext, "reset" | "stop" | "status">;
 }
 
 async function handleMessage(
@@ -33,7 +36,16 @@ async function handleMessage(
   options: RuntimeOptions,
 ): Promise<void> {
   if (message.text) {
-    process.stdout.write(`${new Date().toISOString()} message received kind=text\n`);
+    process.stdout.write(`${new Date().toISOString()} message received kind=text\n`); const command = parseCommand(message.text);
+    if (command && ["remember", "forget", "reset"].includes(command.command)) {
+      const response = await handleCommand(message.text, {
+        reset: options.commandContext?.reset ?? (() => {}),
+        stop: options.commandContext?.stop ?? (() => false),
+        status: options.commandContext?.status ?? (() => ""),
+        memory: options.memory,
+      });
+      if (response) return await reply(response);
+    }
     return await turn(message.text, reply);
   }
   if (!options.mediaDirectory) {

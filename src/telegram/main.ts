@@ -7,7 +7,10 @@ import { LocalSpeech } from "../speech/local.ts";
 import { createTelegramApi } from "./api.ts";
 import { createApprovalTransport } from "./approval.ts";
 import { createTelegramRuntime } from "./runtime.ts";
+import type { TelegramMemoryService } from "./commands.ts";
 import type { TelegramConfig } from "./types.ts";
+
+export interface TelegramRunOptions { memory?: TelegramMemoryService }
 
 function configFromEnvironment(env: NodeJS.ProcessEnv = process.env): TelegramConfig {
   const token = env.RACHEL_TELEGRAM_TOKEN;
@@ -36,7 +39,7 @@ function replyFor(
   return undefined;
 }
 
-export async function runTelegram(env: NodeJS.ProcessEnv = process.env): Promise<void> {
+export async function runTelegram(env: NodeJS.ProcessEnv = process.env, options: TelegramRunOptions = {}): Promise<void> {
   const provider = providerFromEnvironment(env);
   const runtime = createProviderRuntime(provider);
   const status = await runtime.checkAvailability();
@@ -53,6 +56,8 @@ export async function runTelegram(env: NodeJS.ProcessEnv = process.env): Promise
     for await (const event of session.run({ text })) await replyFor(event, reply, approvalContext);
   }, {
     api,
+    memory: options.memory,
+    commandContext: { reset: () => session.reset(), stop: () => false, status: () => "" },
     mediaDirectory: tmpdir(),
     transcriber: speech,
     synthesizer: speech,

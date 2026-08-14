@@ -2,12 +2,14 @@ import { createInterface } from "node:readline";
 import { AgentError, type TurnEvent } from "../core/contracts.ts";
 import { providerFromEnvironment, type ProviderName } from "../providers/selection.ts";
 import { createProviderRuntime } from "../providers/runtime.ts";
-import { resetCliSession, stopCliSession } from "./commands.ts";
+import { handleCliMemoryCommand, resetCliSession, stopCliSession, type CliMemoryService } from "./commands.ts";
 
 interface CliInput {
   on(event: "line", listener: (line: string) => void): CliInput;
   on(event: "close", listener: () => void): CliInput;
 }
+
+export interface CliRunOptions { memory?: CliMemoryService }
 
 function printEvent(event: TurnEvent): void {
   if (event.type === "text") process.stdout.write(`${event.text}\n`);
@@ -20,6 +22,7 @@ export async function runCliInput(
   session: Parameters<typeof stopCliSession>[0] & { run(input: { text: string }): AsyncIterable<TurnEvent>; reset(): Promise<void> },
   print: (event: TurnEvent) => void = printEvent,
   write: (text: string) => void = (text) => process.stdout.write(text),
+  memory?: CliMemoryService,
 ): Promise<void> {
   const pending: string[] = [];
   let active: { cancelled: boolean } | undefined;
@@ -34,7 +37,8 @@ export async function runCliInput(
     const turn = { cancelled: false };
     active = turn;
     try {
-      if (text === "/reset") await resetCliSession(session, write);
+      if (text === "/reset") await resetCliSession(session, write, memory);
+      else if (memory && await handleCliMemoryCommand(text, memory, write)) return;
       else for await (const event of session.run({ text })) if (!turn.cancelled) print(event);
     } finally {
       if (active === turn) { active = undefined; void drain(); }
@@ -67,6 +71,7 @@ export function providerFromCli(
 export async function runCli(
   env: NodeJS.ProcessEnv = process.env,
   args: readonly string[] = process.argv.slice(2),
+  options: CliRunOptions = {},
 ): Promise<void> {
   const provider = providerFromCli(args, env);
   const runtime = createProviderRuntime(provider);
@@ -78,7 +83,7 @@ export async function runCli(
   process.once("SIGINT", stop);
   process.stdout.write(`Rachel (${provider}) ready.\n`);
   try {
-    await runCliInput(input, session);
+    await runCliInput(input, session, printEvent, (text) => process.stdout.write(text), options.memory);
   } finally {
     input.close();
     process.removeListener("SIGINT", stop);
