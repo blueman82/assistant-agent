@@ -1,13 +1,15 @@
 import { createInterface } from "node:readline";
-import { AgentError, type TurnEvent } from "../core/contracts.ts";
+import { AgentError, openRachelMemory, type AgentSession, type TurnEvent } from "../core/index.ts";
 import { providerFromEnvironment, type ProviderName } from "../providers/selection.ts";
 import { createProviderRuntime } from "../providers/runtime.ts";
-import { resetCliSession, stopCliSession } from "./commands.ts";
+import { handleCliMemoryCommand, resetCliSession, stopCliSession, type CliMemoryService } from "./commands.ts";
 
 interface CliInput {
   on(event: "line", listener: (line: string) => void): CliInput;
   on(event: "close", listener: () => void): CliInput;
 }
+
+export interface CliRunOptions { memory?: CliMemoryService }
 
 function printEvent(event: TurnEvent): void {
   if (event.type === "text") process.stdout.write(`${event.text}\n`);
@@ -20,6 +22,7 @@ export async function runCliInput(
   session: Parameters<typeof stopCliSession>[0] & { run(input: { text: string }): AsyncIterable<TurnEvent>; reset(): Promise<void> },
   print: (event: TurnEvent) => void = printEvent,
   write: (text: string) => void = (text) => process.stdout.write(text),
+  memory?: CliMemoryService,
 ): Promise<void> {
   const pending: string[] = [];
   let active: { cancelled: boolean } | undefined;
@@ -34,7 +37,8 @@ export async function runCliInput(
     const turn = { cancelled: false };
     active = turn;
     try {
-      if (text === "/reset") await resetCliSession(session, write);
+      if (text === "/reset") await resetCliSession(session, write, memory);
+      else if (memory && await handleCliMemoryCommand(text, memory, write)) return;
       else for await (const event of session.run({ text })) if (!turn.cancelled) print(event);
     } finally {
       if (active === turn) { active = undefined; void drain(); }
@@ -67,22 +71,33 @@ export function providerFromCli(
 export async function runCli(
   env: NodeJS.ProcessEnv = process.env,
   args: readonly string[] = process.argv.slice(2),
+  options: CliRunOptions = {},
 ): Promise<void> {
   const provider = providerFromCli(args, env);
   const runtime = createProviderRuntime(provider);
   const status = await runtime.checkAvailability();
   if (!status.authenticated) throw new AgentError("authentication_unavailable", status.message ?? `${provider} OAuth is unavailable`);
-  const session = await runtime.startSession();
+  const opened = options.memory ? undefined : await openRachelMemory(env);
+  let session: AgentSession;
+  try {
+    session = await runtime.startSession();
+  } catch (error) {
+    opened?.store.close();
+    throw error;
+  }
+  const memory = options.memory ?? opened?.memory;
+  const turnSession = opened ? { ...session, run: (input: { text: string }) => opened.memory.run(session, input) } : session;
   const input = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
   const stop = () => void session.stop("shutdown");
   process.once("SIGINT", stop);
   process.stdout.write(`Rachel (${provider}) ready.\n`);
   try {
-    await runCliInput(input, session);
+    await runCliInput(input, turnSession, printEvent, (text) => process.stdout.write(text), memory);
   } finally {
     input.close();
     process.removeListener("SIGINT", stop);
     await session.stop("shutdown");
+    opened?.store.close();
   }
 }
 

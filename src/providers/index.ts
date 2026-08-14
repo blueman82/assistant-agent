@@ -3,6 +3,8 @@ export type { ClaudeRuntimeOptions } from "./claude.ts";
 export { CodexRuntime, createCodexRuntime } from "./codex.ts";
 export type { CodexRuntimeOptions } from "./codex.ts";
 export type { ProviderRuntime, ProviderRuntimeStatus } from "./types.ts";
+export { providerPrompt } from "./context.ts";
+export type { NormalizedConversationTurn, ProviderContext, ProviderInput, RetrievedMemory } from "./context.ts";
 export { providerFromEnvironment } from "./selection.ts";
 export type { ProviderName } from "./selection.ts";
 export { createProviderRuntime } from "./runtime.ts";

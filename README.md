@@ -16,6 +16,11 @@ npm run typecheck
 npm test
 ```
 
+Rachel stores shared local conversation and durable memory in `~/.rachel/rachel.db`.
+Set `RACHEL_DATA_DIR` to override the directory or `RACHEL_CONVERSATION_ID` to
+select another conversation. `/reset` clears the current conversation while
+preserving durable memories; `/remember text` and `/forget text` manage them.
+
 `bin/rachel` launches `src/cli/main.ts`. Telegram launches
 `src/telegram/main.ts`. Both compose a provider runtime from `src/providers/`.
 

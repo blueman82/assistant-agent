@@ -165,6 +165,55 @@ test("text-triggered turn replies immediately per event, never buffered (regress
   assert.deepEqual(sent, []);
 });
 
+test("memory commands are handled before the provider turn", async () => {
+  const turns: string[] = [];
+  const replies: string[] = [];
+  const api = stubApi();
+  api.call = async (method, body) => {
+    if (method === "sendMessage") replies.push((body as { text: string }).text);
+    return {};
+  };
+  const remembered: string[] = [];
+  const runtime = createTelegramRuntime(
+    { token: "t", chatId: "1" },
+    async (text) => { turns.push(text); },
+    {
+      api,
+      memory: {
+        async remember(text) { remembered.push(text); },
+        async forget() {},
+        async resetConversation() {},
+      },
+    },
+  );
+  runtime.queue.add({ message_id: 1, chat: { id: 1 }, text: "/remember Gary likes concise answers" });
+  await waitUntilIdle(runtime.queue);
+  assert.deepEqual(remembered, ["Gary likes concise answers"]);
+  assert.deepEqual(turns, []);
+  assert.deepEqual(replies, ["Remembered."]);
+});
+
+test("Telegram reset runs the session hook and shared conversation reset", async () => {
+  const calls: string[] = [];
+  const api = stubApi();
+  api.call = async (method, body) => {
+    if (method === "sendMessage") assert.equal((body as { text: string }).text, "Session reset.");
+    return {};
+  };
+  const runtime = createTelegramRuntime(
+    { token: "t", chatId: "1" },
+    async () => { throw new Error("reset must not reach provider"); },
+    {
+      api,
+      memory: { async remember() {}, async forget() {}, async resetConversation() { calls.push("conversation"); } },
+      commandContext: { reset: async () => { calls.push("session"); }, stop: () => false, status: () => "" },
+    },
+  );
+  runtime.queue.add({ message_id: 1, chat: { id: 1 }, text: "/reset" });
+  await waitUntilIdle(runtime.queue);
+  assert.deepEqual(calls, ["session", "conversation"]);
+});
+
 test("voice-in with a synthesizer sends a voice note built from all buffered replies, joined with newlines", async () => {
   const sent: Array<{ chatId: string; filePath: string }> = [];
   const api = stubApi();

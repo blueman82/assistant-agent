@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { providerFromCli, runCliInput } from "./main.ts";
-import { resetCliSession, stopCliSession } from "./commands.ts";
+import { handleCliMemoryCommand, resetCliSession, stopCliSession } from "./commands.ts";
 
 test("CLI provider argument overrides the environment, while no argument requires it", () => {
   assert.equal(providerFromCli(["codex"], { RACHEL_PROVIDER: "claude" }), "codex");
@@ -15,6 +15,28 @@ test("CLI reset invalidates the session and confirms it", async () => {
   await resetCliSession({ reset: async () => { reset = true; } }, (text) => { output += text; });
   assert.equal(reset, true);
   assert.equal(output, "Session reset.\n");
+});
+
+test("CLI memory commands use the injected shared service", async () => {
+  const remembered: string[] = [];
+  const forgotten: string[] = [];
+  const memory = {
+    remember: async (text: string) => { remembered.push(text); },
+    forget: async (query: string) => { forgotten.push(query); },
+    resetConversation: async () => {},
+  };
+  let output = "";
+  assert.equal(await handleCliMemoryCommand("/remember Gary likes concise answers", memory, (text) => { output += text; }), true);
+  assert.equal(await handleCliMemoryCommand("/forget old preference", memory, (text) => { output += text; }), true);
+  assert.deepEqual(remembered, ["Gary likes concise answers"]);
+  assert.deepEqual(forgotten, ["old preference"]);
+  assert.equal(output, "Remembered.\nForgotten.\n");
+});
+
+test("CLI reset clears shared conversation after the provider session", async () => {
+  const calls: string[] = [];
+  await resetCliSession({ reset: async () => { calls.push("session"); } }, () => {}, { resetConversation: async () => { calls.push("conversation"); } });
+  assert.deepEqual(calls, ["session", "conversation"]);
 });
 
 test("CLI stop reports whether it aborted an active turn", async () => {

@@ -24,7 +24,6 @@ export function createSingleFlightQueue<T>(
       } finally { running = false; }
     },
     clear() { items.length = 0; },
-    get size() { return items.length; },
+    get size() { return items.length + (running ? 1 : 0); },
   };
 }
-

@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Gary's AI assistant Rachel — email, calendar, Slack, tasks, and wiki via the Claude Agent SDK.",
   "type": "module",
+  "engines": { "node": ">=22.5.0" },
   "scripts": {
     "architecture-check": "tsx scripts/architecture-check.ts",
     "start": "tsx src/cli/main.ts",
